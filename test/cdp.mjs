@@ -12,7 +12,7 @@
 // the test built its selection in script. Synthetic environments are not
 // evidence.
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -86,8 +86,13 @@ function connect(url) {
   });
 }
 
-export async function launch({ port = 9412 } = {}) {
+export async function launch() {
   const profile = mkdtempSync(join(tmpdir(), 'ryker-cdp-'));
+
+  // Port 0 lets Chrome choose, and it writes the one it took to
+  // DevToolsActivePort in the profile directory. A fixed port was fine until
+  // two suites ran at once, at which point the second silently attached to the
+  // first one's browser and drove the wrong tab.
   const proc = spawn(CHROME, [
     '--headless=new',
     '--disable-gpu',
@@ -96,9 +101,14 @@ export async function launch({ port = 9412 } = {}) {
     '--no-default-browser-check',
     '--disable-extensions',
     '--user-data-dir=' + profile,
-    '--remote-debugging-port=' + port,
+    '--remote-debugging-port=0',
     'about:blank'
   ], { stdio: 'ignore' });
+
+  const port = await poll(() => {
+    const line = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0].trim();
+    return line ? Number(line) : null;
+  }, 20000, 'Chrome to report the port it chose');
 
   const base = `http://127.0.0.1:${port}`;
 
