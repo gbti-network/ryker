@@ -1,0 +1,332 @@
+// Ryker Lite: the toolbar and boot sequence for the instruction-writing build.
+//
+// Lite shares the shell, styles, dialogs, editor, sanitiser and export code with
+// the full build. What it drops is everything durable: no journal, no revision
+// browser, no comment engine, no storage backends. A save here does not write
+// anywhere. It folds the edit into a set of instructions in the pane, which is
+// the artifact the person actually leaves with.
+Ryker.lite = (function () {
+  'use strict';
+
+  var handle = null, bar = null, expanded = false;
+  var els = {};
+  var started = false;
+
+  function d() { return Ryker.dom; }
+
+  function build() {
+    if (bar) return;
+
+    handle = d().el('button', {
+      class: 'handle', title: 'Open Ryker Lite', 'aria-expanded': 'false',
+      onclick: function () { expand(true); }
+    }, [
+      d().el('span', { class: 'dot' }),
+      d().el('span', { text: 'Ryker' }),
+      d().el('span', { class: 'badge', text: '' })
+    ]);
+    Ryker.shell.add(handle);
+
+    // No Edit toggle. Lite exists to edit, and a mode switch that is always in
+    // the same position is a control nobody ever needs to touch.
+    els.save = d().el('button', { class: 'rk', text: 'Save', onclick: save });
+    els.pane = d().el('button', { class: 'rk count-only',
+      onclick: function () { Ryker.pane.toggle(); } });
+
+    // Export is gone: the instruction pane is what someone leaves with. What
+    // remains is occasional, so it sits behind the ellipsis rather than taking
+    // permanent room in the bar.
+    els.more = Ryker.icons.button('more', 'More actions');
+    els.more.setAttribute('aria-haspopup', 'menu');
+    els.more.setAttribute('aria-expanded', 'false');
+    els.more.addEventListener('click', buildMenu);
+    buildMenu();
+
+    els.note = d().el('button', { class: 'where', type: 'button',
+      onclick: function () { if (!Ryker.logger.isOn()) startLogging(); } }, [
+      d().el('span', { class: 'dot' }),
+      d().el('span', { class: 'lbl', text: 'Nothing is saved anywhere' })
+    ]);
+    els.collapse = d().el('button', { class: 'rk', text: 'Hide', onclick: function () { expand(false); } });
+
+    // Left of the name, not among the actions on the right: the outline is a
+    // view of the document rather than a thing done to it. Ghost, so it reads as
+    // part of the name beside it. The active state still paints, because .on is
+    // declared after .ghost at equal specificity.
+    els.outline = Ryker.icons.button('outline', 'Show or hide the outline', function () {
+      Ryker.rail.toggle();
+    }, 'ghost rail-toggle');
+    Ryker.rail.onToggle(sync);
+
+    bar = d().el('div', { class: 'bar', role: 'toolbar', 'aria-label': 'Ryker Lite' }, [
+      els.outline,
+      d().el('span', { class: 'brand', text: 'Ryker Lite' }),
+      d().el('span', { class: 'spacer' }),
+      els.note, els.more, els.pane, els.collapse, els.save
+    ]);
+
+    Ryker.tooltip.attach(els.save, 'Save the edits into the instructions (Ctrl+S)');
+    Ryker.tooltip.attach(els.pane, 'Show or hide the instructions');
+    Ryker.tooltip.attach(els.outline, 'Show or hide the outline');
+    Ryker.tooltip.attach(els.more, 'More actions');
+    Ryker.tooltip.attach(els.collapse, 'Collapse the toolbar');
+    bar.style.display = 'none';
+    Ryker.shell.add(bar);
+  }
+
+  // Rebuilt on open so the logging entry reflects whether it is currently on.
+  function buildMenu() {
+    Ryker.menu.attach(els.more, [
+      { label: 'Package report', icon: 'package', run: function () { Ryker.packager.open(); } },
+      { label: 'Download instructions', icon: 'download', run: function () { Ryker.pane.download(); } },
+      { label: 'Copy instructions', icon: 'copy', run: function () { Ryker.pane.copy(); } },
+      null,
+      { label: 'Change requests...', icon: 'package', run: function () { Ryker.browser.open(); } },
+      Ryker.logger.isOn()
+        ? { label: 'Logging to ' + Ryker.logger.where(), icon: 'download', disabled: true }
+        : { label: 'Choose the folder to log to...', icon: 'download', run: startLogging },
+      null,
+      { label: 'Clear document', icon: 'trash', danger: true,
+        run: function () { Ryker.pane.confirmClear(); } }
+    ]);
+  }
+
+  function startLogging() {
+    if (!Ryker.logger.supported()) {
+      Ryker.dialog.alert('Not available in this browser',
+        'Writing to a folder needs the File System Access API, which Chrome and Edge ' +
+        'have and other browsers do not. Use Download instructions instead.', 'warn');
+      return;
+    }
+    var held = Ryker.logger.pendingCount();
+    Ryker.dialog.open({
+      title: 'Choose where change requests are written',
+      body: '<p>Pick the folder this report is in. Every save is then written to ' +
+        '<code>' + Ryker.logger.LIB + '/' + Ryker.logger.DIR_NAME + '/</code>.</p>' +
+        (held ? '<p class="muted">' + held + ' save(s) are waiting and will be written ' +
+          'straight away.</p>' : '') +
+        '<p class="muted">A browser cannot write to a folder it has not been shown. ' +
+        'This is asked once.</p>',
+      buttons: [
+        { label: 'Cancel' },
+        { label: 'Choose folder', primary: true, action: function () {
+            Ryker.logger.choose().then(function (ok) {
+              sync();
+              if (ok) Ryker.pane.flash('Logging to ' + Ryker.logger.where() +
+                (held ? '. ' + held + ' held save(s) written.' : '.'), 'ok');
+              else if (Ryker.logger.error()) Ryker.dialog.alert('Could not use that folder',
+                Ryker.dom.escapeHtml(Ryker.logger.error()), 'bad');
+            });
+          } }
+      ]
+    });
+  }
+
+  // Polls rather than subscribes, because a dialog can be closed by Escape, by
+  // the backdrop or by any of its own buttons, and one timer is cheaper than
+  // teaching every one of those paths to notify.
+  function askWhenClear() {
+    var tries = 0;
+    (function wait() {
+      if (Ryker.logger.isOn()) return;
+      if (!Ryker.dialog.isOpen()) { startLogging(); return; }
+      if (++tries > 240) return;
+      setTimeout(wait, 500);
+    })();
+  }
+
+  function expand(open) {
+    expanded = !!open;
+    if (!expanded && Ryker.rail && Ryker.rail.isOpen()) Ryker.rail.toggle(false);
+    bar.style.display = expanded ? 'flex' : 'none';
+    handle.style.display = expanded ? 'none' : 'flex';
+    handle.setAttribute('aria-expanded', String(expanded));
+    if (!expanded) {
+      Ryker.formatbar.hide();
+      Ryker.shell.releaseOffset();
+    }
+    sync();
+  }
+
+  // Only one row now that formatting floats over the selection, so the offset
+  // is simply the bar's own height.
+  function layout() {
+    if (!expanded) return;
+    Ryker.shell.setOffset(bar.getBoundingClientRect().height);
+    Ryker.pane.reflow();
+  }
+
+  // A save in lite writes nothing. It takes the edits made since the last one,
+  // folds them into the instruction set, and rebases so the next save records
+  // only what changed after this point. The instructions themselves still quote
+  // the document as authored, not as it was at the previous save.
+  function save(quiet) {
+    var changes = Ryker.editable.changes();
+    // A move rewrites no block, so changes() is empty after one and this used
+    // to refuse the save that would have recorded it. Order is the other half
+    // of what a save captures.
+    var moves = Ryker.move.count();
+    if (!changes.length && !moves) {
+      // A keyboard save that found nothing should not put a dialog in the way.
+      // Someone pressing Ctrl+S out of habit gets a note, not an interruption.
+      if (quiet) {
+        if (!Ryker.pane.isOpen()) Ryker.pane.toggle();
+        Ryker.pane.flash('Nothing to save. The instructions are already current.');
+        return;
+      }
+      Ryker.dialog.alert('Nothing to save', 'No text has changed since the last save.');
+      return;
+    }
+    Ryker.instructions.record();
+    Ryker.editable.rebase();
+    Ryker.pane.refresh(true);
+    if (!Ryker.pane.isOpen()) Ryker.pane.toggle();
+    sync();
+    // Fire and forget. A logging failure is reported in the pane and never
+    // interrupts the save that produced it.
+    Ryker.logger.record(Ryker.pane.value()).then(function (ok) {
+      if (!ok && !Ryker.logger.isOn() && Ryker.logger.supported()) {
+        // No dialog. A modal over the report to ask about a folder was worse
+        // than the problem it solved: it covered the document, swallowed
+        // clicks, and arrived at the moment someone had just finished working.
+        // The held count sits in the toolbar and the chip grants the folder.
+        Ryker.pane.flash(Ryker.logger.pendingCount() +
+          ' save(s) held in this tab. Click "held in this tab only" to write them.', 'warn');
+        sync();
+        return;
+      }
+      if (ok) Ryker.pane.flash('Saved. Copy written to ' + Ryker.logger.where() + '.', 'ok');
+      else if (Ryker.logger.error()) Ryker.pane.flash('Could not write the log copy: ' +
+        Ryker.logger.error(), 'warn');
+      sync();
+    });
+  }
+
+  function sync() {
+    if (!bar) return;
+    var editing = Ryker.editable.isOn();
+    var dirty = Ryker.editable.isDirty();
+    var edits = Ryker.instructions.edits().length + Ryker.instructions.moves().length;
+
+    // Save keeps the same plain treatment as Hide. It sits beside it and they
+    // are both ordinary actions; colouring one of them made it read as a state.
+    els.save.disabled = !dirty;
+    els.save.textContent = 'Save';
+
+    els.pane.textContent = '';
+    els.pane.appendChild(d().el('span', {
+      class: 'count' + (edits ? ' warn' : ''), text: String(edits)
+    }));
+    els.pane.classList.toggle('on', Ryker.pane.isOpen());
+    if (els.outline) {
+      els.outline.classList.toggle('on', Ryker.rail.isOpen());
+      Ryker.tooltip.attach(els.outline,
+        Ryker.rail.isOpen() ? 'Hide the outline' : 'Show the outline');
+    }
+
+    var held = Ryker.logger.pendingCount();
+    els.note.querySelector('.lbl').textContent = Ryker.logger.isOn()
+      ? 'Writing to ' + Ryker.logger.where()
+      : (held
+          ? held + ' save(s) held in this tab only'
+          : (edits ? edits + ' edit(s) held in this tab only' : 'Nothing is saved anywhere'));
+    els.note.disabled = Ryker.logger.isOn() || !Ryker.logger.supported();
+    els.note.querySelector('.dot').className = 'dot ' + (edits ? 'warn' : '');
+    Ryker.tooltip.attach(els.note, Ryker.logger.isOn()
+      ? 'Every save also writes a copy to ' + Ryker.logger.where() + '.'
+      : 'Nothing has been written to disk yet. Click to choose the folder, ' +
+        'and every save held in this tab is written straight away.');
+    els.note.querySelector('.dot').classList.toggle('ok', Ryker.logger.isOn());
+
+    Ryker.tooltip.attach(els.pane,
+      edits + ' edit(s) recorded. Show or hide the instructions.');
+
+    var badge = handle.querySelector('.badge');
+    badge.textContent = edits ? String(edits) : '';
+    badge.style.display = edits ? '' : 'none';
+    handle.querySelector('.dot').classList.toggle('on', editing);
+
+    layout();
+  }
+
+  function start() {
+    if (started) return;
+    started = true;
+    var cfg = Ryker.config.load();
+    if (cfg.RYKER_ENABLED === false) return;
+    if (cfg._leaked && cfg._leaked.length) {
+      Ryker.shell.mount();
+      Ryker.dialog.open({
+        title: 'Ryker did not start',
+        body: '<div class="note bad">This report ships configuration keys that must never ' +
+          'leave a build machine: <b>' + Ryker.dom.escapeHtml(cfg._leaked.join(', ')) + '</b>.</div>',
+        dismissable: false
+      });
+      return;
+    }
+
+    Ryker.shell.mount();
+    // Taken before Edit Mode opens, so every instruction can quote the document
+    // as authored rather than as it stood at the previous save.
+    Ryker.instructions.captureOrigin();
+    build();
+    Ryker.pane.build();
+    Ryker.formatbar.init();
+    Ryker.pick.init();
+    Ryker.multi.init();
+    Ryker.rail.build();
+    Ryker.rail.init();
+    Ryker.history.bind();
+    Ryker.tooltip.init();
+
+    Ryker.editable.onChange(sync);
+    Ryker.instructions.onChange(function () { Ryker.pane.refresh(); sync(); });
+
+    document.addEventListener('keydown', function (e) {
+      // Ctrl+S, or Cmd+S. Taken over because in a document with an editor
+      // attached it plainly means "save my edits", not "write this page to
+      // disk", and the browser's own dialog would do the wrong thing.
+      if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 's' || e.key === 'S')) {
+        e.preventDefault();
+        e.stopPropagation();
+        save(true);
+        return;
+      }
+      if (e.key !== 'Escape') return;
+      if (Ryker.menu.isOpen()) { Ryker.menu.close(); e.stopPropagation(); e.preventDefault(); return; }
+      if (Ryker.dialog.isOpen()) { Ryker.dialog.closeTop(); e.stopPropagation(); e.preventDefault(); }
+    }, true);
+
+    // Lite opens ready to work and stays that way: expanded, editing, pane
+    // showing. Its whole purpose is the pane, so starting collapsed would hide
+    // the point of it, and a mode switch would only ever be turned back on.
+    expand(true);
+    Ryker.editable.enable();
+    sync();
+    Ryker.recover.offer();
+    Ryker.logger.resume().then(function (ok) {
+      sync();
+      // Asking on load is the only honest reading of "always on": the picker
+      // needs a click, so the click has to be offered rather than waited for.
+      // Deliberately not asked here. A modal on load covers the report with a
+      // backdrop that swallows every click before anyone has done anything,
+      // which is a poor trade for a grant that is only needed once a save
+      // exists to write. Saves are queued until it arrives, so nothing is lost
+      // by waiting for the first one.
+    });
+    Ryker.logger.onChange(buildMenu);
+  }
+
+  return { start: start, sync: sync, save: save, expand: expand };
+})();
+
+(function () {
+  'use strict';
+  function go() { Ryker.lite.start(); }
+  function schedule() {
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(go);
+    setTimeout(go, 50);
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', schedule);
+  else schedule();
+})();
