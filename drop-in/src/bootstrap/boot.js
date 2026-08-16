@@ -104,6 +104,7 @@ Ryker.boot = (function () {
   // Rebuilt on open so the logging entry reflects whether it is currently on.
   function buildMenu() {
     Ryker.menu.attach(els.more, [
+      { label: 'Export report...', icon: 'download', run: exportMenu },
       { label: 'Package report', icon: 'package', run: function () { Ryker.packager.open(); } },
       { label: 'Download instructions', icon: 'download', run: function () { Ryker.pane.download(); } },
       { label: 'Copy instructions', icon: 'copy', run: function () { Ryker.pane.copy(); } },
@@ -116,6 +117,48 @@ Ryker.boot = (function () {
       { label: 'Clear document', icon: 'trash', danger: true,
         run: function () { Ryker.pane.confirmClear(); } }
     ]);
+  }
+
+  // Spec section 21, restored 2026-08-16.
+  //
+  // exportHtml.clean() and withRyker() survived the decommission intact and the
+  // test suite proves clean() round-trips a document character for character,
+  // but the menu that reached them lived in ui/toolbar.js and was deleted with
+  // the full build. So a required capability was fully implemented, fully
+  // tested, documented in README and named in AGENT.md as the way to verify an
+  // install, and reachable by nobody. sow-006 retired comments, revisions and
+  // GitHub; it never retired export.
+  //
+  // Lifted from the deleted toolbar.js with the Journal button dropped, since
+  // exportHtml.journalJson() went with the revision journal.
+  function exportMenu() {
+    var base = Ryker.exportHtml.baseName();
+    Ryker.dialog.open({
+      title: 'Export',
+      body: '<p><b>Clean HTML</b> is the report on its own, with Ryker taken out. This is what ' +
+        'you send to someone who should read it rather than edit it.</p>' +
+        '<p><b>With Ryker</b> keeps the editor attached, so whoever opens it can carry on ' +
+        'editing and leave with their own instruction set.</p>',
+      buttons: [
+        { label: 'Cancel' },
+        {
+          label: 'With Ryker',
+          action: function () {
+            var o = Ryker.exportHtml.scanned('ryker');
+            if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
+            Ryker.exportHtml.download(o.html, base + '-ryker.html');
+          }
+        },
+        {
+          label: 'Clean HTML', primary: true,
+          action: function () {
+            var o = Ryker.exportHtml.scanned('clean');
+            if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
+            Ryker.exportHtml.download(o.html, base + '.html');
+          }
+        }
+      ]
+    });
   }
 
   function startLogging() {

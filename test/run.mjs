@@ -302,6 +302,29 @@ async function runPackager(sess, file) {
   assert(actsDisplay === 'flex', 'button rows (.acts) still get flex layout',
     actsDisplay === 'flex' ? null
       : `computed display is "${actsDisplay}", so the rule is not matching`);
+
+  // Spec section 21. exportHtml.clean() worked throughout, and this suite
+  // proved it worked, while no user could invoke it: the menu that reached it
+  // was deleted with the full build. A capability with no route to it is
+  // exactly what a unit-level test cannot see, so this drives the menu.
+  const exportUi = await evaluate(sess, `(function () {
+    var sr = document.getElementById('ryker-root').shadowRoot;
+    // Open the More menu the way a person does, then read its item labels.
+    var more = sr.querySelector('[aria-haspopup="menu"]');
+    if (!more) return { error: 'no More button in the toolbar' };
+    more.click();
+    var labels = Array.prototype.map.call(sr.querySelectorAll('[role="menuitem"], .menu button'),
+      function (b) { return b.textContent.trim(); });
+    return { labels: labels };
+  })()`);
+
+  if (exportUi.error) {
+    bad('the export menu is reachable from the toolbar', exportUi.error);
+  } else {
+    const hasExport = exportUi.labels.some((l) => /^export report/i.test(l));
+    assert(hasExport, 'the export menu is reachable from the toolbar',
+      hasExport ? null : `More menu offers: ${JSON.stringify(exportUi.labels)}`);
+  }
 }
 
 const bundles = ['ryker.js'].filter((f) => existsSync(join(DIST, f)));

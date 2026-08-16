@@ -101,9 +101,17 @@ Ryker.dialog = (function () {
   }
 
 
-  // Shown when the credential scan stops an export. Lives here rather than with
-  // the save flow because the packager and the instruction pane both reach it and neither
-  // has a save flow.
+  // Shown when the credential scan stops an export. Its callers are the
+  // packager (per-file and per-report) and the export menu in bootstrap/boot.js.
+  //
+  // It does NOT gate the instruction pane. pane.copy() and pane.download() take
+  // the textarea's value straight to the clipboard or a Blob without passing
+  // through Ryker.scan, and the instruction text quotes report content
+  // verbatim, so that is the path a credential would actually ride out on.
+  // Whether the pane should be scanned is an open question rather than an
+  // oversight to fix silently: the pane's whole purpose is reproducing document
+  // text, so a scan there would fire on any report that legitimately discusses
+  // a token. Recorded here so the next reader does not assume it is covered.
   function leak(hits) {
     var rows = (hits || []).map(function (h) {
       return '<li><b>' + Ryker.dom.escapeHtml(h.pattern) + '</b> in ' +
