@@ -26,15 +26,10 @@ Copy `dist/ryker.js` into `ryker/dist/` beside the report, and write a
 `ryker.config.js` next to it. If the report is a one-off with no shared
 settings, drop the middle line and put everything in the inline block.
 
-## Choosing a build
-
-`ryker/dist/ryker.js` is the full editor. Use it when the report has a home:
-a repository to commit into, or a team who will comment on it.
-
-`ryker/dist/ryker-lite.js` is the same editor with everything durable removed
-and an AI instruction pane added. Use it when the report is a one-off, when
-there is nowhere to save, or when the point is to hand an AI a description of
-the changes rather than the changed file. Same tag, different filename.
+There is one bundle. A second, larger build carrying comments, a revision
+journal and a GitHub backend existed until 2026-08-16 and was decommissioned;
+if you find a reference to `ryker-lite.js` anywhere, it predates that and the
+file it names is `ryker.js`.
 
 ## Rules
 
@@ -44,8 +39,11 @@ treats `main` as the report and everything in it as potentially editable.
 **Set a document id that does not depend on the filename.** Comments and
 revisions are keyed to it. Renaming `report.html` must not orphan them.
 
-**Do not rename element ids after comments exist.** Comments anchor on quoted
-text with the block id as a hint, so a renamed id degrades anchoring quality.
+**Keep element ids stable.** An instruction locates a block by its quoted text
+and cross-checks the position, which is expressed as "the 3rd `<p>` inside the
+section with id=rationale". Renaming an id after instructions have been written
+does not break them, since the quoted text is the key, but it does make the
+cross-check point at nothing.
 
 **Mark anything that must not be edited.** Ryker already excludes `svg`, `nav`,
 `header`, `footer`, elements carrying `data-effort`, `data-sort`, `data-group`
@@ -66,11 +64,12 @@ filters or navigation inside `main`, give them `data-ryker-lock`.
 Public, and fine to ship inside the report:
 
 ```
-RYKER_ENABLED            RYKER_GITHUB_OWNER      RYKER_GITHUB_BRANCH
-RYKER_DOCUMENT_ID        RYKER_GITHUB_REPO       RYKER_GITHUB_CLIENT_ID
-RYKER_DOCUMENT_PATH      RYKER_GITHUB_REPOSITORY_ID
-RYKER_GITHUB_ENABLED     RYKER_GOOGLE_ENABLED
+RYKER_ENABLED    RYKER_DOCUMENT_ID    RYKER_DOCUMENT_PATH
 ```
+
+The `RYKER_GITHUB_*` and `RYKER_GOOGLE_*` keys are still read by
+`config/config.js` but nothing acts on them, because the backend that did was
+decommissioned. Do not set them.
 
 Never, under any circumstances, in a report:
 
@@ -98,11 +97,14 @@ bundle is safe. Anything you add around it is not automatically safe.
 
 ## Checking it worked
 
-Open the report. A small "Ryker" handle appears in the top right and nothing
-else changes. Click it for the toolbar. Then confirm the report itself is
-untouched:
+Open the report. Ryker opens expanded, with editing on and the instruction pane
+showing, because the pane is the point of the tool rather than something to go
+and find. The toolbar reads "Nothing is saved anywhere" until you give it a
+folder. Then confirm the report itself is untouched:
 
 - Its own scripts still work: sorting, filtering, lightboxes.
 - Printing produces the same page count as before. Ryker sets itself to
   `display: none` in print, so the PDF should be identical.
-- With Ryker idle, no element carries `contenteditable`.
+- Exporting the clean HTML gives back the file you started with. That is the
+  strongest check available and it is what the test suite asserts, character for
+  character, against `test/fixtures/report.html`.

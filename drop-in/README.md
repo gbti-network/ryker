@@ -1,35 +1,31 @@
 # Ryker
 
-A drop-in editing, commenting and revision layer for authored HTML reports.
+An editing layer for rendered documents. Edit the page the way you would mark up
+a draft, and Ryker hands you the exact instructions an agent needs to make the
+same change in the source.
 
 Ryker is not the report. Ryker travels with the report. Add one script tag and
-the document gains an editor, inline comments and a revision history, while
-staying a valid HTML file that anyone can open years later with Ryker gone.
+the document becomes editable in place, while staying a valid HTML file that
+anyone can open years later with Ryker gone.
 
 Version 0.1.0. Built against the Phase 1 specification in
 `../.data/sow/0_queue/sow-004-assets/phase-1-spec.md`.
 
-## Two builds from one source tree
+## What you leave with
 
-| | `dist/ryker.js` | `dist/ryker-lite.js` |
-|---|---|---|
-| Editing | yes | yes |
-| Comments | yes | no |
-| Revision history | yes | no |
-| Saves to disk or GitHub | yes | no |
-| AI instruction pane | no | yes, open by default |
-| Size | ~177 KB | ~103 KB |
+Every save folds the edits made since the last one into a set of instructions in
+the right-hand pane, phrased for an agent to apply to the source. Each one quotes
+the document as it was authored, so the whole set applies cleanly to a fresh copy
+of the file even where a block was edited several times. The pane is editable,
+copyable and downloadable.
 
-**Ryker** is for a document with a home: it commits, it keeps history, and a
-team argues in the margins. **Ryker Lite** is for a document without one. It
-writes nothing anywhere. Every save folds the edit into a set of instructions
-in the right-hand pane, phrased for an AI to apply to the source, and that text
-is the only thing you leave with. The pane is editable and copyable, and a
-Clear button resets the document with a warning that says plainly that nothing
-can be restored afterwards.
+That is the product rather than a fallback. On a document whose source Ryker can
+reach, the instructions can be applied for you. On one whose source it cannot,
+they are the only output there could be, and they are the same artifact either
+way.
 
-The shared modules are byte-identical in both bundles. Only the load list in
-`build/bundle.mjs` differs.
+Nothing is written anywhere unless you point Ryker at a folder. The toolbar says
+which of those two states you are in at all times, and never implies the other.
 
 ## Installing it
 
@@ -63,9 +59,6 @@ it is the case Ryker most needs to work in.
 
 ## What it does
 
-- **Reader mode by default** in the full build. The toolbar is a small handle
-  in the corner until someone opens it. Nothing else changes. Lite starts
-  expanded and editing, because the pane is the point of it.
 - **Edit mode** turns prose into editable blocks. Paragraphs, list items, table
   cells, headings, captions. Not the chart, not table structure, not any element
   the host page's own script reads, not image sources.
@@ -79,71 +72,25 @@ it is the case Ryker most needs to work in.
   already holds, so a move is found by comparing the order the document was
   authored in against the order it is in now. Move something out and back and
   Ryker correctly reports nothing.
-- **Comments** anchor to the quoted words plus the text around them, not to a
-  position, so they survive edits elsewhere. When the quoted text genuinely goes,
-  the comment is listed as unanchored rather than moved onto something else.
-- **Revisions** show what changed, who changed it and when, as prose diffs
-  rather than a diff of the HTML.
+- **A formatting row** floats over the selection while editing: bold, italic,
+  strikethrough, code, link and clear.
 - **Export** produces the report with Ryker removed, the report with Ryker
-  attached, the journal as JSON, or a ZIP with whatever else you choose.
-
-## Storage
-
-One adapter, three backends, and the active one is always named in the toolbar.
-A comment written into browser storage by someone who believed they were
-committing is the worst failure this tool can produce.
-
-| Backend | When it is used | What it needs |
-|---|---|---|
-| Local | Always available, the floor | Nothing |
-| Folder | After "Choose report folder" | A click to grant access |
-| GitHub | Repository configured and a verified token | A fine-grained token |
-
-## The revision journal
-
-Git is not the revision store. Ryker needs revision tracking across saves and
-comments on record; it does not need branching, refs, actions or a CLI.
-
-Every save appends one record: the blocks that changed as before and after pairs
-keyed by block id, the comment events of that save, plus author, timestamp and
-message. Records are separate numbered files under `.ryker/revisions/`.
-
-Four things follow. The revision panel reads straight off a record instead of
-comparing two whole documents. The inline diff needs no document differ, because
-the delta was captured at write time. Revision review works identically with no
-repository at all. And write contention disappears, because appending a numbered
-record never conflicts with someone else appending theirs.
-
-In GitHub mode the journal is committed alongside the document, so git carries
-the record even though it is not the record.
-
-## GitHub
-
-Authentication is a fine-grained personal access token, not the device flow.
-`github.com/login/device/code` and `login/oauth/access_token` send no CORS
-headers, so the device flow cannot complete in a page without a relay, and a
-relay would make Ryker infrastructure mandatory. A fine-grained token also
-carries the repository restriction natively, since GitHub scopes it to selected
-repositories with Contents read and write as a permission in its own right.
-
-`api.github.com` does answer browser requests, including from `Origin: null`,
-which is what a `file://` page sends. So a report opened from disk can commit,
-with no server anywhere.
-
-The token lives in `sessionStorage` and nowhere else. It is never written into
-the HTML, the configuration, an export, a commit, or `localStorage`.
+  attached, or a ZIP with whatever else you choose.
+- **Failure isolation.** Every stage of the boot is wrapped. A module that
+  throws is named in the console and skipped, and the document stays readable
+  and exportable, which the test suite proves by poisoning one on purpose.
 
 ## Secrets
 
 Anything in Ryker configuration ships inside the report and is readable by
-anyone who opens it. A repository owner, a repository name and a client id are
-public by design and belong there. A client secret, an app private key or a
-token does not, and Ryker refuses to start if it finds one, because by then it
-is already exposed and the right response is to rotate it.
+anyone who opens it. A document id and a path are public by design and belong
+there. A client secret, an app private key or a token does not, and Ryker
+refuses to start if it finds one, because by then it is already exposed and the
+right response is to rotate it.
 
 Every generated artifact is scanned for credential patterns before it leaves:
-the clean HTML, the with-Ryker copy, the journal, and every member of a ZIP. That is
-defence in depth, not a substitute for never putting a credential in a report.
+the clean HTML, the with-Ryker copy, and every member of a ZIP. That is defence
+in depth, not a substitute for never putting a credential in a report.
 
 ## Building
 
@@ -153,12 +100,16 @@ node build/bundle.mjs
 
 Concatenation, on purpose. Each source file assigns onto the `Ryker` namespace
 rather than importing, so there is no build dependency, nothing to vendor, and
-output anyone can read.
+output anyone can read. One bundle, `dist/ryker.js`, 29 modules and roughly
+259 KB.
 
 The build refuses to emit when a source file breaks a rule:
 
 - Over 600 lines.
-- Missing from, or absent in, the load order.
+- Missing from, or absent in, the load order. A file no bundle loads has to be
+  named in the `UNBUNDLED` exemption with a reason, and a stale exemption whose
+  file no longer exists also fails, so an exemption cannot start hiding a real
+  orphan.
 - Containing a literal control character. Invisible in an editor and harmless in
   an external script, fatal when inlined: the HTML tokenizer rewrites NUL to
   U+FFFD in script data and the script silently never runs. This check exists
@@ -166,27 +117,49 @@ The build refuses to emit when a source file breaks a rule:
 - Containing `</script`, `<script` or `<!--`, which move the tokenizer out of
   script-data state and swallow the rest of the document.
 
+## Testing
+
+```bash
+node ../test/run.mjs
+```
+
+Real Chrome over the DevTools Protocol, driven through Node's built-in
+`WebSocket`. No `package.json`, no `node_modules`, nothing vendored. Set
+`RYKER_CHROME` if Chrome is not at `/usr/bin/google-chrome`.
+
+The suite loads `test/fixtures/report.html`, captures the document before Ryker
+exists, injects the bundle, and then requires that a clean export is
+character-for-character identical to that capture. Everything Ryker adds has to
+come back out: the chrome element, the stylesheet, the editable attributes, the
+block stamps and the offsets it sets on the root element. The fixture also pins
+which elements are editable, so a change to the exclusion rules cannot pass by
+restoring the count through some other route.
+
 ## Layout
 
 ```
 src/
-  bootstrap/   boot and failure isolation
-  config/      configuration intake, detection states, identity
-  editor/      blocks, sanitiser, contenteditable, save flow
-  comments/    anchoring, highlighting, state, selection
-  revisions/   journal, diff, review
-  storage/     adapter, local, folder, github
-  export/      html, zip, packager
-  security/    credential scan
-  ui/          styles, shadow shell, toolbar, panel, dialogs
-  github/      onboarding
+  bootstrap/     boot, failure isolation, toolbar
+  config/        configuration intake and detection states
+  editor/        blocks, sanitiser, contenteditable, outline, move
+  instructions/  the instruction set and the change-request browser
+  export/        html, zip, packager
+  storage/       the change-request log, and recovery from the old build
+  security/      credential scan
+  ui/            styles, shadow shell, rail, pane, dialogs
+  utils/         dom helpers
 build/bundle.mjs
 dist/ryker.js
+test/
 ```
 
 ## Not in this version
 
-Google Drive and Docs export, pull request workflow, simultaneous multiplayer
-editing, a source code editor, and any Ryker-hosted account or storage. The
-Google work is scoped separately in
-`../.data/sow/_staging/sow-005-ryker-google-docs-export.md`.
+Markdown, publish, the app and the Chrome extension are scoped in
+`../.data/sow/0_queue/sow-006-ryker-one-product-app-and-markdown.md` and
+`../.data/sow/0_queue/sow-007-ryker-chrome-extension.md`. Google Drive and Docs
+export is staged in `../.data/sow/_staging/sow-005-ryker-google-docs-export.md`.
+
+Comments, the revision journal, revision review and the GitHub backend were
+built and then decommissioned on 2026-08-16, per sow-006. They are recoverable
+at the `v0.1.0-two-builds` tag.
