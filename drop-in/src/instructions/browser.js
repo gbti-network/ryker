@@ -115,7 +115,7 @@ Ryker.browser = (function () {
   function offerToTurnOn() {
     Ryker.dialog.open({
       title: 'Change requests are not being logged',
-      body: '<p>Ryker Lite can write a copy of the instructions to a folder every time you ' +
+      body: '<p>Ryker can write a copy of the instructions to a folder every time you ' +
         'save, so the change requests build into a record rather than living only in this ' +
         'tab.</p>' +
         '<div class="note"><b>The folder has to be granted once.</b> A browser cannot read or ' +
@@ -127,7 +127,7 @@ Ryker.browser = (function () {
           label: 'Choose folder', primary: true,
           action: function () {
             Ryker.logger.choose().then(function (ok) {
-              Ryker.lite.sync();
+              Ryker.boot.sync();
               if (ok) open();
             });
           }

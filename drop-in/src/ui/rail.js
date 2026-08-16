@@ -388,7 +388,7 @@ Ryker.rail = (function () {
 
   function reflow() { if (open) Ryker.shell.setEdgeSpace(node, 'left'); }
 
-  // ---- resizing, mirrored from lite/pane.js -------------------------------
+  // ---- resizing, mirrored from ui/pane.js -------------------------------
 
   function applyWidth(px) {
     var max = Math.max(MIN_W, document.documentElement.clientWidth - 320);

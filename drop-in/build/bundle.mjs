@@ -51,12 +51,12 @@ const MODULES = [
   'editor/outline.js',
   'editor/move.js',
   'ui/rail.js',
-  'lite/instructions.js',
-  'lite/logger.js',
-  'lite/browser.js',
-  'lite/pane.js',
-  'lite/recover.js',
-  'lite/lite.js'
+  'instructions/instructions.js',
+  'storage/logger.js',
+  'instructions/browser.js',
+  'ui/pane.js',
+  'storage/recover.js',
+  'bootstrap/boot.js'
 ];
 
 const TARGETS = {

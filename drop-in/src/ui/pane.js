@@ -1,5 +1,5 @@
-// The instruction pane. Open by default, because in ryker-lite it is the point
-// of the tool rather than a panel you go and find.
+// The instruction pane. Open by default, because it is the point of the tool
+// rather than a panel you go and find.
 Ryker.pane = (function () {
   'use strict';
 
@@ -201,7 +201,7 @@ Ryker.pane = (function () {
   }
 
   // Clearing throws away every edit made this session and cannot be undone,
-  // because lite keeps no revisions by design. So the warning leads with the
+  // because Ryker keeps no revisions by design. So the warning leads with the
   // consequence and offers the copy button in the same breath, rather than
   // telling someone to go and do it first.
   function confirmClear() {
@@ -250,7 +250,7 @@ Ryker.pane = (function () {
     if (Ryker.recover) Ryker.recover.dismiss();
     dirtyText = false;
     refresh(true);
-    Ryker.lite.sync();
+    Ryker.boot.sync();
     Ryker.dialog.alert('Document reset', 'Every edit from this session has been discarded.', 'ok');
   }
 
@@ -263,7 +263,7 @@ Ryker.pane = (function () {
     var open = node.style.display === 'none';
     node.style.display = open ? 'flex' : 'none';
     if (open) reflow(); else Ryker.shell.releasePanelSpace();
-    Ryker.lite.sync();
+    Ryker.boot.sync();
   }
 
   function isOpen() { return !!node && node.style.display !== 'none'; }

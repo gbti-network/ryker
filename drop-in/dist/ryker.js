@@ -9,7 +9,7 @@
  *   editor/sanitize.js  (174 lines)
  *   editor/blocks.js  (305 lines)
  *   export/zip.js  (142 lines)
- *   export/html.js  (127 lines)
+ *   export/html.js  (128 lines)
  *   export/packager.js  (208 lines)
  *   ui/styles.js  (444 lines)
  *   ui/shell.js  (190 lines)
@@ -26,12 +26,12 @@
  *   editor/outline.js  (182 lines)
  *   editor/move.js  (322 lines)
  *   ui/rail.js  (435 lines)
- *   lite/instructions.js  (458 lines)
- *   lite/logger.js  (285 lines)
- *   lite/browser.js  (141 lines)
- *   lite/pane.js  (278 lines)
- *   lite/recover.js  (121 lines)
- *   lite/lite.js  (365 lines)
+ *   instructions/instructions.js  (460 lines)
+ *   storage/logger.js  (285 lines)
+ *   instructions/browser.js  (141 lines)
+ *   ui/pane.js  (278 lines)
+ *   storage/recover.js  (126 lines)
+ *   bootstrap/boot.js  (370 lines)
  *
  * Classic script by design: module scripts do not load from file:// URLs,
  * and a report handed over as a ZIP is opened from disk.
@@ -1043,9 +1043,10 @@
       // contains, so neither the body pass above nor the querySelectorAll below
       // could ever have reached it. shell.js sets both of these on
       // documentElement when the toolbar claims vertical space, and releases them
-      // only on collapse. The full build starts collapsed and never set them, so
-      // this shipped invisibly; Lite starts expanded, so EVERY Lite export
-      // carried them. Found by the fixture harness, 2026-08-16.
+      // only on collapse. The build that has since been decommissioned started
+      // collapsed and never set them, so this shipped invisibly for months; the
+      // surviving build starts expanded, so every export carried them. Found by
+      // the fixture harness on its first run, 2026-08-16.
       doc.style.removeProperty('--ryker-offset');
       doc.style.removeProperty('scroll-padding-top');
       if (!doc.getAttribute('style')) doc.removeAttribute('style');
@@ -1620,7 +1621,7 @@
       '.panel .foot{padding:var(--rk-s3) var(--rk-s4);border-top:1px solid var(--rk-line);',
       '  display:flex;gap:6px;flex-wrap:wrap;background:var(--rk-bg2)}',
 
-      // ---- ryker-lite instruction pane --------------------------------------
+      // ---- instruction pane --------------------------------------
       '.pane{position:fixed;top:var(--ryker-offset,0px);right:0;bottom:0;width:430px;max-width:94vw;',
       '  z-index:2147482900;background:var(--rk-bg);border-left:1px solid var(--rk-line);',
       '  display:flex;flex-direction:column;box-shadow:var(--rk-sh-xl)}',
@@ -2199,7 +2200,7 @@
 
 
     // Shown when the credential scan stops an export. Lives here rather than with
-    // the save flow because the packager and ryker-lite both reach it and neither
+    // the save flow because the packager and the instruction pane both reach it and neither
     // has a save flow.
     function leak(hits) {
       var rows = (hits || []).map(function (h) {
@@ -4615,7 +4616,7 @@
 
     function reflow() { if (open) Ryker.shell.setEdgeSpace(node, 'left'); }
 
-    // ---- resizing, mirrored from lite/pane.js -------------------------------
+    // ---- resizing, mirrored from ui/pane.js -------------------------------
 
     function applyWidth(px) {
       var max = Math.max(MIN_W, document.documentElement.clientWidth - 320);
@@ -4661,13 +4662,15 @@
   })();
 
 
-  /* ---- lite/instructions.js -------------------------------------- */
+  /* ---- instructions/instructions.js ------------------------------ */
   // Turns a session's edits into a prompt an AI can act on.
   //
-  // This is what ryker-lite exists for. The full editor records revisions so a
-  // person can review history; lite records nothing durable and instead describes
-  // the difference between the document as authored and the document as it now
-  // stands, in terms someone can apply to the source file.
+  // This is what Ryker exists for. Nothing durable is recorded anywhere; what is
+  // produced instead is a description of the difference between the document as
+  // authored and the document as it now stands, in terms someone can apply to the
+  // source file. On a report with a known source that description can be applied
+  // for you, and on a page whose source Ryker cannot reach it is the only output
+  // there could be, which is why it is the product rather than a fallback.
   //
   // Two rules govern the output. Everything is expressed against the ORIGINAL
   // document, so five edits to one paragraph read as one change from the text
@@ -5121,7 +5124,7 @@
   })();
 
 
-  /* ---- lite/logger.js -------------------------------------------- */
+  /* ---- storage/logger.js ----------------------------------------- */
   // Writing a copy of the instructions to disk on every save, as training data.
   //
   // "Silently" is achievable, with one honest caveat stated up front: a browser
@@ -5281,7 +5284,7 @@
       var edits = Ryker.instructions.edits();
       return {
         rykerVersion: Ryker.VERSION,
-        build: Ryker.BUILD || 'Ryker Lite',
+        build: Ryker.BUILD || 'Ryker',
         documentId: cfg.RYKER_DOCUMENT_ID,
         documentPath: cfg.RYKER_DOCUMENT_PATH,
         documentTitle: document.title,
@@ -5408,7 +5411,7 @@
   })();
 
 
-  /* ---- lite/browser.js ------------------------------------------- */
+  /* ---- instructions/browser.js ----------------------------------- */
   // Browsing the change requests already written for this document.
   //
   // The log is a folder of JSON files. Somebody who wants to look at what they
@@ -5526,7 +5529,7 @@
     function offerToTurnOn() {
       Ryker.dialog.open({
         title: 'Change requests are not being logged',
-        body: '<p>Ryker Lite can write a copy of the instructions to a folder every time you ' +
+        body: '<p>Ryker can write a copy of the instructions to a folder every time you ' +
           'save, so the change requests build into a record rather than living only in this ' +
           'tab.</p>' +
           '<div class="note"><b>The folder has to be granted once.</b> A browser cannot read or ' +
@@ -5538,7 +5541,7 @@
             label: 'Choose folder', primary: true,
             action: function () {
               Ryker.logger.choose().then(function (ok) {
-                Ryker.lite.sync();
+                Ryker.boot.sync();
                 if (ok) open();
               });
             }
@@ -5551,9 +5554,9 @@
   })();
 
 
-  /* ---- lite/pane.js ---------------------------------------------- */
-  // The instruction pane. Open by default, because in ryker-lite it is the point
-  // of the tool rather than a panel you go and find.
+  /* ---- ui/pane.js ------------------------------------------------ */
+  // The instruction pane. Open by default, because it is the point of the tool
+  // rather than a panel you go and find.
   Ryker.pane = (function () {
     'use strict';
 
@@ -5755,7 +5758,7 @@
     }
 
     // Clearing throws away every edit made this session and cannot be undone,
-    // because lite keeps no revisions by design. So the warning leads with the
+    // because Ryker keeps no revisions by design. So the warning leads with the
     // consequence and offers the copy button in the same breath, rather than
     // telling someone to go and do it first.
     function confirmClear() {
@@ -5804,7 +5807,7 @@
       if (Ryker.recover) Ryker.recover.dismiss();
       dirtyText = false;
       refresh(true);
-      Ryker.lite.sync();
+      Ryker.boot.sync();
       Ryker.dialog.alert('Document reset', 'Every edit from this session has been discarded.', 'ok');
     }
 
@@ -5817,7 +5820,7 @@
       var open = node.style.display === 'none';
       node.style.display = open ? 'flex' : 'none';
       if (open) reflow(); else Ryker.shell.releasePanelSpace();
-      Ryker.lite.sync();
+      Ryker.boot.sync();
     }
 
     function isOpen() { return !!node && node.style.display !== 'none'; }
@@ -5831,18 +5834,23 @@
   })();
 
 
-  /* ---- lite/recover.js ------------------------------------------- */
-  // Finding work left behind by the full build.
+  /* ---- storage/recover.js ---------------------------------------- */
+  // Finding work left behind by the build that was decommissioned.
   //
-  // The full editor saves a revision journal into browser storage under this
-  // document's id. Lite has no storage adapter and never reads it, so switching a
-  // report from one build to the other makes previously saved edits look like they
-  // vanished: the file loads pristine and nothing says why.
+  // Until 2026-08-16 a second build saved a revision journal into browser storage
+  // under this document's id. That build is gone and nothing reads the key any
+  // more, so a report last edited with it would load pristine with previously
+  // saved edits looking as though they had simply vanished, and nothing saying
+  // why.
   //
-  // Rather than pretend that cannot happen, lite looks for the key directly, says
+  // Rather than pretend that cannot happen, this looks for the key directly, says
   // what it found, and offers to bring the work across as a starting point. It
-  // reads and never writes, so declining leaves the saved journal exactly as it
-  // was, still there for the full build.
+  // reads and never writes, so declining leaves the stored journal exactly as it
+  // was.
+  //
+  // This is a migration path with an expiry rather than a feature. Once no report
+  // in circulation has a journal in browser storage, the module and its entry in
+  // the bundle can go.
   Ryker.recover = (function () {
     'use strict';
 
@@ -5942,7 +5950,7 @@
       Ryker.editable.rebase();
       Ryker.pane.refresh(true);
       if (!Ryker.pane.isOpen()) Ryker.pane.toggle();
-      Ryker.lite.sync();
+      Ryker.boot.sync();
 
       Ryker.dialog.alert('Edits restored',
         changes.length + ' block(s) applied and folded into the instructions.' +
@@ -5954,15 +5962,20 @@
   })();
 
 
-  /* ---- lite/lite.js ---------------------------------------------- */
-  // Ryker Lite: the toolbar and boot sequence for the instruction-writing build.
+  /* ---- bootstrap/boot.js ----------------------------------------- */
+  // The entry point: boot sequence, failure isolation and the toolbar.
   //
-  // Lite shares the shell, styles, dialogs, editor, sanitiser and export code with
-  // the full build. What it drops is everything durable: no journal, no revision
-  // browser, no comment engine, no storage backends. A save here does not write
-  // anywhere. It folds the edit into a set of instructions in the pane, which is
-  // the artifact the person actually leaves with.
-  Ryker.lite = (function () {
+  // Nothing here is durable, by design rather than by omission. No journal, no
+  // revision browser, no comment engine, no storage backend. A save writes
+  // nowhere. It folds the edit into a set of instructions in the pane, and that
+  // text is the artifact the person leaves with.
+  //
+  // This was two files until the 2026-08-16 decommission: bootstrap/boot.js
+  // booted the full build and ui/toolbar.js drew its bar, while the instruction
+  // build carried its own smaller copy of both in lite/lite.js. That build is now
+  // the only build, so its copy took this name. The two-build tree is at the
+  // v0.1.0-two-builds tag if the older shape is ever needed.
+  Ryker.boot = (function () {
     'use strict';
 
     var handle = null, bar = null, expanded = false;
@@ -5997,7 +6010,7 @@
       if (bar) return;
 
       handle = d().el('button', {
-        class: 'handle', title: 'Open Ryker Lite', 'aria-expanded': 'false',
+        class: 'handle', title: 'Open Ryker', 'aria-expanded': 'false',
         onclick: function () { expand(true); }
       }, [
         d().el('span', { class: 'dot' }),
@@ -6006,7 +6019,7 @@
       ]);
       Ryker.shell.add(handle);
 
-      // No Edit toggle. Lite exists to edit, and a mode switch that is always in
+      // No Edit toggle. Ryker exists to edit, and a mode switch that is always in
       // the same position is a control nobody ever needs to touch.
       els.save = d().el('button', { class: 'rk', text: 'Save', onclick: save });
       els.pane = d().el('button', { class: 'rk count-only',
@@ -6037,9 +6050,9 @@
       }, 'ghost rail-toggle');
       Ryker.rail.onToggle(sync);
 
-      bar = d().el('div', { class: 'bar', role: 'toolbar', 'aria-label': 'Ryker Lite' }, [
+      bar = d().el('div', { class: 'bar', role: 'toolbar', 'aria-label': 'Ryker' }, [
         els.outline,
-        d().el('span', { class: 'brand', text: 'Ryker Lite' }),
+        d().el('span', { class: 'brand', text: 'Ryker' }),
         d().el('span', { class: 'spacer' }),
         els.note, els.more, els.pane, els.collapse, els.save
       ]);
@@ -6135,7 +6148,7 @@
       Ryker.pane.reflow();
     }
 
-    // A save in lite writes nothing. It takes the edits made since the last one,
+    // A save writes nothing. It takes the edits made since the last one,
     // folds them into the instruction set, and rebases so the next save records
     // only what changed after this point. The instructions themselves still quote
     // the document as authored, not as it was at the previous save.
@@ -6278,7 +6291,7 @@
         if (Ryker.dialog.isOpen()) { Ryker.dialog.closeTop(); e.stopPropagation(); e.preventDefault(); }
       }, true);
 
-      // Lite opens ready to work and stays that way: expanded, editing, pane
+      // Ryker opens ready to work and stays that way: expanded, editing, pane
       // showing. Its whole purpose is the pane, so starting collapsed would hide
       // the point of it, and a mode switch would only ever be turned back on.
       expand(true);
@@ -6307,11 +6320,11 @@
   // history.js calls this behind an `if (Ryker.log)` guard. bootstrap/boot.js used
   // to define it and no longer exists, so without this line the guard is
   // permanently false and the diagnostic silently does nothing.
-  Ryker.log = Ryker.lite.log;
+  Ryker.log = Ryker.boot.log;
 
   (function () {
     'use strict';
-    function go() { Ryker.lite.start(); }
+    function go() { Ryker.boot.start(); }
     function schedule() {
       if (typeof requestAnimationFrame === 'function') requestAnimationFrame(go);
       setTimeout(go, 50);

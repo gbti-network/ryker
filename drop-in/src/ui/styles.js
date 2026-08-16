@@ -298,7 +298,7 @@ Ryker.styles = (function () {
     '.panel .foot{padding:var(--rk-s3) var(--rk-s4);border-top:1px solid var(--rk-line);',
     '  display:flex;gap:6px;flex-wrap:wrap;background:var(--rk-bg2)}',
 
-    // ---- ryker-lite instruction pane --------------------------------------
+    // ---- instruction pane --------------------------------------
     '.pane{position:fixed;top:var(--ryker-offset,0px);right:0;bottom:0;width:430px;max-width:94vw;',
     '  z-index:2147482900;background:var(--rk-bg);border-left:1px solid var(--rk-line);',
     '  display:flex;flex-direction:column;box-shadow:var(--rk-sh-xl)}',

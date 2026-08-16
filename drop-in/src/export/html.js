@@ -60,9 +60,10 @@ Ryker.exportHtml = (function () {
     // contains, so neither the body pass above nor the querySelectorAll below
     // could ever have reached it. shell.js sets both of these on
     // documentElement when the toolbar claims vertical space, and releases them
-    // only on collapse. The full build starts collapsed and never set them, so
-    // this shipped invisibly; Lite starts expanded, so EVERY Lite export
-    // carried them. Found by the fixture harness, 2026-08-16.
+    // only on collapse. The build that has since been decommissioned started
+    // collapsed and never set them, so this shipped invisibly for months; the
+    // surviving build starts expanded, so every export carried them. Found by
+    // the fixture harness on its first run, 2026-08-16.
     doc.style.removeProperty('--ryker-offset');
     doc.style.removeProperty('scroll-padding-top');
     if (!doc.getAttribute('style')) doc.removeAttribute('style');

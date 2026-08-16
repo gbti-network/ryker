@@ -1,14 +1,19 @@
-// Finding work left behind by the full build.
+// Finding work left behind by the build that was decommissioned.
 //
-// The full editor saves a revision journal into browser storage under this
-// document's id. Lite has no storage adapter and never reads it, so switching a
-// report from one build to the other makes previously saved edits look like they
-// vanished: the file loads pristine and nothing says why.
+// Until 2026-08-16 a second build saved a revision journal into browser storage
+// under this document's id. That build is gone and nothing reads the key any
+// more, so a report last edited with it would load pristine with previously
+// saved edits looking as though they had simply vanished, and nothing saying
+// why.
 //
-// Rather than pretend that cannot happen, lite looks for the key directly, says
+// Rather than pretend that cannot happen, this looks for the key directly, says
 // what it found, and offers to bring the work across as a starting point. It
-// reads and never writes, so declining leaves the saved journal exactly as it
-// was, still there for the full build.
+// reads and never writes, so declining leaves the stored journal exactly as it
+// was.
+//
+// This is a migration path with an expiry rather than a feature. Once no report
+// in circulation has a journal in browser storage, the module and its entry in
+// the bundle can go.
 Ryker.recover = (function () {
   'use strict';
 
@@ -108,7 +113,7 @@ Ryker.recover = (function () {
     Ryker.editable.rebase();
     Ryker.pane.refresh(true);
     if (!Ryker.pane.isOpen()) Ryker.pane.toggle();
-    Ryker.lite.sync();
+    Ryker.boot.sync();
 
     Ryker.dialog.alert('Edits restored',
       changes.length + ' block(s) applied and folded into the instructions.' +

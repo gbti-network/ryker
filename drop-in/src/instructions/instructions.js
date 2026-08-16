@@ -1,9 +1,11 @@
 // Turns a session's edits into a prompt an AI can act on.
 //
-// This is what ryker-lite exists for. The full editor records revisions so a
-// person can review history; lite records nothing durable and instead describes
-// the difference between the document as authored and the document as it now
-// stands, in terms someone can apply to the source file.
+// This is what Ryker exists for. Nothing durable is recorded anywhere; what is
+// produced instead is a description of the difference between the document as
+// authored and the document as it now stands, in terms someone can apply to the
+// source file. On a report with a known source that description can be applied
+// for you, and on a page whose source Ryker cannot reach it is the only output
+// there could be, which is why it is the product rather than a fallback.
 //
 // Two rules govern the output. Everything is expressed against the ORIGINAL
 // document, so five edits to one paragraph read as one change from the text

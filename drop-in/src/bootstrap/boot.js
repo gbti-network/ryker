@@ -1,11 +1,16 @@
-// Ryker Lite: the toolbar and boot sequence for the instruction-writing build.
+// The entry point: boot sequence, failure isolation and the toolbar.
 //
-// Lite shares the shell, styles, dialogs, editor, sanitiser and export code with
-// the full build. What it drops is everything durable: no journal, no revision
-// browser, no comment engine, no storage backends. A save here does not write
-// anywhere. It folds the edit into a set of instructions in the pane, which is
-// the artifact the person actually leaves with.
-Ryker.lite = (function () {
+// Nothing here is durable, by design rather than by omission. No journal, no
+// revision browser, no comment engine, no storage backend. A save writes
+// nowhere. It folds the edit into a set of instructions in the pane, and that
+// text is the artifact the person leaves with.
+//
+// This was two files until the 2026-08-16 decommission: bootstrap/boot.js
+// booted the full build and ui/toolbar.js drew its bar, while the instruction
+// build carried its own smaller copy of both in lite/lite.js. That build is now
+// the only build, so its copy took this name. The two-build tree is at the
+// v0.1.0-two-builds tag if the older shape is ever needed.
+Ryker.boot = (function () {
   'use strict';
 
   var handle = null, bar = null, expanded = false;
@@ -40,7 +45,7 @@ Ryker.lite = (function () {
     if (bar) return;
 
     handle = d().el('button', {
-      class: 'handle', title: 'Open Ryker Lite', 'aria-expanded': 'false',
+      class: 'handle', title: 'Open Ryker', 'aria-expanded': 'false',
       onclick: function () { expand(true); }
     }, [
       d().el('span', { class: 'dot' }),
@@ -49,7 +54,7 @@ Ryker.lite = (function () {
     ]);
     Ryker.shell.add(handle);
 
-    // No Edit toggle. Lite exists to edit, and a mode switch that is always in
+    // No Edit toggle. Ryker exists to edit, and a mode switch that is always in
     // the same position is a control nobody ever needs to touch.
     els.save = d().el('button', { class: 'rk', text: 'Save', onclick: save });
     els.pane = d().el('button', { class: 'rk count-only',
@@ -80,9 +85,9 @@ Ryker.lite = (function () {
     }, 'ghost rail-toggle');
     Ryker.rail.onToggle(sync);
 
-    bar = d().el('div', { class: 'bar', role: 'toolbar', 'aria-label': 'Ryker Lite' }, [
+    bar = d().el('div', { class: 'bar', role: 'toolbar', 'aria-label': 'Ryker' }, [
       els.outline,
-      d().el('span', { class: 'brand', text: 'Ryker Lite' }),
+      d().el('span', { class: 'brand', text: 'Ryker' }),
       d().el('span', { class: 'spacer' }),
       els.note, els.more, els.pane, els.collapse, els.save
     ]);
@@ -178,7 +183,7 @@ Ryker.lite = (function () {
     Ryker.pane.reflow();
   }
 
-  // A save in lite writes nothing. It takes the edits made since the last one,
+  // A save writes nothing. It takes the edits made since the last one,
   // folds them into the instruction set, and rebases so the next save records
   // only what changed after this point. The instructions themselves still quote
   // the document as authored, not as it was at the previous save.
@@ -321,7 +326,7 @@ Ryker.lite = (function () {
       if (Ryker.dialog.isOpen()) { Ryker.dialog.closeTop(); e.stopPropagation(); e.preventDefault(); }
     }, true);
 
-    // Lite opens ready to work and stays that way: expanded, editing, pane
+    // Ryker opens ready to work and stays that way: expanded, editing, pane
     // showing. Its whole purpose is the pane, so starting collapsed would hide
     // the point of it, and a mode switch would only ever be turned back on.
     expand(true);
@@ -350,11 +355,11 @@ Ryker.lite = (function () {
 // history.js calls this behind an `if (Ryker.log)` guard. bootstrap/boot.js used
 // to define it and no longer exists, so without this line the guard is
 // permanently false and the diagnostic silently does nothing.
-Ryker.log = Ryker.lite.log;
+Ryker.log = Ryker.boot.log;
 
 (function () {
   'use strict';
-  function go() { Ryker.lite.start(); }
+  function go() { Ryker.boot.start(); }
   function schedule() {
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(go);
     setTimeout(go, 50);

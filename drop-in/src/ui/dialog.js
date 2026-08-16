@@ -102,7 +102,7 @@ Ryker.dialog = (function () {
 
 
   // Shown when the credential scan stops an export. Lives here rather than with
-  // the save flow because the packager and ryker-lite both reach it and neither
+  // the save flow because the packager and the instruction pane both reach it and neither
   // has a save flow.
   function leak(hits) {
     var rows = (hits || []).map(function (h) {

@@ -157,7 +157,7 @@ Ryker.logger = (function () {
     var edits = Ryker.instructions.edits();
     return {
       rykerVersion: Ryker.VERSION,
-      build: Ryker.BUILD || 'Ryker Lite',
+      build: Ryker.BUILD || 'Ryker',
       documentId: cfg.RYKER_DOCUMENT_ID,
       documentPath: cfg.RYKER_DOCUMENT_PATH,
       documentTitle: document.title,

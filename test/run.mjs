@@ -134,7 +134,7 @@ async function runBuild(sess, file) {
   // --- an edit becomes exactly one instruction ------------------------------
 
   // Capability, not name. This was a name test until the decommission renamed
-  // the only surviving build from "Ryker Lite" to "Ryker", which would have
+  // the only surviving build from "Ryker" to "Ryker", which would have
   // silently skipped these three checks at exactly the moment they mattered.
   const hasInstructions = await evaluate(sess,
     `!!(window.Ryker && Ryker.instructions && Ryker.pane)`);
@@ -149,7 +149,7 @@ async function runBuild(sess, file) {
       hit.node.textContent = 'List item alpha, edited';
       Ryker.editable.touch();
       if (!Ryker.editable.isDirty()) return { error: 'edit did not mark the document dirty' };
-      Ryker.lite.save();
+      Ryker.boot.save();
       return {
         edits: Ryker.instructions.edits().length,
         pane: Ryker.pane.value()
@@ -173,7 +173,7 @@ async function runBuild(sess, file) {
 
 // Spec section 42: "Ryker must not be able to destroy the report merely because
 // a module fails." The guard() wrapper that implements this went with
-// bootstrap/boot.js in the decommission and was restored into lite.js, so it is
+// bootstrap/boot.js in the decommission and was restored into bootstrap/boot.js, so it is
 // asserted rather than assumed. One initialiser is poisoned in the injected
 // bundle and Ryker still has to mount, stay usable and name the failure.
 async function runFailureIsolation(sess, file) {
@@ -198,7 +198,7 @@ async function runFailureIsolation(sess, file) {
 
   const state = await evaluate(sess, `({
     mounted: !!document.getElementById('ryker-root'),
-    problems: Ryker.lite.problems(),
+    problems: Ryker.boot.problems(),
     editable: Ryker.blocks.all().length,
     exported: Ryker.exportHtml.clean()
   })`);
@@ -215,7 +215,7 @@ async function runFailureIsolation(sess, file) {
     state.exported === pristine ? null : firstDifference(pristine, state.exported));
 }
 
-const bundles = ['ryker.js', 'ryker-lite.js'].filter((f) => existsSync(join(DIST, f)));
+const bundles = ['ryker.js'].filter((f) => existsSync(join(DIST, f)));
 if (!bundles.length) {
   console.error('No bundle found in drop-in/dist. Run: node drop-in/build/bundle.mjs');
   process.exit(1);
