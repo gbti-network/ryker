@@ -79,12 +79,6 @@ Ryker.formatbar = (function () {
       linkBtn = act(null, 'Link', function () { Ryker.links.open(lastRange); }, 'link'),
       act(null, 'Remove formatting', function () { Ryker.editable.format('removeFormat'); }, 'unlink')
     ];
-    if (Ryker.select) {
-      formatParts.push(d().el('span', { class: 'fb-sep' }));
-      formatParts.push(act(null, 'Comment on this text', function () {
-        Ryker.select.compose(lastRange);
-      }, 'copy'));
-    }
 
     node = d().el('div', { class: 'formatbar', role: 'toolbar', 'aria-label': 'Formatting' },
       formatParts.concat([d().el('span', { class: 'fb-sep fb-kill-sep' }), killBtn]));

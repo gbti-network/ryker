@@ -104,20 +104,6 @@ Ryker.exportHtml = (function () {
     return p.replace(/\.html?$/i, '');
   }
 
-  // The journal as a portable file, so someone holding only the ZIP can hand
-  // their comments back to the author.
-  function journalJson() {
-    if (!Ryker.journal) return null;
-    var cfg = Ryker.config.load();
-    return JSON.stringify({
-      documentId: cfg.RYKER_DOCUMENT_ID,
-      documentPath: cfg.RYKER_DOCUMENT_PATH,
-      exportedAt: Ryker.dom.now(),
-      rykerVersion: Ryker.VERSION,
-      records: Ryker.journal.serialize()
-    }, null, 2);
-  }
-
   function manifest(files) {
     var cfg = Ryker.config.load();
     return JSON.stringify({
@@ -135,6 +121,6 @@ Ryker.exportHtml = (function () {
   return {
     clean: clean, withRyker: withRyker, scanned: scanned,
     download: download, baseName: baseName,
-    journalJson: journalJson, manifest: manifest
+    manifest: manifest
   };
 })();

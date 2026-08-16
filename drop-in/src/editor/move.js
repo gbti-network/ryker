@@ -296,7 +296,6 @@ Ryker.move = (function () {
     // it untouched.
     Ryker.history.record({ label: 'move', undo: back, redo: put });
     if (Ryker.pick) Ryker.pick.clear();
-    if (Ryker.comments) Ryker.comments.reanchor();
     Ryker.editable.touch();
     return null;
   }

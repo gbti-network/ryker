@@ -105,7 +105,6 @@ Ryker.links = (function () {
       redo: function () { block.innerHTML = afterHtml; }
     });
     block.classList.add('ryker-dirty');
-    if (Ryker.comments) Ryker.comments.reanchor();
     Ryker.editable.touch();
   }
 

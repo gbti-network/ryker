@@ -133,7 +133,6 @@ Ryker.editable = (function () {
     clone.focus();
 
     nodeAfterSplit = node.innerHTML;
-    if (Ryker.comments) Ryker.comments.reanchor();
     emit();
   }
 
@@ -209,7 +208,6 @@ Ryker.editable = (function () {
     });
 
     place(made, 'end');
-    if (Ryker.comments) Ryker.comments.reanchor();
     emit();
     return true;
   }
@@ -279,7 +277,6 @@ Ryker.editable = (function () {
           redo: function () { if (gone.parentNode) gone.parentNode.removeChild(gone); }
         });
         place(keep, 'end');
-        if (Ryker.comments) Ryker.comments.reanchor();
         emit();
         return true;
       }
@@ -325,7 +322,6 @@ Ryker.editable = (function () {
 
     keepAfter = keep.innerHTML;
     mark(keep, Ryker.blocks.blockId(keep));
-    if (Ryker.comments) Ryker.comments.reanchor();
     emit();
     return true;
   }
@@ -445,7 +441,6 @@ Ryker.editable = (function () {
     Array.prototype.forEach.call(document.querySelectorAll('.ryker-dirty'), function (n) {
       n.classList.remove('ryker-dirty');
     });
-    if (Ryker.comments) Ryker.comments.reanchor();
     emit();
   }
 
@@ -454,7 +449,6 @@ Ryker.editable = (function () {
     if (!node || html == null) return false;
     node.innerHTML = Ryker.sanitize.html(html);
     if (baseline && Ryker.blocks.htmlOf(baseline[id]) !== node.innerHTML) node.classList.add('ryker-dirty');
-    if (Ryker.comments) Ryker.comments.reanchor();
     emit();
     return true;
   }

@@ -14,6 +14,28 @@ Ryker.lite = (function () {
 
   function d() { return Ryker.dom; }
 
+  // Spec section 42: Ryker must not be able to destroy the report merely
+  // because a module fails, and the document must stay readable either way.
+  //
+  // This lived in bootstrap/boot.js, which was the full build's entry point and
+  // went with it in the decommission. Three of the five failure domains section
+  // 42 names went too (GitHub, comments, revisions, authentication), but
+  // packaging remains and so does the principle, and start() below calls eleven
+  // initialisers in a row where any one throwing would leave a half-mounted
+  // editor over someone's document. Ryker.log survived the deletion as a
+  // reference in history.js with nothing defining it, so it is restored here.
+  var problems = [];
+
+  function log(msg) {
+    problems.push(msg);
+    if (window.console && console.warn) console.warn('[ryker] ' + msg);
+  }
+
+  function guard(label, fn) {
+    try { return fn(); }
+    catch (e) { log(label + ': ' + (e && e.message)); return null; }
+  }
+
   function build() {
     if (bar) return;
 
@@ -252,7 +274,8 @@ Ryker.lite = (function () {
   function start() {
     if (started) return;
     started = true;
-    var cfg = Ryker.config.load();
+    var cfg = guard('config', function () { return Ryker.config.load(); });
+    if (!cfg) return;
     if (cfg.RYKER_ENABLED === false) return;
     if (cfg._leaked && cfg._leaked.length) {
       Ryker.shell.mount();
@@ -265,19 +288,20 @@ Ryker.lite = (function () {
       return;
     }
 
-    Ryker.shell.mount();
+    // The shell is the one stage with no fallback: everything below draws into
+    // it, so a failure here stops the boot rather than degrading it.
+    if (guard('shell', function () { Ryker.shell.mount(); return true; }) === null) return;
     // Taken before Edit Mode opens, so every instruction can quote the document
     // as authored rather than as it stood at the previous save.
-    Ryker.instructions.captureOrigin();
-    build();
-    Ryker.pane.build();
-    Ryker.formatbar.init();
-    Ryker.pick.init();
-    Ryker.multi.init();
-    Ryker.rail.build();
-    Ryker.rail.init();
-    Ryker.history.bind();
-    Ryker.tooltip.init();
+    guard('origin', function () { Ryker.instructions.captureOrigin(); });
+    guard('toolbar', build);
+    guard('pane', function () { Ryker.pane.build(); });
+    guard('formatbar', function () { Ryker.formatbar.init(); });
+    guard('pick', function () { Ryker.pick.init(); });
+    guard('multi', function () { Ryker.multi.init(); });
+    guard('rail', function () { Ryker.rail.build(); Ryker.rail.init(); });
+    guard('history', function () { Ryker.history.bind(); });
+    guard('tooltip', function () { Ryker.tooltip.init(); });
 
     Ryker.editable.onChange(sync);
     Ryker.instructions.onChange(function () { Ryker.pane.refresh(); sync(); });
@@ -317,8 +341,16 @@ Ryker.lite = (function () {
     Ryker.logger.onChange(buildMenu);
   }
 
-  return { start: start, sync: sync, save: save, expand: expand };
+  return {
+    start: start, sync: sync, save: save, expand: expand,
+    log: log, problems: function () { return problems.slice(); }
+  };
 })();
+
+// history.js calls this behind an `if (Ryker.log)` guard. bootstrap/boot.js used
+// to define it and no longer exists, so without this line the guard is
+// permanently false and the diagnostic silently does nothing.
+Ryker.log = Ryker.lite.log;
 
 (function () {
   'use strict';

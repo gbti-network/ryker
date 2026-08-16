@@ -110,7 +110,6 @@ Ryker.multi = (function () {
     Ryker.history.record({ label: 'delete', undo: put, redo: pull });
 
     if (Ryker.pick) Ryker.pick.clear();
-    if (Ryker.comments) Ryker.comments.reanchor();
     Ryker.editable.touch();
     return true;
   }

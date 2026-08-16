@@ -65,11 +65,14 @@ Ryker.packager = (function () {
     return walk(dirHandle, '').then(function () { return out; });
   }
 
-  // ryker-lite has no storage adapter at all, so the folder backend may simply
-  // not exist in this build. Packaging still works from what the document
-  // carries; only the folder-picking half is unavailable.
+  // The storage adapter went with the full build, so there is no folder backend
+  // left to ask and every caller below takes its no-folder path. This is one
+  // function rather than a guard at each call site on purpose: sow-006 Phase 2
+  // converges storage/fs.js with the handle persistence in logger.js into a
+  // single file-system module, and returning that here is the whole of putting
+  // folder access back.
   function fsBackend() {
-    return Ryker.storage ? Ryker.storage.get('fs') : null;
+    return null;
   }
 
   function open() {
@@ -100,10 +103,6 @@ Ryker.packager = (function () {
     }
 
     row(base + '.html', true, 'the report', { kind: 'report' });
-    if (Ryker.journal) {
-      row('ryker-journal.json', Ryker.journal.count() > 0,
-          Ryker.journal.count() + ' revisions', { kind: 'journal' });
-    }
 
     files.forEach(function (f) {
       row(f.name, true, f.bytes ? kb(f.bytes) : f.source, { kind: 'asset', file: f });
@@ -156,9 +155,6 @@ Ryker.packager = (function () {
         var out = Ryker.exportHtml.scanned('ryker');
         if (out.hits.length) return Promise.reject({ leak: out.hits });
         return Promise.resolve({ name: base + '.html', data: out.html });
-      }
-      if (p.kind === 'journal') {
-        return Promise.resolve({ name: 'ryker-journal.json', data: Ryker.exportHtml.journalJson() });
       }
       var f = p.file;
       if (f.handle) {

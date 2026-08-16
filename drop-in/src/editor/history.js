@@ -81,7 +81,6 @@ Ryker.history = (function () {
     try { (dir === 'undo' ? entry.undo : entry.redo)(); }
     catch (e) { if (Ryker.log) Ryker.log('history ' + dir + ': ' + e.message); }
     applying = false;
-    if (Ryker.comments) Ryker.comments.reanchor();
     emit();
   }
 

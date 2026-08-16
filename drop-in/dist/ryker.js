@@ -9,29 +9,29 @@
  *   editor/sanitize.js  (174 lines)
  *   editor/blocks.js  (305 lines)
  *   export/zip.js  (142 lines)
- *   export/html.js  (141 lines)
- *   export/packager.js  (212 lines)
+ *   export/html.js  (127 lines)
+ *   export/packager.js  (208 lines)
  *   ui/styles.js  (444 lines)
  *   ui/shell.js  (190 lines)
  *   ui/icons.js  (51 lines)
  *   ui/tooltip.js  (82 lines)
  *   ui/dialog.js  (124 lines)
  *   ui/menu.js  (104 lines)
- *   editor/editable.js  (473 lines)
- *   editor/history.js  (139 lines)
- *   editor/formatbar.js  (215 lines)
- *   editor/links.js  (174 lines)
+ *   editor/editable.js  (467 lines)
+ *   editor/history.js  (138 lines)
+ *   editor/formatbar.js  (209 lines)
+ *   editor/links.js  (173 lines)
  *   editor/pick.js  (220 lines)
- *   editor/multi.js  (172 lines)
+ *   editor/multi.js  (171 lines)
  *   editor/outline.js  (182 lines)
- *   editor/move.js  (323 lines)
+ *   editor/move.js  (322 lines)
  *   ui/rail.js  (435 lines)
  *   lite/instructions.js  (458 lines)
  *   lite/logger.js  (285 lines)
  *   lite/browser.js  (141 lines)
  *   lite/pane.js  (278 lines)
  *   lite/recover.js  (121 lines)
- *   lite/lite.js  (333 lines)
+ *   lite/lite.js  (365 lines)
  *
  * Classic script by design: module scripts do not load from file:// URLs,
  * and a report handed over as a ZIP is opened from disk.
@@ -1087,20 +1087,6 @@
       return p.replace(/\.html?$/i, '');
     }
 
-    // The journal as a portable file, so someone holding only the ZIP can hand
-    // their comments back to the author.
-    function journalJson() {
-      if (!Ryker.journal) return null;
-      var cfg = Ryker.config.load();
-      return JSON.stringify({
-        documentId: cfg.RYKER_DOCUMENT_ID,
-        documentPath: cfg.RYKER_DOCUMENT_PATH,
-        exportedAt: Ryker.dom.now(),
-        rykerVersion: Ryker.VERSION,
-        records: Ryker.journal.serialize()
-      }, null, 2);
-    }
-
     function manifest(files) {
       var cfg = Ryker.config.load();
       return JSON.stringify({
@@ -1118,7 +1104,7 @@
     return {
       clean: clean, withRyker: withRyker, scanned: scanned,
       download: download, baseName: baseName,
-      journalJson: journalJson, manifest: manifest
+      manifest: manifest
     };
   })();
 
@@ -1191,11 +1177,14 @@
       return walk(dirHandle, '').then(function () { return out; });
     }
 
-    // ryker-lite has no storage adapter at all, so the folder backend may simply
-    // not exist in this build. Packaging still works from what the document
-    // carries; only the folder-picking half is unavailable.
+    // The storage adapter went with the full build, so there is no folder backend
+    // left to ask and every caller below takes its no-folder path. This is one
+    // function rather than a guard at each call site on purpose: sow-006 Phase 2
+    // converges storage/fs.js with the handle persistence in logger.js into a
+    // single file-system module, and returning that here is the whole of putting
+    // folder access back.
     function fsBackend() {
-      return Ryker.storage ? Ryker.storage.get('fs') : null;
+      return null;
     }
 
     function open() {
@@ -1226,10 +1215,6 @@
       }
 
       row(base + '.html', true, 'the report', { kind: 'report' });
-      if (Ryker.journal) {
-        row('ryker-journal.json', Ryker.journal.count() > 0,
-            Ryker.journal.count() + ' revisions', { kind: 'journal' });
-      }
 
       files.forEach(function (f) {
         row(f.name, true, f.bytes ? kb(f.bytes) : f.source, { kind: 'asset', file: f });
@@ -1282,9 +1267,6 @@
           var out = Ryker.exportHtml.scanned('ryker');
           if (out.hits.length) return Promise.reject({ leak: out.hits });
           return Promise.resolve({ name: base + '.html', data: out.html });
-        }
-        if (p.kind === 'journal') {
-          return Promise.resolve({ name: 'ryker-journal.json', data: Ryker.exportHtml.journalJson() });
         }
         var f = p.file;
         if (f.handle) {
@@ -2480,7 +2462,6 @@
       clone.focus();
 
       nodeAfterSplit = node.innerHTML;
-      if (Ryker.comments) Ryker.comments.reanchor();
       emit();
     }
 
@@ -2556,7 +2537,6 @@
       });
 
       place(made, 'end');
-      if (Ryker.comments) Ryker.comments.reanchor();
       emit();
       return true;
     }
@@ -2626,7 +2606,6 @@
             redo: function () { if (gone.parentNode) gone.parentNode.removeChild(gone); }
           });
           place(keep, 'end');
-          if (Ryker.comments) Ryker.comments.reanchor();
           emit();
           return true;
         }
@@ -2672,7 +2651,6 @@
 
       keepAfter = keep.innerHTML;
       mark(keep, Ryker.blocks.blockId(keep));
-      if (Ryker.comments) Ryker.comments.reanchor();
       emit();
       return true;
     }
@@ -2792,7 +2770,6 @@
       Array.prototype.forEach.call(document.querySelectorAll('.ryker-dirty'), function (n) {
         n.classList.remove('ryker-dirty');
       });
-      if (Ryker.comments) Ryker.comments.reanchor();
       emit();
     }
 
@@ -2801,7 +2778,6 @@
       if (!node || html == null) return false;
       node.innerHTML = Ryker.sanitize.html(html);
       if (baseline && Ryker.blocks.htmlOf(baseline[id]) !== node.innerHTML) node.classList.add('ryker-dirty');
-      if (Ryker.comments) Ryker.comments.reanchor();
       emit();
       return true;
     }
@@ -2903,7 +2879,6 @@
       try { (dir === 'undo' ? entry.undo : entry.redo)(); }
       catch (e) { if (Ryker.log) Ryker.log('history ' + dir + ': ' + e.message); }
       applying = false;
-      if (Ryker.comments) Ryker.comments.reanchor();
       emit();
     }
 
@@ -3042,12 +3017,6 @@
         linkBtn = act(null, 'Link', function () { Ryker.links.open(lastRange); }, 'link'),
         act(null, 'Remove formatting', function () { Ryker.editable.format('removeFormat'); }, 'unlink')
       ];
-      if (Ryker.select) {
-        formatParts.push(d().el('span', { class: 'fb-sep' }));
-        formatParts.push(act(null, 'Comment on this text', function () {
-          Ryker.select.compose(lastRange);
-        }, 'copy'));
-      }
 
       node = d().el('div', { class: 'formatbar', role: 'toolbar', 'aria-label': 'Formatting' },
         formatParts.concat([d().el('span', { class: 'fb-sep fb-kill-sep' }), killBtn]));
@@ -3285,7 +3254,6 @@
         redo: function () { block.innerHTML = afterHtml; }
       });
       block.classList.add('ryker-dirty');
-      if (Ryker.comments) Ryker.comments.reanchor();
       Ryker.editable.touch();
     }
 
@@ -3688,7 +3656,6 @@
       Ryker.history.record({ label: 'delete', undo: put, redo: pull });
 
       if (Ryker.pick) Ryker.pick.clear();
-      if (Ryker.comments) Ryker.comments.reanchor();
       Ryker.editable.touch();
       return true;
     }
@@ -4232,7 +4199,6 @@
       // it untouched.
       Ryker.history.record({ label: 'move', undo: back, redo: put });
       if (Ryker.pick) Ryker.pick.clear();
-      if (Ryker.comments) Ryker.comments.reanchor();
       Ryker.editable.touch();
       return null;
     }
@@ -6005,6 +5971,28 @@
 
     function d() { return Ryker.dom; }
 
+    // Spec section 42: Ryker must not be able to destroy the report merely
+    // because a module fails, and the document must stay readable either way.
+    //
+    // This lived in bootstrap/boot.js, which was the full build's entry point and
+    // went with it in the decommission. Three of the five failure domains section
+    // 42 names went too (GitHub, comments, revisions, authentication), but
+    // packaging remains and so does the principle, and start() below calls eleven
+    // initialisers in a row where any one throwing would leave a half-mounted
+    // editor over someone's document. Ryker.log survived the deletion as a
+    // reference in history.js with nothing defining it, so it is restored here.
+    var problems = [];
+
+    function log(msg) {
+      problems.push(msg);
+      if (window.console && console.warn) console.warn('[ryker] ' + msg);
+    }
+
+    function guard(label, fn) {
+      try { return fn(); }
+      catch (e) { log(label + ': ' + (e && e.message)); return null; }
+    }
+
     function build() {
       if (bar) return;
 
@@ -6243,7 +6231,8 @@
     function start() {
       if (started) return;
       started = true;
-      var cfg = Ryker.config.load();
+      var cfg = guard('config', function () { return Ryker.config.load(); });
+      if (!cfg) return;
       if (cfg.RYKER_ENABLED === false) return;
       if (cfg._leaked && cfg._leaked.length) {
         Ryker.shell.mount();
@@ -6256,19 +6245,20 @@
         return;
       }
 
-      Ryker.shell.mount();
+      // The shell is the one stage with no fallback: everything below draws into
+      // it, so a failure here stops the boot rather than degrading it.
+      if (guard('shell', function () { Ryker.shell.mount(); return true; }) === null) return;
       // Taken before Edit Mode opens, so every instruction can quote the document
       // as authored rather than as it stood at the previous save.
-      Ryker.instructions.captureOrigin();
-      build();
-      Ryker.pane.build();
-      Ryker.formatbar.init();
-      Ryker.pick.init();
-      Ryker.multi.init();
-      Ryker.rail.build();
-      Ryker.rail.init();
-      Ryker.history.bind();
-      Ryker.tooltip.init();
+      guard('origin', function () { Ryker.instructions.captureOrigin(); });
+      guard('toolbar', build);
+      guard('pane', function () { Ryker.pane.build(); });
+      guard('formatbar', function () { Ryker.formatbar.init(); });
+      guard('pick', function () { Ryker.pick.init(); });
+      guard('multi', function () { Ryker.multi.init(); });
+      guard('rail', function () { Ryker.rail.build(); Ryker.rail.init(); });
+      guard('history', function () { Ryker.history.bind(); });
+      guard('tooltip', function () { Ryker.tooltip.init(); });
 
       Ryker.editable.onChange(sync);
       Ryker.instructions.onChange(function () { Ryker.pane.refresh(); sync(); });
@@ -6308,8 +6298,16 @@
       Ryker.logger.onChange(buildMenu);
     }
 
-    return { start: start, sync: sync, save: save, expand: expand };
+    return {
+      start: start, sync: sync, save: save, expand: expand,
+      log: log, problems: function () { return problems.slice(); }
+    };
   })();
+
+  // history.js calls this behind an `if (Ryker.log)` guard. bootstrap/boot.js used
+  // to define it and no longer exists, so without this line the guard is
+  // permanently false and the diagnostic silently does nothing.
+  Ryker.log = Ryker.lite.log;
 
   (function () {
     'use strict';

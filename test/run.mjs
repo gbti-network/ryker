@@ -171,6 +171,50 @@ async function runBuild(sess, file) {
 }
 
 
+// Spec section 42: "Ryker must not be able to destroy the report merely because
+// a module fails." The guard() wrapper that implements this went with
+// bootstrap/boot.js in the decommission and was restored into lite.js, so it is
+// asserted rather than assumed. One initialiser is poisoned in the injected
+// bundle and Ryker still has to mount, stay usable and name the failure.
+async function runFailureIsolation(sess, file) {
+  console.log(`\n${file} (failure isolation, spec section 42)`);
+  const code = readFileSync(join(DIST, file), 'utf8');
+
+  const NEEDLE = 'Ryker.tooltip.init();';
+  if (!code.includes(NEEDLE)) {
+    bad('the poison target still exists in the bundle',
+      `${NEEDLE} not found. If an initialiser was renamed, update this test rather than deleting it.`);
+    return;
+  }
+  const poisoned = code.replace(NEEDLE, `(function () { throw new Error('poisoned by the test suite'); })();`);
+
+  await navigate(sess, FIXTURE);
+  const pristine = await evaluate(sess,
+    `'<!DOCTYPE html>\\n' + document.documentElement.outerHTML`);
+  await evaluate(sess, poisoned);
+  await waitInPage(sess,
+    `!!(window.Ryker && document.getElementById('ryker-root'))`,
+    10000, 'Ryker to mount despite a failing initialiser');
+
+  const state = await evaluate(sess, `({
+    mounted: !!document.getElementById('ryker-root'),
+    problems: Ryker.lite.problems(),
+    editable: Ryker.blocks.all().length,
+    exported: Ryker.exportHtml.clean()
+  })`);
+
+  assert(state.mounted, 'a failing initialiser does not stop Ryker mounting');
+  assert(state.problems.some((p) => /poisoned by the test suite/.test(p)),
+    'the failure is recorded rather than swallowed',
+    'problems: ' + JSON.stringify(state.problems));
+  assert(state.editable === EXPECTED_EDITABLE,
+    'the document is still fully editable after a module fails',
+    state.editable === EXPECTED_EDITABLE ? null : `got ${state.editable}`);
+  assert(state.exported === pristine,
+    'the document still exports clean after a module fails',
+    state.exported === pristine ? null : firstDifference(pristine, state.exported));
+}
+
 const bundles = ['ryker.js', 'ryker-lite.js'].filter((f) => existsSync(join(DIST, f)));
 if (!bundles.length) {
   console.error('No bundle found in drop-in/dist. Run: node drop-in/build/bundle.mjs');
@@ -179,7 +223,7 @@ if (!bundles.length) {
 
 const sess = await launch();
 try {
-  for (const file of bundles) await runBuild(sess, file);
+  for (const file of bundles) { await runBuild(sess, file); await runFailureIsolation(sess, file); }
 } finally {
   await sess.close();
 }
