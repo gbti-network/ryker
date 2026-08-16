@@ -134,8 +134,8 @@ async function runBuild(sess, file) {
   // --- an edit becomes exactly one instruction ------------------------------
 
   // Capability, not name. This was a name test until the decommission renamed
-  // the only surviving build from "Ryker" to "Ryker", which would have
-  // silently skipped these three checks at exactly the moment they mattered.
+  // the only surviving build from "Ryker Lite" to plain "Ryker", which would
+  // have silently skipped these three checks at the moment they mattered most.
   const hasInstructions = await evaluate(sess,
     `!!(window.Ryker && Ryker.instructions && Ryker.pane)`);
 
@@ -172,47 +172,119 @@ async function runBuild(sess, file) {
 
 
 // Spec section 42: "Ryker must not be able to destroy the report merely because
-// a module fails." The guard() wrapper that implements this went with
-// bootstrap/boot.js in the decommission and was restored into bootstrap/boot.js, so it is
-// asserted rather than assumed. One initialiser is poisoned in the injected
-// bundle and Ryker still has to mount, stay usable and name the failure.
+// a module fails."
+//
+// Two targets, and the second is the one that matters. Poisoning the tooltip
+// proves almost nothing, because nothing after it depends on it. Poisoning a
+// call inside build() takes out the toolbar, and the tail of start() then has to
+// make the document editable anyway. That case was broken when this test was
+// first written and the test passed regardless, because it poisoned the easy
+// target and then asserted Ryker.blocks.all().length, which counts DOM
+// candidates whether or not editing was ever switched on. Both halves are fixed:
+// a target with real dependents, and an assertion that reads editing state.
+const POISON_TARGETS = [
+  { needle: 'Ryker.tooltip.init();', what: 'a leaf initialiser' },
+  { needle: 'Ryker.rail.onToggle(sync);', what: 'a call inside build(), taking the toolbar with it' }
+];
+
 async function runFailureIsolation(sess, file) {
-  console.log(`\n${file} (failure isolation, spec section 42)`);
   const code = readFileSync(join(DIST, file), 'utf8');
 
-  const NEEDLE = 'Ryker.tooltip.init();';
-  if (!code.includes(NEEDLE)) {
-    bad('the poison target still exists in the bundle',
-      `${NEEDLE} not found. If an initialiser was renamed, update this test rather than deleting it.`);
-    return;
+  for (const target of POISON_TARGETS) {
+    console.log(`\n${file} (failure isolation, poisoning ${target.what})`);
+
+    const hits = code.split(target.needle).length - 1;
+    if (hits !== 1) {
+      bad(`the poison target "${target.needle}" appears exactly once`,
+        `found ${hits} occurrence(s). If a call was renamed or duplicated, update this ` +
+        `test rather than deleting it: the target has to be load-bearing to prove anything.`);
+      continue;
+    }
+    const poisoned = code.replace(target.needle,
+      `(function () { throw new Error('poisoned by the test suite'); })();`);
+
+    await navigate(sess, FIXTURE);
+    const pristine = await evaluate(sess,
+      `'<!DOCTYPE html>\\n' + document.documentElement.outerHTML`);
+    await evaluate(sess, poisoned);
+    await waitInPage(sess,
+      `!!(window.Ryker && document.getElementById('ryker-root'))`,
+      10000, 'Ryker to mount despite a failing initialiser');
+
+    const state = await evaluate(sess, `({
+      mounted: !!document.getElementById('ryker-root'),
+      problems: Ryker.boot.problems(),
+      editingOn: Ryker.editable.isOn(),
+      contenteditable: document.querySelectorAll('[contenteditable="true"]').length,
+      exported: Ryker.exportHtml.clean()
+    })`);
+
+    assert(state.mounted, 'Ryker still mounts');
+    assert(state.problems.some((p) => /poisoned by the test suite/.test(p)),
+      'the failure is recorded rather than swallowed',
+      'problems: ' + JSON.stringify(state.problems));
+
+    // The assertion that was missing. Editing is the capability worth
+    // protecting, and it must survive a failure in anything cosmetic.
+    assert(state.editingOn, 'edit mode is still switched on');
+    assert(state.contenteditable === EXPECTED_EDITABLE,
+      `all ${EXPECTED_EDITABLE} blocks are still editable`,
+      state.contenteditable === EXPECTED_EDITABLE ? null
+        : `got ${state.contenteditable} contenteditable blocks`);
+
+    assert(state.exported === pristine,
+      'the document still exports clean',
+      state.exported === pristine ? null : firstDifference(pristine, state.exported));
   }
-  const poisoned = code.replace(NEEDLE, `(function () { throw new Error('poisoned by the test suite'); })();`);
+}
+
+// The Package dialog, driven for real.
+//
+// Every check here exists because an audit found the defect by opening the
+// dialog in a browser, which no amount of reading the source had surfaced. The
+// dialog is reachable from the toolbar's More menu and is one of five actions
+// in the shipped product, so it is worth driving rather than reasoning about.
+async function runPackager(sess, file) {
+  console.log(`\n${file} (package dialog)`);
+  const code = readFileSync(join(DIST, file), 'utf8');
 
   await navigate(sess, FIXTURE);
-  const pristine = await evaluate(sess,
-    `'<!DOCTYPE html>\\n' + document.documentElement.outerHTML`);
-  await evaluate(sess, poisoned);
-  await waitInPage(sess,
-    `!!(window.Ryker && document.getElementById('ryker-root'))`,
-    10000, 'Ryker to mount despite a failing initialiser');
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && document.getElementById('ryker-root'))`,
+    10000, 'Ryker to boot');
 
-  const state = await evaluate(sess, `({
-    mounted: !!document.getElementById('ryker-root'),
-    problems: Ryker.boot.problems(),
-    editable: Ryker.blocks.all().length,
-    exported: Ryker.exportHtml.clean()
-  })`);
+  const seen = await evaluate(sess, `(function () {
+    Ryker.packager.open();
+    var sr = document.getElementById('ryker-root').shadowRoot;
+    var note = sr.querySelector('.note');
+    return {
+      note: note ? note.textContent.trim() : null,
+      buttons: Array.prototype.map.call(sr.querySelectorAll('.modal button, .foot button'),
+        function (b) { return b.textContent.trim(); }),
+      manifestKeyKept: 'RYKER_PACKAGE_MANIFEST' in Ryker.config.load()
+    };
+  })()`);
 
-  assert(state.mounted, 'a failing initialiser does not stop Ryker mounting');
-  assert(state.problems.some((p) => /poisoned by the test suite/.test(p)),
-    'the failure is recorded rather than swallowed',
-    'problems: ' + JSON.stringify(state.problems));
-  assert(state.editable === EXPECTED_EDITABLE,
-    'the document is still fully editable after a module fails',
-    state.editable === EXPECTED_EDITABLE ? null : `got ${state.editable}`);
-  assert(state.exported === pristine,
-    'the document still exports clean after a module fails',
-    state.exported === pristine ? null : firstDifference(pristine, state.exported));
+  assert(seen.note !== null, 'the package dialog opens and carries a note',
+    seen.note === null ? 'no .note found in the shadow root' : null);
+
+  // The defect: the note told people to use "Choose report folder", a button
+  // that fsBackend() returning null means is never built and is filtered out of
+  // the button list before render.
+  const promisesFolderButton = /choose the report folder/i.test(seen.note || '');
+  const hasFolderButton = seen.buttons.some((b) => /choose report folder/i.test(b));
+  assert(promisesFolderButton === hasFolderButton,
+    'the note only names the folder button when that button is actually rendered',
+    promisesFolderButton === hasFolderButton ? null
+      : `note promises it: ${promisesFolderButton}, buttons: ${JSON.stringify(seen.buttons)}`);
+
+  // config.load() copies only keys present in DEFAULTS, so a key the packager
+  // reads but config does not declare is stripped before the packager sees it.
+  assert(seen.manifestKeyKept,
+    'RYKER_PACKAGE_MANIFEST survives config intake',
+    seen.manifestKeyKept ? null
+      : 'the packager reads this key at packager.js:37 but config.js drops it, so ' +
+        'manifestAssets() can never return a row');
 }
 
 const bundles = ['ryker.js'].filter((f) => existsSync(join(DIST, f)));
@@ -223,7 +295,7 @@ if (!bundles.length) {
 
 const sess = await launch();
 try {
-  for (const file of bundles) { await runBuild(sess, file); await runFailureIsolation(sess, file); }
+  for (const file of bundles) { await runBuild(sess, file); await runPackager(sess, file); await runFailureIsolation(sess, file); }
 } finally {
   await sess.close();
 }

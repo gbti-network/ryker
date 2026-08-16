@@ -50,7 +50,21 @@ Ryker.packager = (function () {
           if (res.done) return null;
           var e = res.value;
           var name = prefix + e.name;
-          if (e.name === '.ryker' || e.name.charAt(0) === '.') return step();
+          // Skip dotfiles, and skip the change-request log wherever it lives.
+          //
+          // This said `e.name === '.ryker'`, which was the RETIRED build's path
+          // and is redundant with the dot test on the same line anyway. The
+          // surviving logger writes to `ryker/` with no dot (logger.js LIB), so
+          // the log was not being skipped at all. It is dormant only because
+          // fsBackend() returns null and no folder can currently be listed;
+          // sow-006 Phase 2 turns listing back on, and the first "Package
+          // report" against a granted folder would have put every logged prompt
+          // into the ZIP, where the credential scan then reads all of them.
+          //
+          // Read from the logger rather than repeated here, so the two cannot
+          // drift apart again the way they just did.
+          var lib = (Ryker.logger && Ryker.logger.LIB) || 'ryker';
+          if (e.name === lib || e.name.charAt(0) === '.') return step();
           if (e.kind === 'directory') {
             return walk(e, name + '/').then(step);
           }
@@ -108,12 +122,6 @@ Ryker.packager = (function () {
       row(f.name, true, f.bytes ? kb(f.bytes) : f.source, { kind: 'asset', file: f });
     });
 
-    var note = fromFolder
-      ? '<div class="note ok">Listing the folder you granted access to, so anything added since ' +
-        'the report was built appears here too.</div>'
-      : '<div class="note">No folder access, so this lists what the document already carries ' +
-        'plus anything named in the build manifest. Choose the report folder to see the rest.</div>';
-
     var chooseBtn = null;
     var fs = fsBackend();
     if (!fromFolder && fs && fs.supported()) {
@@ -125,6 +133,22 @@ Ryker.packager = (function () {
         return false;
       } };
     }
+
+    // Built after chooseBtn, and keyed to it rather than to fromFolder, because
+    // it is the only text in this dialog and it was telling people to use a
+    // control that is filtered out of the button list. fsBackend() has returned
+    // null since the decommission, so chooseBtn is never constructed, so the
+    // sentence "Choose the report folder to see the rest" named a button that
+    // was not on screen and could not be made to appear. Now the sentence and
+    // the button arrive together or not at all, which also means sow-006
+    // Phase 2 restores both by changing fsBackend() alone.
+    var note = fromFolder
+      ? '<div class="note ok">Listing the folder you granted access to, so anything added since ' +
+        'the report was built appears here too.</div>'
+      : '<div class="note">This lists what the document already carries' +
+        (files.some(function (f) { return f.source === 'manifest'; })
+          ? ' plus anything named in the build manifest' : '') + '.' +
+        (chooseBtn ? ' Choose the report folder to see the rest.' : '') + '</div>';
 
     Ryker.dialog.open({
       title: 'Package report',

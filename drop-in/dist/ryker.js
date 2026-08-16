@@ -4,13 +4,13 @@
  *
  * Generated bundle. Do not edit. Sources, in load order:
  *   utils/dom.js  (131 lines)
- *   config/config.js  (110 lines)
+ *   config/config.js  (117 lines)
  *   security/scan.js  (64 lines)
  *   editor/sanitize.js  (174 lines)
  *   editor/blocks.js  (305 lines)
  *   export/zip.js  (142 lines)
  *   export/html.js  (128 lines)
- *   export/packager.js  (208 lines)
+ *   export/packager.js  (232 lines)
  *   ui/styles.js  (444 lines)
  *   ui/shell.js  (190 lines)
  *   ui/icons.js  (51 lines)
@@ -31,7 +31,7 @@
  *   instructions/browser.js  (141 lines)
  *   ui/pane.js  (278 lines)
  *   storage/recover.js  (126 lines)
- *   bootstrap/boot.js  (370 lines)
+ *   bootstrap/boot.js  (383 lines)
  *
  * Classic script by design: module scripts do not load from file:// URLs,
  * and a report handed over as a ZIP is opened from disk.
@@ -195,7 +195,14 @@
       RYKER_GITHUB_REPOSITORY_ID: null,
       RYKER_GITHUB_BRANCH: 'main',
       RYKER_GITHUB_CLIENT_ID: null,
-      RYKER_GOOGLE_ENABLED: false
+      RYKER_GOOGLE_ENABLED: false,
+      // Read by export/packager.js:37 to list files that belong with the report
+      // but are not inside it. It was missing from this object, and load() below
+      // copies only the keys named here, so the value was stripped out of every
+      // configuration before the packager could see it and manifestAssets() could
+      // never return a row. Nothing failed and nothing warned; the Package dialog
+      // simply offered fewer files than it promised.
+      RYKER_PACKAGE_MANIFEST: null
     };
 
     // Anything on this list is a secret and must never reach a shipped report.
@@ -1163,7 +1170,21 @@
             if (res.done) return null;
             var e = res.value;
             var name = prefix + e.name;
-            if (e.name === '.ryker' || e.name.charAt(0) === '.') return step();
+            // Skip dotfiles, and skip the change-request log wherever it lives.
+            //
+            // This said `e.name === '.ryker'`, which was the RETIRED build's path
+            // and is redundant with the dot test on the same line anyway. The
+            // surviving logger writes to `ryker/` with no dot (logger.js LIB), so
+            // the log was not being skipped at all. It is dormant only because
+            // fsBackend() returns null and no folder can currently be listed;
+            // sow-006 Phase 2 turns listing back on, and the first "Package
+            // report" against a granted folder would have put every logged prompt
+            // into the ZIP, where the credential scan then reads all of them.
+            //
+            // Read from the logger rather than repeated here, so the two cannot
+            // drift apart again the way they just did.
+            var lib = (Ryker.logger && Ryker.logger.LIB) || 'ryker';
+            if (e.name === lib || e.name.charAt(0) === '.') return step();
             if (e.kind === 'directory') {
               return walk(e, name + '/').then(step);
             }
@@ -1221,12 +1242,6 @@
         row(f.name, true, f.bytes ? kb(f.bytes) : f.source, { kind: 'asset', file: f });
       });
 
-      var note = fromFolder
-        ? '<div class="note ok">Listing the folder you granted access to, so anything added since ' +
-          'the report was built appears here too.</div>'
-        : '<div class="note">No folder access, so this lists what the document already carries ' +
-          'plus anything named in the build manifest. Choose the report folder to see the rest.</div>';
-
       var chooseBtn = null;
       var fs = fsBackend();
       if (!fromFolder && fs && fs.supported()) {
@@ -1238,6 +1253,22 @@
           return false;
         } };
       }
+
+      // Built after chooseBtn, and keyed to it rather than to fromFolder, because
+      // it is the only text in this dialog and it was telling people to use a
+      // control that is filtered out of the button list. fsBackend() has returned
+      // null since the decommission, so chooseBtn is never constructed, so the
+      // sentence "Choose the report folder to see the rest" named a button that
+      // was not on screen and could not be made to appear. Now the sentence and
+      // the button arrive together or not at all, which also means sow-006
+      // Phase 2 restores both by changing fsBackend() alone.
+      var note = fromFolder
+        ? '<div class="note ok">Listing the folder you granted access to, so anything added since ' +
+          'the report was built appears here too.</div>'
+        : '<div class="note">This lists what the document already carries' +
+          (files.some(function (f) { return f.source === 'manifest'; })
+            ? ' plus anything named in the build manifest' : '') + '.' +
+          (chooseBtn ? ' Choose the report folder to see the rest.' : '') + '</div>';
 
       Ryker.dialog.open({
         title: 'Package report',
@@ -6128,6 +6159,10 @@
     }
 
     function expand(open) {
+      // build() runs under guard(), so there may be no toolbar. sync() has always
+      // returned early on this; expand() dereferenced `bar` regardless, which is
+      // how a cosmetic failure used to take editing down with it.
+      if (!bar || !handle) return;
       expanded = !!open;
       if (!expanded && Ryker.rail && Ryker.rail.isOpen()) Ryker.rail.toggle(false);
       bar.style.display = expanded ? 'flex' : 'none';
@@ -6273,8 +6308,10 @@
       guard('history', function () { Ryker.history.bind(); });
       guard('tooltip', function () { Ryker.tooltip.init(); });
 
-      Ryker.editable.onChange(sync);
-      Ryker.instructions.onChange(function () { Ryker.pane.refresh(); sync(); });
+      guard('wire', function () {
+        Ryker.editable.onChange(sync);
+        Ryker.instructions.onChange(function () { Ryker.pane.refresh(); sync(); });
+      });
 
       document.addEventListener('keydown', function (e) {
         // Ctrl+S, or Cmd+S. Taken over because in a document with an editor
@@ -6294,10 +6331,17 @@
       // Ryker opens ready to work and stays that way: expanded, editing, pane
       // showing. Its whole purpose is the pane, so starting collapsed would hide
       // the point of it, and a mode switch would only ever be turned back on.
-      expand(true);
-      Ryker.editable.enable();
-      sync();
-      Ryker.recover.offer();
+      //
+      // Guarded stage by stage rather than as one block, and the order matters.
+      // Editing is the capability worth protecting, so it must not sit behind
+      // anything cosmetic: an earlier version of this ran the whole tail bare, and
+      // a failure inside build() left `bar` null, expand() threw dereferencing it,
+      // and the document was never made editable at all. Toolbar chrome failing
+      // now costs the toolbar and nothing else.
+      guard('expand', function () { expand(true); });
+      guard('editable', function () { Ryker.editable.enable(); });
+      guard('sync', sync);
+      guard('recover', function () { Ryker.recover.offer(); });
       Ryker.logger.resume().then(function (ok) {
         sync();
         // Asking on load is the only honest reading of "always on": the picker

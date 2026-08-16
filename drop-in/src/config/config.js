@@ -17,7 +17,14 @@ Ryker.config = (function () {
     RYKER_GITHUB_REPOSITORY_ID: null,
     RYKER_GITHUB_BRANCH: 'main',
     RYKER_GITHUB_CLIENT_ID: null,
-    RYKER_GOOGLE_ENABLED: false
+    RYKER_GOOGLE_ENABLED: false,
+    // Read by export/packager.js:37 to list files that belong with the report
+    // but are not inside it. It was missing from this object, and load() below
+    // copies only the keys named here, so the value was stripped out of every
+    // configuration before the packager could see it and manifestAssets() could
+    // never return a row. Nothing failed and nothing warned; the Package dialog
+    // simply offered fewer files than it promised.
+    RYKER_PACKAGE_MANIFEST: null
   };
 
   // Anything on this list is a secret and must never reach a shipped report.

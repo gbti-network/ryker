@@ -163,6 +163,10 @@ Ryker.boot = (function () {
   }
 
   function expand(open) {
+    // build() runs under guard(), so there may be no toolbar. sync() has always
+    // returned early on this; expand() dereferenced `bar` regardless, which is
+    // how a cosmetic failure used to take editing down with it.
+    if (!bar || !handle) return;
     expanded = !!open;
     if (!expanded && Ryker.rail && Ryker.rail.isOpen()) Ryker.rail.toggle(false);
     bar.style.display = expanded ? 'flex' : 'none';
@@ -308,8 +312,10 @@ Ryker.boot = (function () {
     guard('history', function () { Ryker.history.bind(); });
     guard('tooltip', function () { Ryker.tooltip.init(); });
 
-    Ryker.editable.onChange(sync);
-    Ryker.instructions.onChange(function () { Ryker.pane.refresh(); sync(); });
+    guard('wire', function () {
+      Ryker.editable.onChange(sync);
+      Ryker.instructions.onChange(function () { Ryker.pane.refresh(); sync(); });
+    });
 
     document.addEventListener('keydown', function (e) {
       // Ctrl+S, or Cmd+S. Taken over because in a document with an editor
@@ -329,10 +335,17 @@ Ryker.boot = (function () {
     // Ryker opens ready to work and stays that way: expanded, editing, pane
     // showing. Its whole purpose is the pane, so starting collapsed would hide
     // the point of it, and a mode switch would only ever be turned back on.
-    expand(true);
-    Ryker.editable.enable();
-    sync();
-    Ryker.recover.offer();
+    //
+    // Guarded stage by stage rather than as one block, and the order matters.
+    // Editing is the capability worth protecting, so it must not sit behind
+    // anything cosmetic: an earlier version of this ran the whole tail bare, and
+    // a failure inside build() left `bar` null, expand() threw dereferencing it,
+    // and the document was never made editable at all. Toolbar chrome failing
+    // now costs the toolbar and nothing else.
+    guard('expand', function () { expand(true); });
+    guard('editable', function () { Ryker.editable.enable(); });
+    guard('sync', sync);
+    guard('recover', function () { Ryker.recover.offer(); });
     Ryker.logger.resume().then(function (ok) {
       sync();
       // Asking on load is the only honest reading of "always on": the picker
