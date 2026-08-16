@@ -11,8 +11,8 @@
  *   export/zip.js  (142 lines)
  *   export/html.js  (128 lines)
  *   export/packager.js  (232 lines)
- *   ui/styles.js  (444 lines)
- *   ui/shell.js  (190 lines)
+ *   ui/styles.js  (379 lines)
+ *   ui/shell.js  (194 lines)
  *   ui/icons.js  (51 lines)
  *   ui/tooltip.js  (82 lines)
  *   ui/dialog.js  (124 lines)
@@ -1359,10 +1359,14 @@
   // print block, and a toolbar in the normal DOM inherits all of it. Shadow DOM
   // also stops Ryker's own styles reaching the report and changing the PDF.
   //
-  // The exception is ::highlight(), which styles text in the host document and
-  // therefore cannot be scoped to a shadow root. That rule set is deliberately
-  // tiny and touches nothing but the highlight pseudo-elements and the print
-  // stylesheet.
+  // The exception is documentCss below, which styles the REPORT's own elements
+  // and therefore cannot be scoped to a shadow root. Until 2026-08-16 the stated
+  // reason for it was ::highlight(), which comments used to mark quoted text.
+  // Comments are decommissioned and those rules are gone, but the sheet is still
+  // load-bearing for what remains: the contenteditable state treatments, the
+  // picked-block outline, the user-select lock during a cross-block drag, hiding
+  // the report's own contents list while the rail is open, and the print rules
+  // that keep Ryker out of the PDF.
   //
   // The scale below is deliberately Tailwind-shaped: a 4px spacing step, a small
   // radius set, ring-style focus rather than outline-on-the-edge, and one shadow
@@ -1383,18 +1387,10 @@
       '--rk-sh-md:0 1px 2px rgba(16,20,30,.06),0 4px 12px rgba(16,20,30,.08);',
       '--rk-sh-xl:0 8px 24px rgba(16,20,30,.12),0 24px 56px rgba(16,20,30,.16);',
       '--rk-font:system-ui,sans-serif;',
-      '--rk-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;',
-      '--rk-ins-bg:rgba(21,128,61,.14);--rk-ins-fg:#14532d;',
-      '--rk-del-bg:rgba(190,18,60,.12);--rk-del-fg:#881337;'
+      '--rk-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;'
     ].join('');
 
     var documentCss = [
-      '::highlight(ryker-open){background:rgba(250,204,21,.36);color:inherit}',
-      '::highlight(ryker-resolved){background:rgba(74,222,128,.22);color:inherit}',
-      '::highlight(ryker-active){background:rgba(251,146,60,.55);color:inherit}',
-      'mark.ryker-mark{background:rgba(250,204,21,.36);color:inherit;padding:0}',
-      'mark.ryker-mark-resolved{background:rgba(74,222,128,.22)}',
-      'mark.ryker-mark-active{background:rgba(251,146,60,.55)}',
       // No resting outline. A dashed box around every paragraph turned the whole
       // report into a form the moment Edit Mode opened, which made it hard to read
       // the thing you were editing. The caret already says where you are, so the
@@ -1430,7 +1426,6 @@
       // this rule is load-bearing rather than cosmetic.
       '@media print{#ryker-root{display:none !important}' +
         '[contenteditable]{outline:none !important;background:none !important}' +
-        'mark.ryker-mark{background:none !important}' +
         '.ryker-pick{background:none !important;box-shadow:none !important}' +
         // Only ever matches padding Ryker itself applied, so a report with body
         // padding of its own keeps it.
@@ -1489,7 +1484,7 @@
       'button.rk.on:hover:not(:disabled){background:var(--rk-accent);border-color:var(--rk-accent);',
       '  color:var(--rk-accent-fg);filter:brightness(1.08)}',
 
-      ':is(button.rk,.handle,.floater,input.rk,textarea.rk,.revrow):focus-visible{',
+      ':is(button.rk,.handle,input.rk,textarea.rk):focus-visible{',
       '  outline:2px solid transparent;box-shadow:0 0 0 3px var(--rk-ring);',
       '  border-color:var(--rk-accent)}',
 
@@ -1625,33 +1620,6 @@
       '.where .dot{width:7px;height:7px;border-radius:50%;background:var(--rk-muted);flex:none}',
       '.where .dot.ok{background:var(--rk-ok)}.where .dot.warn{background:var(--rk-warn)}',
 
-      // ---- selection action -------------------------------------------------
-      // Black on white. It sits over report content rather
-      // than over Ryker chrome, so it has to read as an overlay in both light and
-      // dark instead of blending into either.
-      '.floater{position:fixed;z-index:2147483050;background:#000;color:#fff;',
-      '  border:1px solid rgba(255,255,255,.14);border-radius:var(--rk-r-md);',
-      '  padding:7px 13px;cursor:pointer;font:inherit;font-size:12px;font-weight:600;',
-      '  letter-spacing:.01em;box-shadow:0 4px 16px rgba(0,0,0,.42);',
-      '  display:flex;align-items:center;gap:7px;transition:background .12s}',
-      '.floater:hover{background:#242424}',
-      '.floater .fdot{width:6px;height:6px;border-radius:50%;background:#fbbf24;flex:none}',
-
-      // ---- side panel -------------------------------------------------------
-      // Sits below the toolbar rather than under it. Both are fixed to the top
-      // edge and the bar has the higher z-index, so anchoring the panel at 0 hid
-      // its own header. Custom properties inherit through the shadow boundary,
-      // so the offset the shell already publishes is readable from in here.
-      '.panel{position:fixed;top:var(--ryker-offset,0px);right:0;bottom:0;width:380px;max-width:92vw;z-index:2147482900;',
-      '  background:var(--rk-bg);border-left:1px solid var(--rk-line);display:flex;flex-direction:column;',
-      '  box-shadow:var(--rk-sh-xl)}',
-      '.panel header{padding:var(--rk-s3) var(--rk-s4);border-bottom:1px solid var(--rk-line);',
-      '  display:flex;align-items:center;gap:var(--rk-s2)}',
-      '.panel header h2{margin:0;font-size:13px;font-weight:700;letter-spacing:.01em}',
-      '.panel .body{flex:1;overflow-y:auto;padding:var(--rk-s3) var(--rk-s4)}',
-      '.panel .foot{padding:var(--rk-s3) var(--rk-s4);border-top:1px solid var(--rk-line);',
-      '  display:flex;gap:6px;flex-wrap:wrap;background:var(--rk-bg2)}',
-
       // ---- instruction pane --------------------------------------
       '.pane{position:fixed;top:var(--ryker-offset,0px);right:0;bottom:0;width:430px;max-width:94vw;',
       '  z-index:2147482900;background:var(--rk-bg);border-left:1px solid var(--rk-line);',
@@ -1685,22 +1653,14 @@
       '.danger-lead{font-size:12.5px;font-weight:600;border-left-width:4px}',
       '@media (max-width:820px){.pane{width:100%}}',
 
-      '.card{border:1px solid var(--rk-line);border-radius:var(--rk-r-lg);padding:var(--rk-s3);',
-      '  margin-bottom:var(--rk-s2);background:var(--rk-bg2)}',
-      '.card.active{border-color:var(--rk-accent);box-shadow:0 0 0 3px var(--rk-accent-soft)}',
-      '.card.resolved{opacity:.65}',
-      '.card.orphan{border-color:var(--rk-warn)}',
-      '.card .quote{font-size:12px;color:var(--rk-fg2);border-left:2px solid var(--rk-line2);',
-      '  padding-left:var(--rk-s2);margin:var(--rk-s2) 0;font-style:italic;overflow-wrap:anywhere}',
-      '.card .who{font-size:11px;color:var(--rk-muted);margin-bottom:var(--rk-s2)}',
-      '.card .who b{color:var(--rk-fg2);font-weight:600}',
-      '.card .text{white-space:pre-wrap;overflow-wrap:anywhere;margin-bottom:var(--rk-s3);font-size:12.5px}',
-      '.card .acts{display:flex;gap:5px;flex-wrap:wrap}',
-      '.tag{display:inline-block;font-size:10px;text-transform:uppercase;letter-spacing:.06em;',
-      '  border-radius:var(--rk-r-sm);padding:2px 7px;font-weight:700}',
-      '.tag.open{background:var(--rk-warn-soft);color:var(--rk-warn)}',
-      '.tag.resolved{background:var(--rk-ok-soft);color:var(--rk-ok)}',
-      '.tag.orphan{background:var(--rk-danger-soft);color:var(--rk-danger)}',
+      // A row of buttons. This was '.card .acts' until 2026-08-16, and .card was
+      // a comment card, so when comments were decommissioned the descendant
+      // qualifier stopped matching anything and both surviving .acts rows lost
+      // their layout: the Copy and Download buttons in the reset-document
+      // confirmation are built with dom.el, so no whitespace text node separates
+      // them and they rendered flush against each other. Bare, because there is
+      // no ancestor left to qualify by.
+      '.acts{display:flex;gap:5px;flex-wrap:wrap}',
 
       // ---- fields -----------------------------------------------------------
       'textarea.rk,input.rk{display:block;width:100%;background:var(--rk-field);color:var(--rk-fg);',
@@ -1736,11 +1696,6 @@
       '  overflow-wrap:anywhere;color:var(--rk-fg)}',
       '.modal code{padding:2px 5px}',
       '.modal pre{padding:var(--rk-s3);overflow-x:auto;border:1px solid var(--rk-line);line-height:1.5}',
-      '.modal .quote{font-size:12px;color:var(--rk-fg2);font-style:italic;',
-      '  background:var(--rk-bg2);border-left:3px solid var(--rk-line2);',
-      '  border-radius:0 var(--rk-r-md) var(--rk-r-md) 0;padding:var(--rk-s2) var(--rk-s3);',
-      '  margin:0 0 var(--rk-s2);overflow-wrap:anywhere}',
-
       // ---- callouts ---------------------------------------------------------
       // Square on the left. The accent stripe is the point of a notice, and a
       // rounded corner cutting across it reads as a rendering fault rather than a
@@ -1762,31 +1717,11 @@
       '.filerow .sz{margin-left:auto;color:var(--rk-muted);font-size:11px;flex:none}',
       '.filerow .nm{overflow-wrap:anywhere}',
 
-      '.revrow{border:1px solid var(--rk-line);border-radius:var(--rk-r-lg);padding:var(--rk-s3);',
-      '  margin-bottom:var(--rk-s2);cursor:pointer;background:var(--rk-bg2);',
-      '  transition:border-color .12s,box-shadow .12s}',
-      '.revrow:hover{border-color:var(--rk-line2)}',
-      '.revrow.on{border-color:var(--rk-accent);box-shadow:0 0 0 3px var(--rk-accent-soft)}',
-      '.revrow .seq{font-weight:700;font-size:12.5px}',
-      '.revrow .meta{font-size:11px;color:var(--rk-muted);margin-top:3px}',
-      '.revrow .stats{font-size:11px;margin-top:7px;display:flex;gap:var(--rk-s3);flex-wrap:wrap;font-weight:500}',
-      '.stat-add{color:var(--rk-ok)}.stat-del{color:var(--rk-danger)}.stat-cm{color:var(--rk-muted)}',
-
-      '.blockdiff{border:1px solid var(--rk-line);border-radius:var(--rk-r-lg);',
-      '  padding:var(--rk-s3);margin-bottom:var(--rk-s2);background:var(--rk-bg2)}',
-      '.blockdiff .lbl{font-size:10.5px;font-weight:600;color:var(--rk-muted);',
-      '  margin-bottom:7px;overflow-wrap:anywhere;text-transform:uppercase;letter-spacing:.05em}',
-      '.blockdiff .txt{font-size:12.5px;overflow-wrap:anywhere;color:var(--rk-fg)}',
-      '.blockdiff ins{background:var(--rk-ins-bg);color:var(--rk-ins-fg);',
-      '  text-decoration:none;border-radius:3px;padding:0 2px}',
-      '.blockdiff del{background:var(--rk-del-bg);color:var(--rk-del-fg);border-radius:3px;padding:0 2px}',
-
-      '.empty{color:var(--rk-muted);font-size:12px;padding:var(--rk-s6) var(--rk-s1);text-align:center}',
       '.muted{color:var(--rk-muted)}',
       '.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}',
 
       '@media (max-width:720px){',
-      '  .panel{width:100%}.bar{padding:6px 8px}.brand{display:none}',
+      '  .bar{padding:6px 8px}.brand{display:none}',
       '  .backdrop{justify-content:center;padding:var(--rk-s3)}',
       '  .modal{max-width:100%}',
       '}',
@@ -1829,9 +1764,13 @@
       layer.className = 'layer';
       shadow.appendChild(layer);
 
-      // The only stylesheet Ryker adds to the host document. It carries the
-      // highlight pseudo-elements, which cannot be scoped to a shadow root, and
-      // the print rules that remove every trace of Ryker from the PDF.
+      // The only stylesheet Ryker adds to the host document. It styles the
+      // report's own elements, which a shadow root cannot reach: the
+      // contenteditable state treatments, the picked-block outline, and the print
+      // rules that remove every trace of Ryker from the PDF. It used to carry the
+      // comment highlight pseudo-elements too, and those were the reason it was
+      // first justified; they went with comments on 2026-08-16 and the rest of it
+      // is still load-bearing.
       var doc = document.createElement('style');
       doc.id = 'ryker-document-css';
       doc.textContent = Ryker.styles.documentCss;

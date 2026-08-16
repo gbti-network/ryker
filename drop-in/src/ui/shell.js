@@ -29,9 +29,13 @@ Ryker.shell = (function () {
     layer.className = 'layer';
     shadow.appendChild(layer);
 
-    // The only stylesheet Ryker adds to the host document. It carries the
-    // highlight pseudo-elements, which cannot be scoped to a shadow root, and
-    // the print rules that remove every trace of Ryker from the PDF.
+    // The only stylesheet Ryker adds to the host document. It styles the
+    // report's own elements, which a shadow root cannot reach: the
+    // contenteditable state treatments, the picked-block outline, and the print
+    // rules that remove every trace of Ryker from the PDF. It used to carry the
+    // comment highlight pseudo-elements too, and those were the reason it was
+    // first justified; they went with comments on 2026-08-16 and the rest of it
+    // is still load-bearing.
     var doc = document.createElement('style');
     doc.id = 'ryker-document-css';
     doc.textContent = Ryker.styles.documentCss;

@@ -285,6 +285,23 @@ async function runPackager(sess, file) {
     seen.manifestKeyKept ? null
       : 'the packager reads this key at packager.js:37 but config.js drops it, so ' +
         'manifestAssets() can never return a row');
+
+  // .acts was styled only as '.card .acts', and .card was a comment card. When
+  // comments were decommissioned the qualifier stopped matching and both
+  // surviving .acts rows silently lost their layout. Nothing threw and nothing
+  // looked obviously wrong in the source; the buttons simply ran together.
+  const actsDisplay = await evaluate(sess, `(function () {
+    var layer = document.getElementById('ryker-root').shadowRoot.querySelector('.layer');
+    var probe = document.createElement('div');
+    probe.className = 'acts';
+    layer.appendChild(probe);
+    var d = getComputedStyle(probe).display;
+    probe.remove();
+    return d;
+  })()`);
+  assert(actsDisplay === 'flex', 'button rows (.acts) still get flex layout',
+    actsDisplay === 'flex' ? null
+      : `computed display is "${actsDisplay}", so the rule is not matching`);
 }
 
 const bundles = ['ryker.js'].filter((f) => existsSync(join(DIST, f)));
