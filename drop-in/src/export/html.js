@@ -56,6 +56,16 @@ Ryker.exportHtml = (function () {
       n.style.removeProperty('top');
       if (!n.getAttribute('style')) n.removeAttribute('style');
     });
+    // Same leak a third time, on the element the clone IS rather than one it
+    // contains, so neither the body pass above nor the querySelectorAll below
+    // could ever have reached it. shell.js sets both of these on
+    // documentElement when the toolbar claims vertical space, and releases them
+    // only on collapse. The full build starts collapsed and never set them, so
+    // this shipped invisibly; Lite starts expanded, so EVERY Lite export
+    // carried them. Found by the fixture harness, 2026-08-16.
+    doc.style.removeProperty('--ryker-offset');
+    doc.style.removeProperty('scroll-padding-top');
+    if (!doc.getAttribute('style')) doc.removeAttribute('style');
 
     if (!keepRyker) {
       Array.prototype.forEach.call(doc.querySelectorAll('script[data-ryker], #ryker-config, script[src*="ryker"]'), function (n) {

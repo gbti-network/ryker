@@ -9,7 +9,7 @@
  *   editor/sanitize.js  (174 lines)
  *   editor/blocks.js  (305 lines)
  *   export/zip.js  (142 lines)
- *   export/html.js  (131 lines)
+ *   export/html.js  (141 lines)
  *   export/packager.js  (212 lines)
  *   ui/styles.js  (444 lines)
  *   ui/shell.js  (190 lines)
@@ -1039,6 +1039,16 @@
         n.style.removeProperty('top');
         if (!n.getAttribute('style')) n.removeAttribute('style');
       });
+      // Same leak a third time, on the element the clone IS rather than one it
+      // contains, so neither the body pass above nor the querySelectorAll below
+      // could ever have reached it. shell.js sets both of these on
+      // documentElement when the toolbar claims vertical space, and releases them
+      // only on collapse. The full build starts collapsed and never set them, so
+      // this shipped invisibly; Lite starts expanded, so EVERY Lite export
+      // carried them. Found by the fixture harness, 2026-08-16.
+      doc.style.removeProperty('--ryker-offset');
+      doc.style.removeProperty('scroll-padding-top');
+      if (!doc.getAttribute('style')) doc.removeAttribute('style');
 
       if (!keepRyker) {
         Array.prototype.forEach.call(doc.querySelectorAll('script[data-ryker], #ryker-config, script[src*="ryker"]'), function (n) {
