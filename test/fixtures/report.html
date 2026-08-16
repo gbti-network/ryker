@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ryker Fixture Report</title>
+<style>
+  body { font: 16px/1.5 Georgia, serif; margin: 0 auto; max-width: 46rem; padding: 2rem; }
+  nav.toc { position: sticky; top: 0; background: #fff; }
+  table { border-collapse: collapse; }
+  th, td { border: 1px solid #ccc; padding: .3rem .6rem; }
+</style>
+</head>
+<body>
+
+<!--
+  Fixture for the Ryker harness. Every element below is here to exercise one
+  branch of blocks.js: either the SELECTOR, or one of the excluded() rules.
+  Editable prose is marked EDITABLE in a comment; anything that must stay out
+  of the editable set is marked LOCKED with the rule that excludes it.
+
+  Counted expectation: 17 editable blocks. test/run.mjs asserts that number
+  and also asserts each LOCKED item by its text, so a change to excluded()
+  cannot pass by moving the total back to 17 through some other route.
+-->
+
+<header>
+  <!-- LOCKED: a <header> outside <main> is site chrome -->
+  <p>Site chrome above the document. Not part of the report.</p>
+</header>
+
+<nav class="toc">
+  <!-- LOCKED: nav is navigation, not content -->
+  <ul>
+    <li>Contents link one</li>
+    <li>Contents link two</li>
+  </ul>
+</nav>
+
+<main>
+
+  <header>
+    <!-- A header INSIDE main is the document's own title block, so both of
+         these ARE editable. This is the ownHeader() branch in blocks.js. -->
+    <h1>Fixture Report</h1>            <!-- EDITABLE 1 -->
+    <p>The subtitle that sits in the title block.</p>   <!-- EDITABLE 2 -->
+  </header>
+
+  <section id="intro">
+    <h2>Introduction</h2>                              <!-- EDITABLE 3 -->
+    <p>First paragraph of the introduction.</p>        <!-- EDITABLE 4 -->
+    <p>Second paragraph of the introduction.</p>       <!-- EDITABLE 5 -->
+    <ul>
+      <li>List item alpha</li>                         <!-- EDITABLE 6 -->
+      <li>List item beta</li>                          <!-- EDITABLE 7 -->
+    </ul>
+  </section>
+
+  <section id="data">
+    <h3>The table</h3>                                 <!-- EDITABLE 8 -->
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>                                <!-- EDITABLE 9 -->
+          <th>Value</th>                               <!-- EDITABLE 10 -->
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Row one label</td>                       <!-- EDITABLE 11 -->
+          <td>11</td>                                  <!-- EDITABLE 12 -->
+        </tr>
+        <tr>
+          <!-- LOCKED: data-effort is read by a host report's own script -->
+          <td data-effort="high">Sorted on effort</td>
+          <!-- EDITABLE 13: a sibling of a locked cell is still editable,
+               because excluded() walks ancestors rather than siblings -->
+          <td>22</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="media">
+    <figure>
+      <!-- LOCKED: svg is vector content, and its <text> must never be edited -->
+      <svg width="120" height="40" role="img" aria-label="A tiny chart">
+        <rect x="0" y="0" width="120" height="40" fill="#eef"></rect>
+        <text x="8" y="24">chart label</text>
+      </svg>
+      <figcaption>The caption underneath the chart.</figcaption>  <!-- EDITABLE 14 -->
+    </figure>
+
+    <blockquote>
+      <p>A quoted paragraph inside a blockquote.</p>    <!-- EDITABLE 15 -->
+    </blockquote>
+
+    <dl>
+      <dt>Term one</dt>                                <!-- EDITABLE 16 -->
+      <dd>The definition of term one.</dd>             <!-- EDITABLE 17 -->
+    </dl>
+
+    <!-- LOCKED: explicit opt-out -->
+    <p data-ryker-lock>Generated on a fixed date. Do not edit.</p>
+
+    <!-- LOCKED: candidates() drops a block with no text, because an empty
+         block has no content to derive an identity from -->
+    <p></p>
+  </section>
+
+</main>
+
+<footer>
+  <!-- LOCKED: footer is chrome -->
+  <p>Footer text below the document.</p>
+</footer>
+
+</body>
+</html>
