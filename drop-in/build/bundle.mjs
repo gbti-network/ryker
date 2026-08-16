@@ -20,13 +20,14 @@ const DIST = join(ROOT, 'dist');
 const VERSION = '0.1.0';
 const MAX_LINES = 600;
 
-// Two products from one source tree.
+// One product, one bundle, per sow-006 decision 1.
 //
-// ryker is the full editor: revisions, comments, storage backends. ryker-lite
-// keeps the shell, the editor and the export path, drops everything durable,
-// and adds the instruction pane. The shared modules are byte-identical in both
-// bundles; only the load list differs.
-const CORE = [
+// There were two targets until 2026-08-16: a full build carrying comments, a
+// revision journal and storage backends, and a lite build that dropped all of
+// it and wrote an instruction set instead. The owner decided the instruction
+// set is the product, so the full build is gone and this list is what the lite
+// build was. The two-build tree is recoverable at the v0.1.0-two-builds tag.
+const MODULES = [
   'utils/dom.js',
   'config/config.js',
   'security/scan.js',
@@ -46,67 +47,32 @@ const CORE = [
   'editor/formatbar.js',
   'editor/links.js',
   'editor/pick.js',
-  'editor/multi.js'
+  'editor/multi.js',
+  'editor/outline.js',
+  'editor/move.js',
+  'ui/rail.js',
+  'lite/instructions.js',
+  'lite/logger.js',
+  'lite/browser.js',
+  'lite/pane.js',
+  'lite/recover.js',
+  'lite/lite.js'
 ];
 
 const TARGETS = {
-  'ryker.js': {
-    name: 'Ryker',
-    modules: [
-      'utils/dom.js',
-      'config/config.js',
-      'config/identity.js',
-      'security/scan.js',
-      'editor/sanitize.js',
-      'editor/blocks.js',
-      'revisions/diff.js',
-      'revisions/journal.js',
-      'comments/anchor.js',
-      'comments/highlight.js',
-      'comments/comments.js',
-      'storage/adapter.js',
-      'storage/local.js',
-      'storage/fs.js',
-      'storage/github.js',
-      'export/zip.js',
-      'export/html.js',
-      'export/packager.js',
-      'ui/styles.js',
-      'ui/shell.js',
-      'ui/icons.js',
-      'ui/tooltip.js',
-      'ui/dialog.js',
-      'ui/menu.js',
-      'ui/panel.js',
-      'revisions/review.js',
-      'editor/editable.js',
-      'editor/history.js',
-      'editor/formatbar.js',
-      'editor/links.js',
-      'editor/pick.js',
-      'editor/multi.js',
-      'editor/save.js',
-      'github/onboard.js',
-      'comments/select.js',
-      'ui/toolbar.js',
-      'bootstrap/boot.js'
-    ]
-  },
-  'ryker-lite.js': {
-    name: 'Ryker Lite',
-    modules: CORE.concat([
-      'editor/outline.js',
-      'editor/move.js',
-      'ui/rail.js',
-      'lite/instructions.js',
-      'lite/logger.js',
-      'lite/browser.js',
-      'lite/pane.js',
-      'lite/recover.js',
-      'lite/lite.js'
-    ])
-  }
+  'ryker.js': { name: 'Ryker', modules: MODULES }
 };
+
+// Modules kept on disk on purpose while no bundle loads them.
+//
+// The orphan check below exists to catch a file someone forgot to wire up, so
+// anything deliberately unwired has to be named here or the build fails. Only
+// storage/fs.js qualifies: sow-006 decision 4 says it is "rescued, not deleted"
+// because its File System Access wrapper is what publish needs, and Phase 2
+// converges it with the handle persistence in lite/logger.js. It is unreachable
+// until then, since it registers against the storage adapter that Phase 1
+// removed. Delete this entry when Phase 2 consumes the file.
+const UNBUNDLED = new Set(['storage/fs.js']);
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -153,10 +119,16 @@ function lint() {
   }
   const used = new Set(Object.values(TARGETS).flatMap((t) => t.modules));
   for (const rel of onDisk) {
-    if (!used.has(rel)) problems.push(`${rel} exists but no bundle loads it`);
+    if (!used.has(rel) && !UNBUNDLED.has(rel)) problems.push(`${rel} exists but no bundle loads it`);
   }
   for (const rel of used) {
     if (!onDisk.includes(rel)) problems.push(`${rel} is in a bundle but not on disk`);
+  }
+  // An UNBUNDLED entry that no longer exists means the exemption outlived the
+  // file, which is how a stale exemption starts hiding a real orphan.
+  for (const rel of UNBUNDLED) {
+    if (!onDisk.includes(rel)) problems.push(`${rel} is exempted from bundling but not on disk`);
+    if (used.has(rel)) problems.push(`${rel} is exempted from bundling but a bundle loads it`);
   }
   return problems;
 }

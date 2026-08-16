@@ -5,19 +5,9 @@
  * Generated bundle. Do not edit. Sources, in load order:
  *   utils/dom.js  (131 lines)
  *   config/config.js  (110 lines)
- *   config/identity.js  (102 lines)
  *   security/scan.js  (64 lines)
  *   editor/sanitize.js  (174 lines)
  *   editor/blocks.js  (305 lines)
- *   revisions/diff.js  (99 lines)
- *   revisions/journal.js  (149 lines)
- *   comments/anchor.js  (151 lines)
- *   comments/highlight.js  (87 lines)
- *   comments/comments.js  (177 lines)
- *   storage/adapter.js  (74 lines)
- *   storage/local.js  (73 lines)
- *   storage/fs.js  (132 lines)
- *   storage/github.js  (261 lines)
  *   export/zip.js  (142 lines)
  *   export/html.js  (141 lines)
  *   export/packager.js  (212 lines)
@@ -27,19 +17,21 @@
  *   ui/tooltip.js  (82 lines)
  *   ui/dialog.js  (124 lines)
  *   ui/menu.js  (104 lines)
- *   ui/panel.js  (248 lines)
- *   revisions/review.js  (99 lines)
  *   editor/editable.js  (473 lines)
  *   editor/history.js  (139 lines)
  *   editor/formatbar.js  (215 lines)
  *   editor/links.js  (174 lines)
  *   editor/pick.js  (220 lines)
  *   editor/multi.js  (172 lines)
- *   editor/save.js  (198 lines)
- *   github/onboard.js  (154 lines)
- *   comments/select.js  (142 lines)
- *   ui/toolbar.js  (212 lines)
- *   bootstrap/boot.js  (159 lines)
+ *   editor/outline.js  (182 lines)
+ *   editor/move.js  (323 lines)
+ *   ui/rail.js  (435 lines)
+ *   lite/instructions.js  (458 lines)
+ *   lite/logger.js  (285 lines)
+ *   lite/browser.js  (141 lines)
+ *   lite/pane.js  (278 lines)
+ *   lite/recover.js  (121 lines)
+ *   lite/lite.js  (333 lines)
  *
  * Classic script by design: module scripts do not load from file:// URLs,
  * and a report handed over as a ZIP is opened from disk.
@@ -292,110 +284,6 @@
     }
 
     return { load: load, detect: detect, stateLabel: stateLabel, repoSlug: repoSlug, slug: slug };
-  })();
-
-
-  /* ---- config/identity.js ---------------------------------------- */
-  // Who is making the change.
-  //
-  // With GitHub verified, identity is GitHub's durable numeric user id plus the
-  // login, per spec section 33, because logins can change and the id cannot.
-  //
-  // Without GitHub, identity is a name the person typed. That is exactly what
-  // ordinary git is, where user.name is unverified in every repository, so it is
-  // not a weakness introduced here. It is labelled self-asserted everywhere it
-  // appears rather than presented as though it were checked.
-  Ryker.identity = (function () {
-    'use strict';
-
-    var KEY = 'ryker:selfname';
-    var cached = null;
-
-    function fromGitHub() {
-      var gh = Ryker.storage.get('github');
-      if (!gh || !gh.identity) return null;
-      var id = gh.identity();
-      if (!id || !gh.canWrite()) return null;
-      return {
-        github_user_id: id.id,
-        github_login: id.login,
-        name: id.name || id.login,
-        source: 'github'
-      };
-    }
-
-    function selfName() {
-      if (cached) return cached;
-      try { cached = localStorage.getItem(KEY) || null; } catch (e) { cached = null; }
-      return cached;
-    }
-
-    function setSelfName(name) {
-      cached = String(name || '').trim() || null;
-      try {
-        if (cached) localStorage.setItem(KEY, cached);
-        else localStorage.removeItem(KEY);
-      } catch (e) {}
-      return cached;
-    }
-
-    function current() {
-      var gh = fromGitHub();
-      if (gh) return gh;
-      return {
-        github_user_id: null,
-        github_login: null,
-        name: selfName() || 'Unnamed author',
-        source: 'self'
-      };
-    }
-
-    function label() {
-      var me = current();
-      return me.source === 'github' ? me.github_login : me.name + ' (self-asserted)';
-    }
-
-    function needsName() {
-      return !fromGitHub() && !selfName();
-    }
-
-    // Asked once, before the first save rather than at boot, so a reader is never
-    // interrupted by a question about authorship.
-    function promptForName(then) {
-      var d = Ryker.dom;
-      var input = d.el('input', {
-        class: 'rk', type: 'text', placeholder: 'Your name', value: selfName() || ''
-      });
-      Ryker.dialog.open({
-        title: 'Who is making this change?',
-        body: d.el('div', {}, [
-          d.el('p', {
-            text: 'This report is not connected to GitHub, so Ryker cannot verify who you are. ' +
-              'The name you give is recorded with your revisions and marked as self-asserted, ' +
-              'which is the same footing as an ordinary local git commit.'
-          }),
-          d.el('label', { class: 'rk', text: 'Name' }),
-          input
-        ]),
-        buttons: [
-          { label: 'Cancel' },
-          {
-            label: 'Continue', primary: true,
-            action: function () {
-              var v = input.value.trim();
-              if (!v) return false;
-              setSelfName(v);
-              if (then) then(current());
-            }
-          }
-        ]
-      });
-    }
-
-    return {
-      current: current, label: label, needsName: needsName,
-      promptForName: promptForName, setSelfName: setSelfName, selfName: selfName
-    };
   })();
 
 
@@ -946,1227 +834,6 @@
       applyChange: applyChange, applyRecords: applyRecords
     };
   })();
-
-
-  /* ---- revisions/diff.js ----------------------------------------- */
-  // Word-level diff for a single changed block.
-  //
-  // The journal captures deltas at write time, so nothing here diffs whole
-  // documents. All that remains is comparing two versions of one block, which is
-  // a small LCS and about 150 lines rather than a vendored diff library that
-  // would need splitting to meet the line cap.
-  Ryker.diff = (function () {
-    'use strict';
-
-    function tokenize(html) {
-      var tmp = document.createElement('div');
-      tmp.innerHTML = html == null ? '' : html;
-      var text = tmp.textContent || '';
-      // Keep whitespace as its own token so rejoining reproduces the original
-      // spacing rather than normalising it.
-      return text.match(/\s+|[^\s]+/g) || [];
-    }
-
-    // Classic LCS table. Blocks are paragraphs, so the quadratic cost is fine;
-    // a guard below falls back to a whole-block replace on anything pathological.
-    function lcs(a, b) {
-      var n = a.length, m = b.length;
-      var table = new Array(n + 1);
-      for (var i = 0; i <= n; i++) {
-        table[i] = new Int32Array(m + 1);
-      }
-      for (i = n - 1; i >= 0; i--) {
-        for (var j = m - 1; j >= 0; j--) {
-          table[i][j] = a[i] === b[j] ? table[i + 1][j + 1] + 1
-            : Math.max(table[i + 1][j], table[i][j + 1]);
-        }
-      }
-      return table;
-    }
-
-    function words(beforeHtml, afterHtml) {
-      var a = tokenize(beforeHtml);
-      var b = tokenize(afterHtml);
-
-      if (a.length * b.length > 4000000) {
-        return [{ op: 'del', text: a.join('') }, { op: 'ins', text: b.join('') }];
-      }
-
-      var table = lcs(a, b);
-      var out = [];
-      var i = 0, j = 0;
-      while (i < a.length && j < b.length) {
-        if (a[i] === b[j]) { push(out, 'same', a[i]); i++; j++; }
-        else if (table[i + 1][j] >= table[i][j + 1]) { push(out, 'del', a[i]); i++; }
-        else { push(out, 'ins', b[j]); j++; }
-      }
-      while (i < a.length) { push(out, 'del', a[i]); i++; }
-      while (j < b.length) { push(out, 'ins', b[j]); j++; }
-      return out;
-    }
-
-    function push(out, op, text) {
-      var last = out[out.length - 1];
-      if (last && last.op === op) last.text += text;
-      else out.push({ op: op, text: text });
-    }
-
-    // Counts for the revision panel. Whitespace-only runs are not changes anyone
-    // wants counted, so they are excluded from the totals.
-    function counts(parts) {
-      var ins = 0, del = 0;
-      parts.forEach(function (p) {
-        if (!p.text.trim()) return;
-        var n = (p.text.trim().match(/\S+/g) || []).length;
-        if (p.op === 'ins') ins += n;
-        else if (p.op === 'del') del += n;
-      });
-      return { additions: ins, removals: del };
-    }
-
-    function countChange(change) {
-      if (change.kind === 'added') {
-        return { additions: (tokenize(change.after).join('').trim().match(/\S+/g) || []).length, removals: 0 };
-      }
-      if (change.kind === 'removed') {
-        return { additions: 0, removals: (tokenize(change.before).join('').trim().match(/\S+/g) || []).length };
-      }
-      return counts(words(change.before, change.after));
-    }
-
-    function renderInline(parts) {
-      var d = Ryker.dom;
-      var frag = document.createDocumentFragment();
-      parts.forEach(function (p) {
-        if (p.op === 'same') { frag.appendChild(document.createTextNode(p.text)); return; }
-        var tag = p.op === 'ins' ? 'ins' : 'del';
-        frag.appendChild(d.el(tag, { class: 'ryker-diff-' + p.op, text: p.text }));
-      });
-      return frag;
-    }
-
-    return { words: words, counts: counts, countChange: countChange, renderInline: renderInline, tokenize: tokenize };
-  })();
-
-
-  /* ---- revisions/journal.js -------------------------------------- */
-  // The append-only revision journal. This is the centre of Ryker's design.
-  //
-  // Git is not the revision store. Ryker needs revision tracking across saves and
-  // comments on record; it does not need branching, refs, actions or a CLI. So
-  // every save appends one record holding the blocks that changed as before and
-  // after pairs keyed by block id, plus the comment events of that save, plus
-  // author, timestamp and message.
-  //
-  // Four things follow, and they are why the inversion is worth it:
-  //   - The revision panel reads straight off a record. "12 additions, 4
-  //     removals, 2 comments resolved" is the shape of a record, not something to
-  //     compute by comparing two whole documents.
-  //   - The inline diff needs no document differ. The delta was captured at write
-  //     time; only a word-level compare inside one block remains.
-  //   - Revision review works identically with no repository at all, so it does
-  //     not degrade when the report is opened from a ZIP.
-  //   - Write contention disappears. Appending a numbered record never conflicts
-  //     with someone else appending theirs.
-  //
-  // Current comment state is a fold over the log, cached but always rebuildable.
-  Ryker.journal = (function () {
-    'use strict';
-
-    var records = [];
-    var loaded = false;
-
-    function reset(list) {
-      records = (list || []).slice().sort(function (a, b) { return a.seq - b.seq; });
-      loaded = true;
-    }
-
-    function all() { return records.slice(); }
-    function count() { return records.length; }
-    function isLoaded() { return loaded; }
-    function latest() { return records.length ? records[records.length - 1] : null; }
-
-    function nextSeq() {
-      return records.length ? records[records.length - 1].seq + 1 : 1;
-    }
-
-    function make(opts) {
-      var prev = latest();
-      return {
-        seq: nextSeq(),
-        id: Ryker.dom.uid('rev'),
-        parent: prev ? prev.id : null,
-        documentId: opts.documentId,
-        author: opts.author,
-        timestamp: Ryker.dom.now(),
-        message: opts.message || '',
-        changes: opts.changes || [],
-        comments: {
-          added: opts.commentsAdded || [],
-          resolved: opts.commentsResolved || [],
-          reopened: opts.commentsReopened || [],
-          deleted: opts.commentsDeleted || []
-        }
-      };
-    }
-
-    function append(record) {
-      records.push(record);
-      return record;
-    }
-
-    // Totals for the revision list, computed once per record rather than on every
-    // render, since a word diff over a long block is not free.
-    function summarize(record) {
-      if (record._summary) return record._summary;
-      var add = 0, del = 0;
-      (record.changes || []).forEach(function (c) {
-        var n = Ryker.diff.countChange(c);
-        add += n.additions;
-        del += n.removals;
-      });
-      var s = {
-        additions: add,
-        removals: del,
-        blocks: (record.changes || []).length,
-        commentsAdded: (record.comments.added || []).length,
-        commentsResolved: (record.comments.resolved || []).length
-      };
-      record._summary = s;
-      return s;
-    }
-
-    // Folding the log gives current comment state. Deliberately derived rather
-    // than stored as the truth, so a corrupted cache is repaired by replaying
-    // rather than by asking someone what the comments used to be.
-    function foldComments() {
-      var map = {};
-      records.forEach(function (r) {
-        (r.comments.added || []).forEach(function (c) {
-          map[c.id] = JSON.parse(JSON.stringify(c));
-          map[c.id].status = 'open';
-        });
-        (r.comments.resolved || []).forEach(function (e) {
-          if (!map[e.id]) return;
-          map[e.id].status = 'resolved';
-          map[e.id].resolvedAt = e.at;
-          map[e.id].resolvedBy = e.by;
-        });
-        (r.comments.reopened || []).forEach(function (e) {
-          if (!map[e.id]) return;
-          map[e.id].status = 'open';
-          delete map[e.id].resolvedAt;
-          delete map[e.id].resolvedBy;
-        });
-        (r.comments.deleted || []).forEach(function (e) { delete map[e.id]; });
-      });
-      return map;
-    }
-
-    // The block content as of a given revision, walking backwards from now.
-    // "now" is the live DOM, so replaying undoes each later change in turn.
-    function blockAt(blockId, seq) {
-      var node = Ryker.blocks.byId(blockId);
-      var value = node ? node.innerHTML : null;
-      for (var i = records.length - 1; i >= 0; i--) {
-        var r = records[i];
-        if (r.seq <= seq) break;
-        var hit = (r.changes || []).filter(function (c) { return c.id === blockId; })[0];
-        if (hit) value = hit.before;
-      }
-      return value;
-    }
-
-    function recordsTouching(blockId) {
-      return records.filter(function (r) {
-        return (r.changes || []).some(function (c) { return c.id === blockId; });
-      });
-    }
-
-    function serialize() {
-      return records.map(function (r) {
-        var copy = {};
-        Object.keys(r).forEach(function (k) { if (k.charAt(0) !== '_') copy[k] = r[k]; });
-        return copy;
-      });
-    }
-
-    return {
-      reset: reset, all: all, count: count, isLoaded: isLoaded, latest: latest,
-      nextSeq: nextSeq, make: make, append: append, summarize: summarize,
-      foldComments: foldComments, blockAt: blockAt, recordsTouching: recordsTouching,
-      serialize: serialize
-    };
-  })();
-
-
-  /* ---- comments/anchor.js ---------------------------------------- */
-  // Layered comment anchoring, spec section 14.
-  //
-  // A comment must not rest on a DOM coordinate. Edit Mode exists so that people
-  // will change the text above a comment, and an XPath plus character offset
-  // breaks the first time they do. So an anchor records the quoted string, about
-  // 32 characters of context each side, and the containing block as a hint rather
-  // than as the anchor itself.
-  //
-  // Resolution tries five strategies in descending confidence. When none of them
-  // lands, the comment becomes Unanchored rather than attaching itself to
-  // plausible-looking but wrong content, which is the failure section 14 names.
-  Ryker.anchor = (function () {
-    'use strict';
-
-    var CONTEXT = 32;
-
-    function capture(range) {
-      var root = Ryker.blocks.root();
-      var flat = Ryker.dom.flatten(root);
-      var bounds = offsetsOf(range, flat);
-      if (!bounds) return null;
-
-      var quote = flat.text.slice(bounds.start, bounds.end);
-      if (!quote.trim()) return null;
-
-      var container = range.commonAncestorContainer;
-      if (container.nodeType === 3) container = container.parentNode;
-      var block = container.closest ? container.closest(Ryker.blocks.SELECTOR) : null;
-
-      return {
-        quote: quote,
-        prefix: flat.text.slice(Math.max(0, bounds.start - CONTEXT), bounds.start),
-        suffix: flat.text.slice(bounds.end, Math.min(flat.text.length, bounds.end + CONTEXT)),
-        blockId: block ? Ryker.blocks.blockId(block, root) : null,
-        approxStart: bounds.start
-      };
-    }
-
-    function offsetsOf(range, flat) {
-      var start = null, end = null;
-      for (var i = 0; i < flat.index.length; i++) {
-        var e = flat.index[i];
-        if (e.node === range.startContainer) start = e.start + range.startOffset;
-        if (e.node === range.endContainer) end = e.start + range.endOffset;
-      }
-      if (start == null || end == null || end <= start) return null;
-      return { start: start, end: end };
-    }
-
-    function norm(s) { return String(s || '').replace(/\s+/g, ' '); }
-
-    // Returns { range, confidence } or null. Confidence is reported so the panel
-    // can distinguish a comment that landed exactly from one that landed on a
-    // best guess.
-    function resolve(a) {
-      var root = Ryker.blocks.root();
-      var strategies = [];
-
-      if (a.blockId) {
-        var block = Ryker.blocks.byId(a.blockId);
-        if (block) {
-          strategies.push({ scope: block, withContext: true, conf: 'exact' });
-          strategies.push({ scope: block, withContext: false, conf: 'block' });
-        }
-      }
-      strategies.push({ scope: root, withContext: true, conf: 'context' });
-      strategies.push({ scope: root, withContext: false, conf: 'quote' });
-      strategies.push({ scope: root, withContext: false, conf: 'loose', loose: true });
-
-      for (var i = 0; i < strategies.length; i++) {
-        var hit = attempt(a, strategies[i]);
-        if (hit) return { range: hit, confidence: strategies[i].conf };
-      }
-      return null;
-    }
-
-    function attempt(a, s) {
-      var flat = Ryker.dom.flatten(s.scope);
-      var hay = s.loose ? norm(flat.text) : flat.text;
-      var needle = s.loose ? norm(a.quote) : a.quote;
-      if (!needle) return null;
-
-      var positions = [];
-      var from = 0;
-      while (true) {
-        var at = hay.indexOf(needle, from);
-        if (at === -1) break;
-        positions.push(at);
-        from = at + 1;
-        if (positions.length > 200) break;
-      }
-      if (!positions.length) return null;
-
-      var chosen;
-      if (s.withContext) {
-        var scored = positions.map(function (p) {
-          var pre = hay.slice(Math.max(0, p - CONTEXT), p);
-          var suf = hay.slice(p + needle.length, p + needle.length + CONTEXT);
-          return { p: p, score: common(pre, s.loose ? norm(a.prefix) : a.prefix, true) +
-                                common(suf, s.loose ? norm(a.suffix) : a.suffix, false) };
-        }).sort(function (x, y) { return y.score - x.score; });
-        // Ambiguity is a reason to fail this strategy, not to guess between two
-        // equally good candidates.
-        if (scored.length > 1 && scored[0].score === scored[1].score && scored[0].score === 0) return null;
-        chosen = scored[0].p;
-      } else {
-        if (positions.length > 1) return null;
-        chosen = positions[0];
-      }
-
-      if (s.loose) {
-        // A loose match found an offset in normalised text, which does not map
-        // back to the live nodes. Re-find the raw quote near that point instead.
-        var raw = flat.text.indexOf(a.quote);
-        if (raw === -1) {
-          var collapsed = a.quote.replace(/\s+/g, ' ').trim();
-          raw = flat.text.replace(/\s+/g, ' ').indexOf(collapsed);
-          if (raw === -1) return null;
-        }
-        chosen = raw;
-        needle = a.quote;
-      }
-
-      return buildRange(s.scope, chosen, chosen + needle.length);
-    }
-
-    function common(a, b, fromEnd) {
-      var n = Math.min(a.length, b.length), c = 0;
-      for (var i = 0; i < n; i++) {
-        var x = fromEnd ? a[a.length - 1 - i] : a[i];
-        var y = fromEnd ? b[b.length - 1 - i] : b[i];
-        if (x !== y) break;
-        c++;
-      }
-      return c;
-    }
-
-    function buildRange(scope, start, end) {
-      var flat = Ryker.dom.flatten(scope);
-      var a = Ryker.dom.locate(flat, start);
-      var b = Ryker.dom.locate(flat, end);
-      if (!a || !b) return null;
-      var r = document.createRange();
-      try { r.setStart(a.node, a.offset); r.setEnd(b.node, b.offset); }
-      catch (e) { return null; }
-      return r;
-    }
-
-    return { capture: capture, resolve: resolve, CONTEXT: CONTEXT };
-  })();
-
-
-  /* ---- comments/highlight.js ------------------------------------- */
-  // Painting comment ranges without mutating the report.
-  //
-  // CSS.highlights is the primary path because it marks text without touching the
-  // DOM, which matters when the same DOM is being edited, diffed and exported. A
-  // <mark> wrapper would put Ryker's elements inside the report's own content,
-  // where they would land in the saved HTML, shift the block ids that comments
-  // anchor against, and appear in the PDF.
-  //
-  // Confirmed available from file:// on 2026-08-13. The wrapper fallback exists
-  // for browsers without it and is removed cleanly on teardown.
-  Ryker.highlight = (function () {
-    'use strict';
-
-    var supported = typeof CSS !== 'undefined' && CSS.highlights && typeof Highlight === 'function';
-    var registry = {};
-    var wrappers = [];
-
-    var NAMES = { open: 'ryker-open', resolved: 'ryker-resolved', active: 'ryker-active' };
-
-    function clear() {
-      if (supported) {
-        Object.keys(NAMES).forEach(function (k) { CSS.highlights.delete(NAMES[k]); });
-      }
-      wrappers.forEach(function (w) {
-        if (!w.parentNode) return;
-        while (w.firstChild) w.parentNode.insertBefore(w.firstChild, w);
-        w.parentNode.removeChild(w);
-      });
-      wrappers = [];
-      registry = {};
-      if (!supported) Ryker.blocks.root().normalize();
-    }
-
-    // ranges: [{ id, range, status }]
-    function paint(ranges, activeId) {
-      clear();
-      if (!ranges.length) return;
-
-      if (supported) {
-        var buckets = { open: [], resolved: [], active: [] };
-        ranges.forEach(function (r) {
-          registry[r.id] = r.range;
-          var key = r.id === activeId ? 'active' : (r.status === 'resolved' ? 'resolved' : 'open');
-          buckets[key].push(r.range);
-        });
-        Object.keys(buckets).forEach(function (k) {
-          if (!buckets[k].length) return;
-          var h = new Highlight();
-          buckets[k].forEach(function (rg) { h.add(rg); });
-          CSS.highlights.set(NAMES[k], h);
-        });
-        return;
-      }
-
-      ranges.forEach(function (r) {
-        registry[r.id] = r.range;
-        try {
-          var mark = document.createElement('mark');
-          mark.className = 'ryker-mark ryker-mark-' + (r.id === activeId ? 'active' : (r.status || 'open'));
-          mark.setAttribute('data-ryker-comment', r.id);
-          r.range.surroundContents(mark);
-          wrappers.push(mark);
-        } catch (e) {
-          // surroundContents throws on a range crossing element boundaries.
-          // Skipping is correct: the comment still exists in the panel and is
-          // still anchored, it simply is not painted.
-        }
-      });
-    }
-
-    function scrollTo(id) {
-      var range = registry[id];
-      if (!range) return false;
-      var node = range.startContainer;
-      var el = node.nodeType === 3 ? node.parentNode : node;
-      if (el && el.scrollIntoView) {
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        return true;
-      }
-      return false;
-    }
-
-    function isSupported() { return supported; }
-
-    return { paint: paint, clear: clear, scrollTo: scrollTo, isSupported: isSupported, NAMES: NAMES };
-  })();
-
-
-  /* ---- comments/comments.js -------------------------------------- */
-  // Comment state: creation, resolution, re-anchoring, and the counts the
-  // toolbar shows. Comments are events in the revision journal rather than a
-  // document that gets rewritten, so nothing here writes storage directly.
-  Ryker.comments = (function () {
-    'use strict';
-
-    var committed = {};   // folded from the journal
-    var pending = { added: [], resolved: [], reopened: [], deleted: [] };
-    var anchors = {};     // id -> { range, confidence } or null when unanchored
-    var activeId = null;
-    var visible = true;
-    var listeners = [];
-
-    function onChange(fn) { listeners.push(fn); }
-    function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
-
-    function rebuild() {
-      committed = Ryker.journal.foldComments();
-      reanchor();
-      emit();
-    }
-
-    // The current view is the folded journal plus anything not yet saved.
-    function current() {
-      var map = {};
-      Object.keys(committed).forEach(function (id) { map[id] = committed[id]; });
-      pending.added.forEach(function (c) { map[c.id] = c; });
-      pending.resolved.forEach(function (e) {
-        if (map[e.id]) {
-          map[e.id] = clone(map[e.id]);
-          map[e.id].status = 'resolved';
-          map[e.id].resolvedAt = e.at;
-          map[e.id].resolvedBy = e.by;
-        }
-      });
-      pending.reopened.forEach(function (e) {
-        if (map[e.id]) { map[e.id] = clone(map[e.id]); map[e.id].status = 'open'; }
-      });
-      pending.deleted.forEach(function (e) { delete map[e.id]; });
-      return map;
-    }
-
-    function clone(o) { return JSON.parse(JSON.stringify(o)); }
-
-    function list() {
-      var map = current();
-      return Object.keys(map).map(function (id) { return map[id]; })
-        .sort(function (a, b) { return (a.createdAt || '').localeCompare(b.createdAt || ''); });
-    }
-
-    function counts() {
-      var l = list();
-      return {
-        total: l.length,
-        open: l.filter(function (c) { return c.status !== 'resolved'; }).length,
-        resolved: l.filter(function (c) { return c.status === 'resolved'; }).length,
-        unanchored: l.filter(function (c) { return !anchors[c.id]; }).length
-      };
-    }
-
-    function add(range, body, author) {
-      var a = Ryker.anchor.capture(range);
-      if (!a) return null;
-      var c = {
-        id: Ryker.dom.uid('c'),
-        documentId: Ryker.config.load().RYKER_DOCUMENT_ID,
-        quote: a.quote,
-        prefix: a.prefix,
-        suffix: a.suffix,
-        blockId: a.blockId,
-        body: String(body || ''),
-        author: author,
-        createdAt: Ryker.dom.now(),
-        status: 'open'
-      };
-      pending.added.push(c);
-      reanchor();
-      emit();
-      return c;
-    }
-
-    function resolve(id, author) {
-      if (!current()[id]) return false;
-      pending.reopened = pending.reopened.filter(function (e) { return e.id !== id; });
-      pending.resolved.push({ id: id, at: Ryker.dom.now(), by: author });
-      emit();
-      return true;
-    }
-
-    function reopen(id, author) {
-      if (!current()[id]) return false;
-      pending.resolved = pending.resolved.filter(function (e) { return e.id !== id; });
-      pending.reopened.push({ id: id, at: Ryker.dom.now(), by: author });
-      emit();
-      return true;
-    }
-
-    function remove(id, author) {
-      // An unsaved comment is discarded outright rather than recorded as a
-      // deletion, so the journal never carries an event for something that never
-      // existed in it.
-      var wasPending = pending.added.some(function (c) { return c.id === id; });
-      pending.added = pending.added.filter(function (c) { return c.id !== id; });
-      if (!wasPending) pending.deleted.push({ id: id, at: Ryker.dom.now(), by: author });
-      reanchor();
-      emit();
-      return true;
-    }
-
-    function reanchor() {
-      var map = current();
-      anchors = {};
-      Object.keys(map).forEach(function (id) {
-        var hit = null;
-        try { hit = Ryker.anchor.resolve(map[id]); } catch (e) { hit = null; }
-        anchors[id] = hit;
-      });
-      repaint();
-    }
-
-    function repaint() {
-      if (!visible) { Ryker.highlight.clear(); return; }
-      var map = current();
-      var ranges = [];
-      Object.keys(anchors).forEach(function (id) {
-        if (!anchors[id] || !map[id]) return;
-        ranges.push({ id: id, range: anchors[id].range, status: map[id].status });
-      });
-      Ryker.highlight.paint(ranges, activeId);
-    }
-
-    function setVisible(v) { visible = !!v; repaint(); emit(); }
-    function isVisible() { return visible; }
-    function setActive(id) { activeId = id; repaint(); emit(); }
-    function getActive() { return activeId; }
-    function anchorOf(id) { return anchors[id] || null; }
-    function isUnanchored(id) { return !anchors[id]; }
-
-    function hasPending() {
-      return pending.added.length + pending.resolved.length +
-        pending.reopened.length + pending.deleted.length > 0;
-    }
-
-    function drain() {
-      var out = {
-        added: pending.added.slice(),
-        resolved: pending.resolved.slice(),
-        reopened: pending.reopened.slice(),
-        deleted: pending.deleted.slice()
-      };
-      pending = { added: [], resolved: [], reopened: [], deleted: [] };
-      return out;
-    }
-
-    function pendingCounts() {
-      return { added: pending.added.length, resolved: pending.resolved.length };
-    }
-
-    function nextOpen() {
-      var l = list().filter(function (c) { return c.status !== 'resolved' && anchors[c.id]; });
-      if (!l.length) return null;
-      var i = l.findIndex(function (c) { return c.id === activeId; });
-      return l[(i + 1) % l.length];
-    }
-
-    return {
-      rebuild: rebuild, list: list, current: current, counts: counts,
-      add: add, resolve: resolve, reopen: reopen, remove: remove,
-      reanchor: reanchor, repaint: repaint,
-      setVisible: setVisible, isVisible: isVisible,
-      setActive: setActive, getActive: getActive,
-      anchorOf: anchorOf, isUnanchored: isUnanchored,
-      hasPending: hasPending, drain: drain, pendingCounts: pendingCounts,
-      nextOpen: nextOpen, onChange: onChange
-    };
-  })();
-
-
-  /* ---- storage/adapter.js ---------------------------------------- */
-  // Storage adapter. Every backend implements the same four calls, so the editor,
-  // the comment engine and the revision panel never know which one is live.
-  //
-  // The active backend is always named in the toolbar. A comment written to
-  // localStorage by someone who believed they were committing is the worst
-  // failure this tool can produce, so the destination is stated rather than
-  // inferred.
-  Ryker.storage = (function () {
-    'use strict';
-
-    var backends = {};
-    var active = null;
-    var listeners = [];
-
-    function register(name, backend) { backends[name] = backend; }
-    function get(name) { return backends[name]; }
-    function onChange(fn) { listeners.push(fn); }
-    function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
-
-    // Order matters: the most durable available backend wins, and local storage
-    // is the floor that is always present.
-    function detect() {
-      var cfg = Ryker.config.load();
-      if (cfg.RYKER_GITHUB_ENABLED && cfg.RYKER_GITHUB_OWNER && cfg.RYKER_GITHUB_REPO &&
-          backends.github && backends.github.isReady()) {
-        return use('github');
-      }
-      if (backends.fs && backends.fs.isReady()) return use('fs');
-      return use('local');
-    }
-
-    function use(name) {
-      if (!backends[name]) return active;
-      active = backends[name];
-      active.name = name;
-      emit();
-      return active;
-    }
-
-    function current() { return active || use('local'); }
-
-    function label() {
-      var b = current();
-      return b ? b.describe() : 'No storage';
-    }
-
-    function canWrite() {
-      var b = current();
-      return !!(b && b.canWrite());
-    }
-
-    function load() {
-      var b = current();
-      if (!b) return Promise.resolve({ records: [] });
-      return b.load().catch(function (err) {
-        // A backend that cannot load must not take the document down with it.
-        Ryker.log('storage load failed on ' + b.name + ': ' + (err && err.message));
-        return { records: [], error: err };
-      });
-    }
-
-    function save(payload) {
-      var b = current();
-      if (!b) return Promise.reject(new Error('No storage backend'));
-      return b.save(payload);
-    }
-
-    return {
-      register: register, get: get, detect: detect, use: use, current: current,
-      label: label, canWrite: canWrite, load: load, save: save, onChange: onChange,
-      names: function () { return Object.keys(backends); }
-    };
-  })();
-
-
-  /* ---- storage/local.js ------------------------------------------ */
-  // localStorage backend. The floor: always available, needs nothing configured,
-  // and works from a ZIP on a machine with no repository and no network.
-  //
-  // Keyed by document id rather than by filename, per spec section 34, so
-  // renaming the report does not orphan its comments.
-  Ryker.storage.register('local', (function () {
-    'use strict';
-
-    function key() {
-      return 'ryker:' + Ryker.config.load().RYKER_DOCUMENT_ID + ':journal';
-    }
-
-    function available() {
-      try {
-        var k = 'ryker:probe';
-        localStorage.setItem(k, '1');
-        localStorage.removeItem(k);
-        return true;
-      } catch (e) { return false; }
-    }
-
-    return {
-      // The file on disk is never rewritten, so the journal has to be replayed
-      // into the document at boot or a reload silently loses every saved edit.
-      ownsDocument: false,
-
-      isReady: function () { return available(); },
-      canWrite: function () { return available(); },
-
-      describe: function () {
-        return available() ? 'This browser only' : 'Memory only, nothing is being saved';
-      },
-
-      detail: function () {
-        return 'Saved in this browser under ' + key() + '. Nothing leaves this machine, ' +
-          'and clearing site data removes it. Use Export to hand the work to someone else.';
-      },
-
-      load: function () {
-        if (!available()) return Promise.resolve({ records: [] });
-        var raw = localStorage.getItem(key());
-        if (!raw) return Promise.resolve({ records: [] });
-        try {
-          var parsed = JSON.parse(raw);
-          return Promise.resolve({ records: parsed.records || [] });
-        } catch (e) {
-          return Promise.resolve({ records: [], error: e });
-        }
-      },
-
-      save: function (payload) {
-        if (!available()) {
-          return Promise.reject(new Error('This browser is refusing local storage, so nothing can be saved here.'));
-        }
-        try {
-          localStorage.setItem(key(), JSON.stringify({
-            documentId: Ryker.config.load().RYKER_DOCUMENT_ID,
-            savedAt: Ryker.dom.now(),
-            records: payload.records
-          }));
-          return Promise.resolve({ ok: true, where: 'this browser' });
-        } catch (e) {
-          // Quota is the realistic failure, and losing the edit to it would be
-          // the offline-behaviour violation section 36 forbids. The working copy
-          // stays in memory; only persistence failed.
-          return Promise.reject(new Error(
-            'Local storage refused the write (' + e.name + '). Your edits are still ' +
-            'here in the page. Export them before closing this tab.'));
-        }
-      }
-    };
-  })());
-
-
-  /* ---- storage/fs.js --------------------------------------------- */
-  // File System Access backend. Writes the report and the journal straight to the
-  // folder the report lives in, once a person has granted access to it.
-  //
-  // A page cannot scan its own directory unasked, which is correct and is why
-  // section 23 asks for a "Choose report folder" step. showDirectoryPicker was
-  // confirmed exposed from file:// with isSecureContext true on 2026-08-13; the
-  // grant itself still needs a click.
-  Ryker.storage.register('fs', (function () {
-    'use strict';
-
-    var dir = null;
-    var granted = false;
-
-    function supported() { return typeof window.showDirectoryPicker === 'function'; }
-
-    function pick() {
-      if (!supported()) {
-        return Promise.reject(new Error(
-          'This browser has no directory picker. Use Export to download the edited file instead.'));
-      }
-      return window.showDirectoryPicker({ mode: 'readwrite' }).then(function (handle) {
-        dir = handle;
-        granted = true;
-        Ryker.storage.detect();
-        return handle;
-      });
-    }
-
-    function handle() { return dir; }
-
-    function getDir(path, create) {
-      var parts = path.split('/').filter(Boolean);
-      var p = Promise.resolve(dir);
-      parts.forEach(function (part) {
-        p = p.then(function (d) { return d.getDirectoryHandle(part, { create: !!create }); });
-      });
-      return p;
-    }
-
-    function readFile(d, name) {
-      return d.getFileHandle(name).then(function (fh) { return fh.getFile(); })
-        .then(function (f) { return f.text(); });
-    }
-
-    function writeFile(d, name, contents) {
-      return d.getFileHandle(name, { create: true }).then(function (fh) {
-        return fh.createWritable();
-      }).then(function (w) {
-        return w.write(contents).then(function () { return w.close(); });
-      });
-    }
-
-    function pad(n) { return String(n).padStart(4, '0'); }
-
-    return {
-      ownsDocument: true,
-
-      isReady: function () { return granted && !!dir; },
-      canWrite: function () { return granted && !!dir; },
-      supported: supported,
-      pick: pick,
-      handle: handle,
-      readFile: readFile,
-      writeFile: writeFile,
-      getDir: getDir,
-
-      describe: function () {
-        return dir ? 'Folder: ' + dir.name : 'No folder chosen';
-      },
-
-      detail: function () {
-        return dir
-          ? 'Saving into ' + dir.name + '. The report is rewritten in place and each save appends a ' +
-            'new file under .ryker/revisions/.'
-          : 'Choose the folder the report sits in to save changes straight to disk.';
-      },
-
-      load: function () {
-        if (!dir) return Promise.resolve({ records: [] });
-        return getDir('.ryker/revisions', false).then(function (d) {
-          var reads = [];
-          var it = d.values();
-          function step() {
-            return it.next().then(function (res) {
-              if (res.done) return null;
-              var entry = res.value;
-              if (entry.kind === 'file' && /\.json$/.test(entry.name)) {
-                reads.push(readFile(d, entry.name).then(function (t) {
-                  try { return JSON.parse(t); } catch (e) { return null; }
-                }));
-              }
-              return step();
-            });
-          }
-          return step().then(function () { return Promise.all(reads); });
-        }).then(function (list) {
-          return { records: (list || []).filter(Boolean) };
-        }).catch(function () {
-          // No .ryker directory yet is the ordinary first-run case, not an error.
-          return { records: [] };
-        });
-      },
-
-      // Only the newly appended records are written. Rewriting the whole log on
-      // every save would defeat the point of an append-only journal.
-      save: function (payload) {
-        if (!dir) return Promise.reject(new Error('No folder chosen yet.'));
-        var cfg = Ryker.config.load();
-        return getDir('.ryker/revisions', true).then(function (d) {
-          var writes = (payload.appended || []).map(function (rec) {
-            return writeFile(d, pad(rec.seq) + '.json', JSON.stringify(rec, null, 2));
-          });
-          return Promise.all(writes);
-        }).then(function () {
-          return getDir('.ryker', true);
-        }).then(function (d) {
-          return writeFile(d, 'document.json', JSON.stringify({
-            documentId: cfg.RYKER_DOCUMENT_ID,
-            documentPath: cfg.RYKER_DOCUMENT_PATH,
-            updatedAt: Ryker.dom.now(),
-            revisions: payload.records.length
-          }, null, 2));
-        }).then(function () {
-          if (!payload.documentHtml) return null;
-          return writeFile(dir, cfg.RYKER_DOCUMENT_PATH, payload.documentHtml);
-        }).then(function () {
-          return { ok: true, where: dir.name };
-        });
-      }
-    };
-  })());
-
-
-  /* ---- storage/github.js ----------------------------------------- */
-  // GitHub backend, over the Contents API only.
-  //
-  // Measured 2026-08-13: api.github.com answers a CORS preflight for PUT
-  // .../contents/... with access-control-allow-origin: *, PUT among the allowed
-  // methods and Authorization among the allowed headers, and it answers the same
-  // way to Origin: null. So a report opened from disk can commit, with no server
-  // anywhere.
-  //
-  // Authentication is a fine-grained token, not the device flow. github.com's
-  // login endpoints send no CORS headers at all, so the device flow cannot
-  // complete in a page without a relay, and a relay would make Ryker
-  // infrastructure mandatory. A fine-grained token also carries the repository
-  // restriction natively: GitHub scopes it to selected repositories with
-  // Contents: read and write as a permission in its own right, so the guarantee
-  // is enforced by GitHub rather than promised by Ryker.
-  //
-  // The token lives in sessionStorage and nowhere else. Never in localStorage,
-  // never in the document, never in an export, never in a commit.
-  Ryker.storage.register('github', (function () {
-    'use strict';
-
-    var API = 'https://api.github.com';
-    var SESSION_KEY = 'ryker:gh:token';
-    var identity = null;
-    var access = null;
-    var docSha = null;
-
-    function cfg() { return Ryker.config.load(); }
-    function repo() { return cfg().RYKER_GITHUB_OWNER + '/' + cfg().RYKER_GITHUB_REPO; }
-
-    function token() {
-      try { return sessionStorage.getItem(SESSION_KEY) || null; } catch (e) { return null; }
-    }
-
-    function setToken(t) {
-      try {
-        if (t) sessionStorage.setItem(SESSION_KEY, t);
-        else sessionStorage.removeItem(SESSION_KEY);
-      } catch (e) {}
-      identity = null; access = null;
-    }
-
-    function signOut() { setToken(null); Ryker.storage.detect(); }
-
-    function req(path, opts) {
-      opts = opts || {};
-      var headers = {
-        'Accept': 'application/vnd.github+json',
-        'X-GitHub-Api-Version': '2022-11-28'
-      };
-      if (token()) headers.Authorization = 'Bearer ' + token();
-      if (opts.body) headers['Content-Type'] = 'application/json';
-      return fetch(API + path, {
-        method: opts.method || 'GET',
-        headers: headers,
-        body: opts.body ? JSON.stringify(opts.body) : undefined
-      }).then(function (res) {
-        return res.text().then(function (t) {
-          var json = null;
-          try { json = t ? JSON.parse(t) : null; } catch (e) {}
-          return { ok: res.ok, status: res.status, json: json, text: t };
-        });
-      });
-    }
-
-    function b64(str) {
-      var bytes = new TextEncoder().encode(str);
-      var bin = '';
-      for (var i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-      return btoa(bin);
-    }
-
-    function unb64(str) {
-      var bin = atob(String(str).replace(/\s/g, ''));
-      var bytes = new Uint8Array(bin.length);
-      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-      return new TextDecoder().decode(bytes);
-    }
-
-    // Verification calls the API and reports the access it found. The paste is
-    // never trusted on its own, because a token that reads but cannot write
-    // would otherwise let someone edit for an hour and fail at the save.
-    function verify() {
-      if (!token()) return Promise.resolve({ ok: false, reason: 'No token' });
-      return req('/user').then(function (me) {
-        if (!me.ok) {
-          return { ok: false, reason: me.status === 401
-            ? 'GitHub rejected this token.'
-            : 'GitHub answered ' + me.status + ' for the account check.' };
-        }
-        identity = {
-          id: me.json.id,
-          login: me.json.login,
-          name: me.json.name || me.json.login,
-          source: 'github'
-        };
-        return req('/repos/' + repo()).then(function (r) {
-          if (!r.ok) {
-            return { ok: false, identity: identity, reason: r.status === 404
-              ? 'This token cannot see ' + repo() + '. Either the repository name is wrong, ' +
-                'or the token was not granted access to it.'
-              : 'GitHub answered ' + r.status + ' for ' + repo() + '.' };
-          }
-          var perms = r.json.permissions || {};
-          var wanted = cfg().RYKER_GITHUB_REPOSITORY_ID;
-          if (wanted && String(r.json.id) !== String(wanted)) {
-            return { ok: false, identity: identity, reason:
-              'The repository at ' + repo() + ' has id ' + r.json.id + ', but this report is ' +
-              'configured for id ' + wanted + '. Refusing to write to the wrong repository.' };
-          }
-          access = {
-            push: !!perms.push,
-            admin: !!perms.admin,
-            repositoryId: r.json.id,
-            private: !!r.json.private,
-            defaultBranch: r.json.default_branch
-          };
-          if (!access.push) {
-            return { ok: false, identity: identity, access: access, reason:
-              identity.login + ' can read ' + repo() + ' but cannot write to it. ' +
-              'Ryker stays read-only until the repository owner grants write access.' };
-          }
-          return { ok: true, identity: identity, access: access };
-        });
-      }).catch(function (e) {
-        return { ok: false, reason: 'Could not reach GitHub: ' + e.message };
-      });
-    }
-
-    function contentsPath(p) {
-      return '/repos/' + repo() + '/contents/' + p.split('/').map(encodeURIComponent).join('/') +
-        '?ref=' + encodeURIComponent(cfg().RYKER_GITHUB_BRANCH);
-    }
-
-    function putPath(p) {
-      return '/repos/' + repo() + '/contents/' + p.split('/').map(encodeURIComponent).join('/');
-    }
-
-    function pad(n) { return String(n).padStart(4, '0'); }
-
-    return {
-      ownsDocument: true,
-
-      isReady: function () { return !!token() && !!access && access.push; },
-      canWrite: function () { return !!token() && !!access && access.push; },
-      setToken: setToken,
-      hasToken: function () { return !!token(); },
-      signOut: signOut,
-      verify: verify,
-      identity: function () { return identity; },
-      access: function () { return access; },
-      documentSha: function () { return docSha; },
-
-      describe: function () {
-        if (!token()) return 'GitHub, not signed in';
-        if (!access) return 'GitHub, not verified';
-        if (!access.push) return 'GitHub, read-only';
-        return repo();
-      },
-
-      detail: function () {
-        return 'Saving to ' + repo() + ' on branch ' + cfg().RYKER_GITHUB_BRANCH +
-          ', as ' + (identity ? identity.login : 'an unverified account') + '.';
-      },
-
-      load: function () {
-        if (!token()) return Promise.resolve({ records: [] });
-        return req(contentsPath('.ryker/revisions')).then(function (res) {
-          if (!res.ok || !Array.isArray(res.json)) return { records: [] };
-          var files = res.json.filter(function (f) {
-            return f.type === 'file' && /\.json$/.test(f.name);
-          });
-          return Promise.all(files.map(function (f) {
-            return req(contentsPath('.ryker/revisions/' + f.name)).then(function (r) {
-              if (!r.ok || !r.json || !r.json.content) return null;
-              try { return JSON.parse(unb64(r.json.content)); } catch (e) { return null; }
-            });
-          })).then(function (list) {
-            return { records: list.filter(Boolean) };
-          });
-        }).then(function (out) {
-          // The document's own sha is what makes conflict detection possible, so
-          // it is fetched at load time and compared at save time.
-          return req(contentsPath(cfg().RYKER_DOCUMENT_PATH)).then(function (r) {
-            if (r.ok && r.json && r.json.sha) docSha = r.json.sha;
-            return out;
-          });
-        });
-      },
-
-      // Spec section 18: never blindly overwrite a newer revision. The sha the
-      // document carried at load is compared against the sha it carries now, and
-      // a difference stops the save rather than resolving it.
-      checkConflict: function () {
-        if (!token()) return Promise.resolve({ conflict: false });
-        return req(contentsPath(cfg().RYKER_DOCUMENT_PATH)).then(function (r) {
-          if (!r.ok) return { conflict: false, unknown: true };
-          var live = r.json && r.json.sha;
-          if (docSha && live && live !== docSha) {
-            return { conflict: true, loadedSha: docSha, liveSha: live };
-          }
-          return { conflict: false, liveSha: live };
-        });
-      },
-
-      save: function (payload) {
-        if (!this.canWrite()) {
-          return Promise.reject(new Error('Not signed in with write access to ' + repo() + '.'));
-        }
-        var branch = cfg().RYKER_GITHUB_BRANCH;
-        var docPath = cfg().RYKER_DOCUMENT_PATH;
-        var summary = payload.summary || {};
-        var message = (payload.message || 'Update ' + docPath) + '\n\n' +
-          'Ryker-Document: ' + docPath + '\n' +
-          'Ryker-Revision: ' + (payload.appended.length ? payload.appended[payload.appended.length - 1].seq : '') + '\n' +
-          'Ryker-Comments-Added: ' + (summary.commentsAdded || 0) + '\n' +
-          'Ryker-Comments-Resolved: ' + (summary.commentsResolved || 0);
-
-        var chain = Promise.resolve();
-        payload.appended.forEach(function (rec) {
-          chain = chain.then(function () {
-            return req(putPath('.ryker/revisions/' + pad(rec.seq) + '.json'), {
-              method: 'PUT',
-              body: {
-                message: 'Ryker revision ' + rec.seq + ' for ' + docPath,
-                content: b64(JSON.stringify(rec, null, 2)),
-                branch: branch
-              }
-            }).then(function (r) {
-              if (!r.ok) throw new Error('Could not write revision ' + rec.seq + ': ' +
-                ((r.json && r.json.message) || r.status));
-            });
-          });
-        });
-
-        return chain.then(function () {
-          if (!payload.documentHtml) return null;
-          return req(putPath(docPath), {
-            method: 'PUT',
-            body: {
-              message: message,
-              content: b64(payload.documentHtml),
-              sha: docSha || undefined,
-              branch: branch
-            }
-          }).then(function (r) {
-            if (!r.ok) {
-              throw new Error(r.status === 409
-                ? 'The document changed on GitHub since you began editing.'
-                : 'Could not write the document: ' + ((r.json && r.json.message) || r.status));
-            }
-            if (r.json && r.json.content) docSha = r.json.content.sha;
-            return r;
-          });
-        }).then(function () {
-          return { ok: true, where: repo() };
-        });
-      }
-    };
-  })());
 
 
   /* ---- export/zip.js --------------------------------------------- */
@@ -3677,357 +2344,6 @@
   })();
 
 
-  /* ---- ui/panel.js ----------------------------------------------- */
-  // The side panel. One surface, two views: comments and revisions.
-  Ryker.panel = (function () {
-    'use strict';
-
-    var node = null, bodyEl = null, titleEl = null, footEl = null;
-    var view = null;
-    var filter = 'open';
-    var activeRev = null;
-
-    function d() { return Ryker.dom; }
-
-    function ensure() {
-      if (node) return node;
-      titleEl = d().el('h2', { text: 'Comments' });
-      bodyEl = d().el('div', { class: 'body' });
-      footEl = d().el('div', { class: 'foot' });
-      node = d().el('div', { class: 'panel', role: 'complementary' }, [
-        d().el('header', {}, [
-          titleEl,
-          d().el('div', { class: 'spacer' }),
-          d().el('button', { class: 'rk', text: 'Close', onclick: close })
-        ]),
-        bodyEl,
-        footEl
-      ]);
-      Ryker.shell.add(node);
-      return node;
-    }
-
-    function open(which) {
-      ensure();
-      view = which;
-      node.style.display = 'flex';
-      render();
-      reflow();
-      Ryker.toolbar.sync();
-    }
-
-    // The panel prefers to sit in the layout's own right margin. Only when the
-    // margin is too narrow does the report give up any width, and only as much as
-    // the shortfall.
-    function reflow() {
-      if (!node || node.style.display === 'none') return;
-      Ryker.shell.setPanelSpace(node);
-    }
-
-    function close() {
-      if (node) node.style.display = 'none';
-      view = null;
-      Ryker.shell.releasePanelSpace();
-      if (activeRev) { Ryker.review.exit(); activeRev = null; }
-      Ryker.toolbar.sync();
-    }
-
-    function toggle(which) {
-      if (view === which) close(); else open(which);
-    }
-
-    function isOpen(which) { return view != null && (!which || view === which); }
-
-    function render() {
-      if (!view) return;
-      if (view === 'comments') renderComments();
-      else renderRevisions();
-    }
-
-    // ---- comments -----------------------------------------------------------
-
-    function renderComments() {
-      titleEl.textContent = 'Comments';
-      bodyEl.innerHTML = '';
-      footEl.innerHTML = '';
-
-      var counts = Ryker.comments.counts();
-      var all = Ryker.comments.list();
-      var shown = all.filter(function (c) {
-        if (filter === 'open') return c.status !== 'resolved';
-        if (filter === 'resolved') return c.status === 'resolved';
-        return true;
-      });
-
-      ['open', 'resolved', 'all'].forEach(function (f) {
-        footEl.appendChild(d().el('button', {
-          class: 'rk' + (filter === f ? ' on' : ''),
-          text: f === 'open' ? 'Open (' + counts.open + ')'
-            : f === 'resolved' ? 'Resolved (' + counts.resolved + ')'
-            : 'All (' + counts.total + ')',
-          onclick: function () { filter = f; render(); }
-        }));
-      });
-      footEl.appendChild(d().el('button', {
-        class: 'rk', text: 'Next open',
-        onclick: function () {
-          var n = Ryker.comments.nextOpen();
-          if (!n) return;
-          Ryker.comments.setActive(n.id);
-          Ryker.highlight.scrollTo(n.id);
-          render();
-        }
-      }));
-
-      if (counts.unanchored) {
-        bodyEl.appendChild(d().el('div', { class: 'note warn' }, [
-          d().el('div', {
-            text: counts.unanchored + (counts.unanchored === 1 ? ' comment is' : ' comments are') +
-              ' unanchored. The text they were attached to is no longer findable, so they are ' +
-              'listed here rather than pointed at content that may not be what was meant.'
-          })
-        ]));
-      }
-
-      if (!shown.length) {
-        bodyEl.appendChild(d().el('div', {
-          class: 'empty',
-          text: filter === 'open' ? 'No open comments.' : 'Nothing here.'
-        }));
-        return;
-      }
-
-      shown.forEach(function (c) { bodyEl.appendChild(commentCard(c)); });
-    }
-
-    function commentCard(c) {
-      var orphan = Ryker.comments.isUnanchored(c.id);
-      var active = Ryker.comments.getActive() === c.id;
-      var cls = 'card' + (active ? ' active' : '') +
-        (c.status === 'resolved' ? ' resolved' : '') + (orphan ? ' orphan' : '');
-
-      var tags = d().el('div', {}, [
-        d().el('span', {
-          class: 'tag ' + (c.status === 'resolved' ? 'resolved' : 'open'),
-          text: c.status === 'resolved' ? 'Resolved' : 'Open'
-        }),
-        orphan ? d().el('span', { class: 'tag orphan', text: 'Unanchored' }) : null
-      ]);
-
-      var who = d().el('div', { class: 'who' });
-      who.appendChild(d().el('b', { text: (c.author && c.author.name) || 'Unknown' }));
-      who.appendChild(document.createTextNode(
-        ' ' + d().fmtDate(c.createdAt) +
-        (c.author && c.author.source === 'self' ? ' (self-asserted)' : '')));
-
-      var acts = d().el('div', { class: 'acts' });
-      if (!orphan) {
-        acts.appendChild(d().el('button', {
-          class: 'rk', text: 'Show',
-          onclick: function () {
-            Ryker.comments.setActive(c.id);
-            Ryker.highlight.scrollTo(c.id);
-            render();
-          }
-        }));
-      }
-      acts.appendChild(d().el('button', {
-        class: 'rk',
-        text: c.status === 'resolved' ? 'Reopen' : 'Resolve',
-        onclick: function () {
-          var me = Ryker.identity.current();
-          if (c.status === 'resolved') Ryker.comments.reopen(c.id, me);
-          else Ryker.comments.resolve(c.id, me);
-          render();
-        }
-      }));
-      acts.appendChild(d().el('button', {
-        class: 'rk danger', text: 'Delete',
-        onclick: function () {
-          Ryker.dialog.confirm('Delete this comment?',
-            '<p>The deletion is recorded in the next save, so the comment stays visible in ' +
-            'the revision history. Nothing is erased from the record.</p>',
-            'Delete', function () {
-              Ryker.comments.remove(c.id, Ryker.identity.current());
-              render();
-            });
-        }
-      }));
-
-      return d().el('div', { class: cls }, [
-        tags,
-        d().el('div', { class: 'quote', text: '"' + c.quote + '"' }),
-        who,
-        // textContent, never innerHTML. This is what closes the injection path
-        // left open by writing the sanitiser rather than vendoring one.
-        d().el('div', { class: 'text', text: c.body }),
-        acts
-      ]);
-    }
-
-    // ---- revisions ----------------------------------------------------------
-
-    function renderRevisions() {
-      titleEl.textContent = 'Revisions';
-      bodyEl.innerHTML = '';
-      footEl.innerHTML = '';
-
-      var records = Ryker.journal.all().slice().reverse();
-      if (!records.length) {
-        bodyEl.appendChild(d().el('div', {
-          class: 'empty',
-          text: 'No revisions yet. The first save creates one.'
-        }));
-        return;
-      }
-
-      footEl.appendChild(d().el('button', {
-        class: 'rk', text: 'Exit revision view',
-        onclick: function () { Ryker.review.exit(); activeRev = null; render(); }
-      }));
-
-      records.forEach(function (r) {
-        var s = Ryker.journal.summarize(r);
-        var row = d().el('div', {
-          class: 'revrow' + (activeRev === r.id ? ' on' : ''),
-          role: 'button', tabindex: '0',
-          onclick: function () { showRevision(r); }
-        }, [
-          d().el('div', { class: 'seq', text: 'Revision ' + r.seq }),
-          d().el('div', {
-            class: 'meta',
-            text: ((r.author && r.author.name) || 'Unknown') + '  |  ' + d().fmtDate(r.timestamp) +
-              (r.author && r.author.source === 'self' ? '  |  self-asserted' : '')
-          }),
-          d().el('div', { class: 'stats' }, [
-            d().el('span', { class: 'stat-add', text: s.additions + ' additions' }),
-            d().el('span', { class: 'stat-del', text: s.removals + ' removals' }),
-            s.commentsAdded ? d().el('span', { class: 'stat-cm', text: s.commentsAdded + ' comments added' }) : null,
-            s.commentsResolved ? d().el('span', { class: 'stat-cm', text: s.commentsResolved + ' comments resolved' }) : null
-          ])
-        ]);
-        if (r.message) row.appendChild(d().el('div', { class: 'meta', text: r.message }));
-        bodyEl.appendChild(row);
-      });
-    }
-
-    function showRevision(r) {
-      activeRev = r.id;
-      render();
-      Ryker.review.show(r);
-    }
-
-    function refresh() { if (view) render(); }
-
-    return {
-      open: open, close: close, toggle: toggle, isOpen: isOpen, reflow: reflow,
-      render: render, refresh: refresh,
-      view: function () { return view; }
-    };
-  })();
-
-
-  /* ---- revisions/review.js --------------------------------------- */
-  // Revision review. Answers what changed, who changed it and when, without
-  // sending anyone to a raw commit listing.
-  //
-  // The panel lists revisions; this shows one. Because the journal captured each
-  // delta at write time, a revision renders as a set of block-level prose diffs
-  // rather than as a unified diff over the whole file.
-  Ryker.review = (function () {
-    'use strict';
-
-    var current = null;
-
-    function show(record) {
-      current = record;
-      var d = Ryker.dom;
-      var s = Ryker.journal.summarize(record);
-
-      var wrap = d.el('div');
-
-      wrap.appendChild(d.el('div', { class: 'note' }, [
-        d.el('div', {
-          text: 'Revision ' + record.seq + ', by ' + ((record.author && record.author.name) || 'Unknown') +
-            (record.author && record.author.source === 'self' ? ' (self-asserted)' : '') +
-            ', ' + d.fmtDate(record.timestamp) + '. ' +
-            s.additions + ' additions, ' + s.removals + ' removals across ' +
-            s.blocks + (s.blocks === 1 ? ' block' : ' blocks') +
-            (s.commentsAdded ? ', ' + s.commentsAdded + ' comments added' : '') +
-            (s.commentsResolved ? ', ' + s.commentsResolved + ' comments resolved' : '') + '.'
-        })
-      ]));
-
-      if (record.message) {
-        wrap.appendChild(d.el('p', { class: 'muted', text: record.message }));
-      }
-
-      if (!record.changes.length) {
-        wrap.appendChild(d.el('p', { class: 'muted', text: 'No text changed in this revision.' }));
-      }
-
-      record.changes.forEach(function (c) {
-        var box = d.el('div', { class: 'blockdiff' });
-        box.appendChild(d.el('div', { class: 'lbl', text: Ryker.blocks.label(c.id) }));
-
-        var txt = d.el('div', { class: 'txt' });
-        if (c.kind === 'added') {
-          txt.appendChild(d.el('ins', { text: textOf(c.after) }));
-        } else if (c.kind === 'removed') {
-          txt.appendChild(d.el('del', { text: textOf(c.before) }));
-        } else {
-          txt.appendChild(Ryker.diff.renderInline(Ryker.diff.words(c.before, c.after)));
-        }
-        box.appendChild(txt);
-
-        if (c.before != null) {
-          box.appendChild(d.el('div', { class: 'acts', style: 'margin-top:7px' }, [
-            d.el('button', {
-              class: 'rk', text: 'Restore this block to the earlier text',
-              onclick: function () {
-                if (!Ryker.editable.isOn()) {
-                  Ryker.dialog.alert('Edit Mode is off',
-                    'Turn on Edit Mode before restoring, so the change is recorded as an edit ' +
-                    'you made rather than applied silently.', 'warn');
-                  return;
-                }
-                Ryker.editable.revertBlock(c.id, c.before);
-                Ryker.dialog.closeTop();
-                Ryker.toolbar.sync();
-              }
-            })
-          ]));
-        }
-        wrap.appendChild(box);
-      });
-
-      (record.comments.added || []).forEach(function (cm) {
-        wrap.appendChild(d.el('div', { class: 'blockdiff' }, [
-          d.el('div', { class: 'lbl', text: 'Comment added on "' + trim(cm.quote) + '"' }),
-          d.el('div', { class: 'txt', text: cm.body })
-        ]));
-      });
-
-      Ryker.dialog.open({ title: 'Revision ' + record.seq, body: wrap });
-    }
-
-    function textOf(html) {
-      var t = document.createElement('div');
-      t.innerHTML = html == null ? '' : html;
-      return t.textContent || '';
-    }
-
-    function trim(s) {
-      s = String(s || '');
-      return s.length > 48 ? s.slice(0, 45) + '...' : s;
-    }
-
-    function exit() { current = null; }
-
-    return { show: show, exit: exit, current: function () { return current; } };
-  })();
-
-
   /* ---- editor/editable.js ---------------------------------------- */
   // Edit Mode. Per-block contenteditable over prose only, with sanitising on
   // paste and on input, and a baseline snapshot so a save knows exactly which
@@ -5433,195 +3749,1807 @@
   })();
 
 
-  /* ---- editor/save.js -------------------------------------------- */
-  // The save flow. Edits accumulate in a working state and land as one revision,
-  // after a confirmation that states exactly what is about to be written and
-  // where.
-  Ryker.save = (function () {
+  /* ---- editor/outline.js ----------------------------------------- */
+  // The document as a tree of rows. No DOM of its own, no UI.
+  //
+  // A row is a direct child of a <section>, or a direct child of <main> that is
+  // not chrome. Deliberately not a tag list: three of this report's tables and ten
+  // of the other's sit inside a div.scroll-x that gives them their horizontal
+  // scrolling, so a row keyed on tag name would offer to move a table out of its
+  // own scroller. kindOf() reads what a row CONTAINS, so the wrapper still reads
+  // as a table and carries the table glyph.
+  //
+  // Rows nest by heading rank rather than by DOM nesting, because an h3 does not
+  // wrap the paragraphs that follow it. Every heading in both reports is a direct
+  // child of its section, which is what makes the single-pass stack below correct;
+  // tree() checks that and falls back rather than producing a wrong shape.
+  Ryker.outline = (function () {
     'use strict';
 
-    function pending() {
-      var changes = Ryker.editable.changes();
-      var cm = Ryker.comments.pendingCounts();
+    var CHROME = { HEADER: 1, FOOTER: 1, NAV: 1, SCRIPT: 1, STYLE: 1, TEMPLATE: 1 };
+    var HEADING = /^H([1-6])$/;
+
+    function root() { return Ryker.blocks.root(); }
+
+    function rankOf(el) {
+      var m = el.tagName.match(HEADING);
+      return m ? parseInt(m[1], 10) : 0;
+    }
+
+    // Every element the outline is willing to show, in document order.
+    function rows() {
+      var out = [];
+      var hosts = [];
+      var main = root();
+      Array.prototype.forEach.call(main.children, function (n) {
+        if (n.tagName === 'SECTION') hosts.push(n);
+      });
+      if (!hosts.length) hosts = [main];
+
+      Array.prototype.forEach.call(main.children, function (n) {
+        if (n.tagName === 'SECTION' || CHROME[n.tagName]) return;
+        if (Ryker.blocks.excluded(n)) return;
+        out.push(n);
+      });
+      hosts.forEach(function (sec) {
+        Array.prototype.forEach.call(sec.children, function (n) {
+          if (CHROME[n.tagName]) return;
+          if (Ryker.blocks.excluded(n)) return;
+          out.push(n);
+        });
+      });
+
+      // Document order, since sections were walked after any loose children.
+      out.sort(function (a, b) {
+        var p = a.compareDocumentPosition(b);
+        if (p & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+        if (p & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+        return 0;
+      });
+      return out;
+    }
+
+    // Rows nested by heading rank. Content rows hang off the heading above them.
+    function tree() {
+      var flat = rows();
+      var top = [];
+      var stack = [];
+      flat.forEach(function (el) {
+        var rank = rankOf(el);
+        var node = { el: el, rank: rank, kind: kindOf(el), label: label(el),
+                     key: keyOf(el), children: [] };
+        if (rank) {
+          while (stack.length && stack[stack.length - 1].rank >= rank) stack.pop();
+          (stack.length ? stack[stack.length - 1].children : top).push(node);
+          stack.push(node);
+        } else {
+          (stack.length ? stack[stack.length - 1].children : top).push(node);
+        }
+      });
+      return top;
+    }
+
+    function kindOf(el) {
+      if (rankOf(el)) return 'heading';
+      if (el.tagName === 'SECTION') return 'section';
+      if (el.querySelector && el.querySelector('table')) return 'table';
+      if (el.tagName === 'TABLE') return 'table';
+      if (el.tagName === 'FIGURE' || (el.querySelector && el.querySelector('figure'))) return 'figure';
+      if (el.tagName === 'BLOCKQUOTE') return 'quote';
+      if (el.tagName === 'UL' || el.tagName === 'OL') return 'list';
+      if (el.tagName === 'DL') return 'list';
+      return 'text';
+    }
+
+    function clip(s, n) {
+      s = String(s || '').replace(/\s+/g, ' ').trim();
+      n = n || 64;
+      return s.length > n ? s.slice(0, n - 1) + '…' : s;
+    }
+
+    // Not blocks.label(): that prefixes the section heading, which the tree
+    // already shows structurally, so every row would repeat its own ancestor.
+    function label(el) {
+      var kind = kindOf(el);
+      if (kind === 'table') {
+        var t = el.tagName === 'TABLE' ? el : el.querySelector('table');
+        var head = t ? t.querySelector('thead tr, tr') : null;
+        var cells = head ? Array.prototype.map.call(head.children, function (c) {
+          return Ryker.dom.textOf(c);
+        }).filter(Boolean) : [];
+        return clip('Table: ' + (cells.join(', ') || Ryker.dom.textOf(el)));
+      }
+      if (kind === 'figure') {
+        var fig = el.tagName === 'FIGURE' ? el : el.querySelector('figure');
+        var cap = fig ? fig.querySelector('figcaption') : null;
+        return clip('Figure: ' + (cap ? Ryker.dom.textOf(cap) : (fig && fig.querySelector('img')
+          ? fig.querySelector('img').getAttribute('alt') || '' : '')));
+      }
+      if (kind === 'quote') return clip('Quote: ' + Ryker.dom.textOf(el));
+      if (kind === 'list') {
+        return clip('List of ' + el.children.length + ': ' + Ryker.dom.textOf(el));
+      }
+      return clip(Ryker.dom.textOf(el)) || '(empty)';
+    }
+
+    // Stable across a reload, because it is derived from the element's own id or
+    // from its content the same way block ids are.
+    function keyOf(el) {
+      if (el.id) return '#' + el.id;
+      var lead = el.querySelector && el.querySelector(Ryker.blocks.SELECTOR);
+      var probe = lead && !Ryker.blocks.excluded(lead) ? lead : el;
+      try { return Ryker.blocks.blockId(probe); } catch (e) { return el.tagName + ':' + label(el); }
+    }
+
+    // What a row takes with it: the element itself, plus everything a heading
+    // owns down to the next heading of equal or higher rank. An h2 that opens a
+    // section owns the whole section.
+    function unitOf(el) {
+      var rank = rankOf(el);
+      if (!rank) return [el];
+      var host = el.parentElement;
+      if (host && host.tagName === 'SECTION' && host.firstElementChild === el) return [host];
+
+      var run = [el];
+      var n = el.nextElementSibling;
+      while (n) {
+        var r = rankOf(n);
+        if (r && r <= rank) break;
+        if (!CHROME[n.tagName]) run.push(n);
+        n = n.nextElementSibling;
+      }
+      return run;
+    }
+
+    // Maps a set of leaf blocks up to the rows that contain them.
+    function rowsFor(nodes) {
+      var all = rows();
+      var out = [];
+      (nodes || []).forEach(function (n) {
+        for (var i = 0; i < all.length; i++) {
+          if (all[i] === n || all[i].contains(n)) {
+            if (out.indexOf(all[i]) === -1) out.push(all[i]);
+            return;
+          }
+        }
+      });
+      return out;
+    }
+
+    // Every editable block a row covers, so a deletion can be reported block by
+    // block by the instruction set even though the row is the thing removed.
+    function blocksIn(el) {
+      var out = [];
+      Ryker.blocks.sequence().forEach(function (b) {
+        if (el === b || el.contains(b)) out.push(b);
+      });
+      return out;
+    }
+
+    return {
+      rows: rows, tree: tree, unitOf: unitOf, kindOf: kindOf, label: label,
+      keyOf: keyOf, rowsFor: rowsFor, blocksIn: blocksIn, rankOf: rankOf
+    };
+  })();
+
+
+  /* ---- editor/move.js -------------------------------------------- */
+  // Moving whole units of the document, and knowing afterwards that they moved.
+  //
+  // A move was the one edit Ryker could not see. Block identity is derived from a
+  // block's own content, so a paragraph dragged from the end of a section to the
+  // start of it keeps its id and its markup: diffSnapshots compares the two
+  // snapshots key by key, finds every key present in both with identical HTML,
+  // and reports nothing at all. isDirty stayed false and Save would not open.
+  //
+  // What a move changes is ORDER, and a snapshot already records order. Its keys
+  // are the block ids in document order, and every id begins with ~, # or @, so
+  // none of them is an array index, which is the one case where an object
+  // reorders its own keys. A move is therefore derived exactly the way an edit
+  // is: compare the order the document was authored in against the order it is
+  // in now. Nothing is accumulated, so moving a paragraph out and back again
+  // registers as what it is, which is nothing.
+  //
+  // Reporting it needs one more step. Two orders differ in many ways at once and
+  // most accounts of the difference are useless: saying that four hundred blocks
+  // each shifted up by one is true and unfollowable. The smallest honest account
+  // is the set that has to move for everything else to be left alone, which is
+  // whatever falls outside the longest run of blocks that kept its relative
+  // order. That is what longestRun() finds and what between() reports.
+  Ryker.move = (function () {
+    'use strict';
+
+    // ---- what moved, derived from two snapshots -----------------------------
+
+    // The longest subsequence that is already in ascending order. Everything
+    // outside it is what has to be moved. O(n squared) on purpose: n is the
+    // number of contiguous runs, not the number of blocks, and a session with
+    // three moves in it produces about four runs.
+    function longestRun(vals) {
+      var n = vals.length, best = [], from = [], top = -1, i, j;
+      for (i = 0; i < n; i++) {
+        best[i] = 1; from[i] = -1;
+        for (j = 0; j < i; j++) {
+          if (vals[j] < vals[i] && best[j] + 1 > best[i]) { best[i] = best[j] + 1; from[i] = j; }
+        }
+        if (top === -1 || best[i] > best[top]) top = i;
+      }
+      var keep = {};
+      while (top !== -1) { keep[top] = 1; top = from[top]; }
+      return keep;
+    }
+
+    // Blocks that are contiguous in both orders travel together. Without this a
+    // moved section of twenty paragraphs reads as twenty separate moves, each of
+    // which is individually true and collectively unreadable.
+    function between(before, after) {
+      if (!before || !after) return [];
+      var afterIds = Object.keys(after);
+      var present = {};
+      afterIds.forEach(function (id) { present[id] = 1; });
+
+      // Compacted, so that a block deleted from the middle of a run does not
+      // split the run in two and report a move nobody made.
+      var order = {}, origin = [];
+      Object.keys(before).forEach(function (id) {
+        if (present[id]) { order[id] = origin.length; origin.push(id); }
+      });
+
+      var runs = [], cur = null;
+      afterIds.forEach(function (id, i) {
+        var p = order[id];
+        if (p === undefined) return;
+        if (cur && p === cur.end + 1) { cur.end = p; cur.ids.push(id); return; }
+        cur = { start: p, end: p, ids: [id], at: i };
+        runs.push(cur);
+      });
+      if (runs.length < 2) return [];
+
+      var keep = longestRun(runs.map(function (r) { return r.start; }));
+      var out = [];
+      runs.forEach(function (r, i) {
+        if (keep[i]) return;
+        out.push({
+          kind: 'move',
+          ids: r.ids.slice(),
+          // The block it now follows, named from the final order including any
+          // block this session added, so applying the moves in the order given
+          // always finds its anchor already in place.
+          prev: r.at > 0 ? afterIds[r.at - 1] : null,
+          wasAfter: r.start > 0 ? origin[r.start - 1] : null
+        });
+      });
+      return out;
+    }
+
+    function count() {
+      var base = Ryker.editable.baselineOf();
+      if (!base) return 0;
+      return between(base, Ryker.blocks.snapshot()).length;
+    }
+
+    // ---- what a run of blocks actually is, in the source file ---------------
+
+    // The smallest set of elements holding every block of the run and nothing
+    // else. A run covering every cell of a table is the table; a run covering
+    // every child of a section is the section. The source HTML has tables and
+    // sections in it and has never heard of a block, so this is the only form of
+    // the answer anyone can act on.
+    function cover(nodes) {
+      var top = Ryker.blocks.root();
+      var seq = Ryker.blocks.sequence();
+      var out = [];
+
+      function holds(el) {
+        for (var i = 0; i < seq.length; i++) {
+          if (el.contains(seq[i]) && nodes.indexOf(seq[i]) === -1) return false;
+        }
+        return true;
+      }
+
+      nodes.forEach(function (n) {
+        var el = n;
+        while (el.parentElement && el.parentElement !== top && holds(el.parentElement)) {
+          el = el.parentElement;
+        }
+        if (out.indexOf(el) === -1 && !covered(out, el)) out.push(el);
+      });
+      return out.filter(function (el) {
+        return !out.some(function (o) { return o !== el && o.contains(el); });
+      });
+    }
+
+    function covered(list, el) {
+      return list.some(function (o) { return o.contains(el); });
+    }
+
+    function nodesOf(rec) {
+      var out = [];
+      rec.ids.forEach(function (id) {
+        var n = Ryker.blocks.byId(id);
+        if (n) out.push(n);
+      });
+      return out;
+    }
+
+    // Everything a move step needs to be written down: what moved, what it is
+    // called, and which contents entries have to travel with it.
+    function describe(rec) {
+      var nodes = nodesOf(rec);
+      if (!nodes.length) return null;
+      var els = cover(nodes);
+      if (!els.length) return null;
       return {
-        changes: changes,
-        commentsAdded: cm.added,
-        commentsResolved: cm.resolved,
-        any: changes.length > 0 || Ryker.comments.hasPending()
+        nodes: nodes, elements: els,
+        tag: els.length === 1 ? els[0].tagName : null,
+        kind: Ryker.outline.kindOf(els[0]),
+        label: Ryker.outline.label(els[0]),
+        blocks: nodes.length,
+        nav: navLabels(els)
       };
     }
 
-    function start() {
-      var p = pending();
-      if (!p.any) {
-        Ryker.dialog.alert('Nothing to save', 'No text has changed and no comments are waiting.');
-        return;
-      }
-      if (Ryker.identity.needsName()) {
-        Ryker.identity.promptForName(function () { start(); });
-        return;
-      }
+    // ---- the report's own table of contents ---------------------------------
 
-      var gh = Ryker.storage.current();
-      if (gh && gh.name === 'github' && gh.checkConflict) {
-        gh.checkConflict().then(function (res) {
-          if (res.conflict) { conflictDialog(res); return; }
-          confirmDialog(p);
+    function navLinks() {
+      var out = [];
+      Array.prototype.forEach.call(document.querySelectorAll('nav'), function (nav) {
+        Array.prototype.forEach.call(nav.querySelectorAll('a[href^="#"]'), function (a) {
+          out.push(a);
         });
+      });
+      return out;
+    }
+
+    function navLabels(els) {
+      var out = [];
+      navLinks().forEach(function (a) {
+        var t = document.getElementById(a.getAttribute('href').slice(1));
+        if (!t) return;
+        if (els.some(function (el) { return el === t || el.contains(t); })) {
+          out.push(Ryker.dom.textOf(a));
+        }
+      });
+      return out;
+    }
+
+    // The contents list is navigation, so it is not editable and no snapshot
+    // covers it. A section that moves would leave it listing the old order, which
+    // reads as a bug in the report rather than as an edit in progress. The links
+    // are put back in document order here, and the instruction set says the same
+    // thing has to happen in the file.
+    function syncNav() {
+      Array.prototype.forEach.call(document.querySelectorAll('nav'), function (nav) {
+        var links = Array.prototype.slice.call(nav.querySelectorAll('a[href^="#"]'));
+        if (links.length < 2) return;
+        var host = links[0].parentNode;
+        if (!links.every(function (a) { return a.parentNode === host; })) return;
+
+        var ranked = [], ok = true;
+        links.forEach(function (a, i) {
+          var t = document.getElementById(a.getAttribute('href').slice(1));
+          if (!t) { ok = false; return; }
+          ranked.push({ a: a, i: i, t: t });
+        });
+        if (!ok) return;
+
+        var sorted = ranked.slice().sort(function (x, y) {
+          var p = x.t.compareDocumentPosition(y.t);
+          if (p & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+          if (p & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+          return x.i - y.i;
+        });
+        if (!sorted.some(function (r, i) { return r !== ranked[i]; })) return;
+
+        // The whitespace between two links is a text node, and appendChild moves
+        // only the link. Collected before anything is moved, because reading a
+        // sibling halfway through the reorder reads the new arrangement.
+        var pairs = sorted.map(function (r) {
+          var ws = r.a.nextSibling;
+          return { a: r.a, ws: (ws && ws.nodeType === 3 && !ws.nodeValue.trim()) ? ws : null };
+        });
+        pairs.forEach(function (p) {
+          host.appendChild(p.a);
+          if (p.ws) host.appendChild(p.ws);
+        });
+      });
+    }
+
+    // ---- performing a move --------------------------------------------------
+
+    var CHROME = { HEADER: 1, FOOTER: 1, NAV: 1, SCRIPT: 1, STYLE: 1, TEMPLATE: 1 };
+
+    function movable(el) {
+      if (!el || el.nodeType !== 1) return false;
+      if (el.tagName === 'SECTION') return true;
+      if (CHROME[el.tagName]) return false;
+      return !Ryker.blocks.excluded(el);
+    }
+
+    // Where the unit is actually allowed to land. A <section> is a top-level unit
+    // and nesting one inside another would produce a structure the report's own
+    // stylesheet has never seen, so a dropped section climbs to the nearest
+    // top-level element rather than being refused.
+    function landing(nodes, target) {
+      if (!target || !nodes.length) return null;
+      for (var i = 0; i < nodes.length; i++) {
+        if (nodes[i] === target || nodes[i].contains(target)) return null;
+      }
+      var t = target;
+      if (nodes.some(function (n) { return n.tagName === 'SECTION'; })) {
+        var top = Ryker.blocks.root();
+        while (t && t.parentElement !== top) t = t.parentElement;
+      }
+      if (!t || !t.parentNode || !movable(t)) return null;
+      for (i = 0; i < nodes.length; i++) {
+        if (nodes[i] === t || nodes[i].contains(t)) return null;
+      }
+      return t;
+    }
+
+    function check(nodes, target, where) {
+      if (!nodes || !nodes.length) return 'There is nothing to move.';
+      var t = landing(nodes, target);
+      if (!t) return 'That would put it inside itself.';
+      var last = nodes[nodes.length - 1];
+      if (where === 'after' && t === nodes[0].previousElementSibling) return 'It is already there.';
+      if (where === 'before' && t === last.nextElementSibling) return 'It is already there.';
+      return null;
+    }
+
+    // Returns null when the move happened, and a sentence when it did not.
+    function apply(nodes, target, where) {
+      var why = check(nodes, target, where);
+      if (why) return why;
+
+      var t = landing(nodes, target);
+      var host = t.parentNode;
+      // Captured once, before anything moves. check() has already refused the two
+      // arrangements in which the anchor could be one of the nodes being moved.
+      var anchor = where === 'before' ? t : t.nextSibling;
+      var was = nodes.map(function (n) {
+        return { node: n, host: n.parentNode, at: n.nextSibling };
+      });
+
+      function put() {
+        nodes.forEach(function (n) { host.insertBefore(n, anchor); });
+        syncNav();
+      }
+      // Reverse order, so a node's recorded next sibling is back in the document
+      // before it is used as an insertion point. Same reasoning as multi.js, and
+      // the same failure without it: the run comes back inside out.
+      function back() {
+        was.slice().reverse().forEach(function (d) {
+          var at = d.at && d.at.parentNode === d.host ? d.at : null;
+          d.host.insertBefore(d.node, at);
+        });
+        syncNav();
+      }
+
+      put();
+      // No rebinding. A move never detaches an element from the document, so its
+      // listeners, its contenteditable attribute and its classes all travel with
+      // it untouched.
+      Ryker.history.record({ label: 'move', undo: back, redo: put });
+      if (Ryker.pick) Ryker.pick.clear();
+      if (Ryker.comments) Ryker.comments.reanchor();
+      Ryker.editable.touch();
+      return null;
+    }
+
+    // One step up or down, for the keyboard and for the context menu. Drag is not
+    // the only way to reorder a document and should not be the only way here.
+    function nudge(nodes, dir) {
+      if (!nodes || !nodes.length) return 'There is nothing to move.';
+      var n = dir === 'up' ? nodes[0].previousElementSibling
+                           : nodes[nodes.length - 1].nextElementSibling;
+      while (n && !movable(n)) {
+        n = dir === 'up' ? n.previousElementSibling : n.nextElementSibling;
+      }
+      if (!n) return dir === 'up' ? 'It is already first.' : 'It is already last.';
+      return apply(nodes, n, dir === 'up' ? 'before' : 'after');
+    }
+
+    return {
+      between: between, count: count, describe: describe, cover: cover,
+      apply: apply, check: check, nudge: nudge, landing: landing,
+      movable: movable, syncNav: syncNav
+    };
+  })();
+
+
+  /* ---- ui/rail.js ------------------------------------------------ */
+  // The outline rail: the document's own structure, down the left edge.
+  //
+  // The report already carries a table of contents, and it lists eight sections.
+  // This lists all of them, every heading beneath them, and every table, figure,
+  // quote and paragraph between, which is the difference between navigating a
+  // document and being able to operate on it.
+  //
+  // It shares its selection with the drag layer rather than mirroring it. Clicking
+  // a row picks the blocks that row covers, and a drag in the page marks the rows
+  // those blocks belong to. One selection, two ways to reach it.
+  Ryker.rail = (function () {
+    'use strict';
+
+    var node = null, body = null, countEl = null;
+    var open = false, built = false;
+    var closed = {};
+    var rebuildTimer = 0;
+    var MIN_W = 260, DEFAULT_W = 320;
+    var toggleListeners = [];
+
+    function d() { return Ryker.dom; }
+    function docId() { return Ryker.config.load().RYKER_DOCUMENT_ID; }
+    function closedKey() { return 'ryker:rail-closed:' + docId(); }
+    function widthKey() { return 'ryker:rail-width'; }
+
+    function loadClosed() {
+      try {
+        var raw = localStorage.getItem(closedKey());
+        closed = raw ? JSON.parse(raw) : null;
+      } catch (e) { closed = null; }
+      // Default: the h2 rows open, everything below shut. That gives a list the
+      // length of the report's own contents rather than a wall of 150 rows.
+      if (!closed) {
+        closed = {};
+        Ryker.outline.tree().forEach(function (n) { shutBelow(n, 2); });
+      }
+    }
+
+    function shutBelow(n, level) {
+      if (n.rank && n.rank > level) closed[n.key] = 1;
+      n.children.forEach(function (c) { shutBelow(c, level); });
+    }
+
+    function saveClosed() {
+      try { localStorage.setItem(closedKey(), JSON.stringify(closed)); } catch (e) {}
+    }
+
+    function storedWidth() {
+      var v = 0;
+      try { v = parseInt(localStorage.getItem(widthKey()) || '0', 10); } catch (e) {}
+      return v >= MIN_W ? v : DEFAULT_W;
+    }
+
+    // ---- building -----------------------------------------------------------
+
+    function build() {
+      if (built) return node;
+      built = true;
+      loadClosed();
+
+      countEl = d().el('span', { class: 'rail-count' });
+      body = d().el('div', { class: 'rail-body', role: 'tree', 'aria-label': 'Document outline' });
+
+      node = d().el('aside', { class: 'rail', role: 'complementary', 'aria-label': 'Ryker outline' }, [
+        d().el('div', { class: 'rail-grip', title: 'Drag to resize', tabindex: '0',
+                        role: 'separator', 'aria-label': 'Resize the outline' }),
+        d().el('header', {}, [
+          d().el('h2', { text: 'Outline' }),
+          countEl,
+          d().el('span', { class: 'spacer' }),
+          Ryker.icons.button('close', 'Hide the outline', function () { toggle(false); })
+        ]),
+        body
+      ]);
+      node.style.display = 'none';
+      Ryker.shell.add(node);
+      initResize();
+      initDrag();
+      applyWidth(storedWidth());
+      render();
+      return node;
+    }
+
+    function glyph(kind) {
+      return { heading: 'H', section: 'S', table: '▦', figure: '▣',
+               quote: '“', list: '≡', text: '¶' }[kind] || '¶';
+    }
+
+    function render() {
+      if (!built) return;
+      body.innerHTML = '';
+      var n = 0;
+      Ryker.outline.tree().forEach(function (row) { n += draw(row, 0, body); });
+      countEl.textContent = String(n);
+      sync();
+    }
+
+    function draw(row, depth, host) {
+      var hasKids = row.children.length > 0;
+      var shut = !!closed[row.key];
+
+      var twisty = d().el('span', { class: 'rail-tw' + (hasKids ? '' : ' none'),
+                                    text: hasKids ? (shut ? '▸' : '▾') : '' });
+      if (hasKids) {
+        twisty.addEventListener('click', function (e) {
+          e.stopPropagation();
+          if (closed[row.key]) delete closed[row.key]; else closed[row.key] = 1;
+          saveClosed();
+          render();
+        });
+      }
+
+      var el = d().el('div', {
+        class: 'rail-row k-' + row.kind + (row.rank ? ' r' + row.rank : ''),
+        role: 'treeitem', tabindex: '-1', draggable: 'true',
+        // A row that can be dragged has to say so somewhere, and the alternative
+        // was a line of instructions in the header taking permanent room to
+        // explain a gesture most people will try anyway.
+        title: 'Drag to move it. Alt with the arrow keys moves it one place. ' +
+               'Right-click for more.',
+        'aria-level': String(row.rank || (depth + 1)),
+        style: 'padding-left:' + (6 + depth * 13) + 'px'
+      }, [
+        twisty,
+        d().el('span', { class: 'rail-ico', text: glyph(row.kind) }),
+        d().el('span', { class: 'rail-label', text: row.label })
+      ]);
+      el.__row = row;
+
+      el.addEventListener('click', function () { el.focus(); activate(row); });
+      el.addEventListener('contextmenu', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        menuFor(row, e.clientX, e.clientY);
+      });
+      el.addEventListener('dragstart', function (e) {
+        dragging = row;
+        el.classList.add('dragging');
+        try {
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', row.label);
+        } catch (err) {}
+      });
+      el.addEventListener('dragend', function () {
+        el.classList.remove('dragging');
+        clearMark();
+        dragging = null;
+        stopScroll();
+      });
+      // Alt is deliberate. The arrows alone belong to whatever the rail grows
+      // into next, and a bare arrow that silently rewrites the document is the
+      // wrong default for a list someone is reading.
+      el.addEventListener('keydown', function (e) {
+        if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        report(Ryker.move.nudge(Ryker.outline.unitOf(row.el),
+          e.key === 'ArrowUp' ? 'up' : 'down'), row);
+      });
+
+      host.appendChild(el);
+      var count = 1;
+      if (hasKids && !shut) {
+        row.children.forEach(function (c) { count += draw(c, depth + 1, host); });
+      }
+      return count;
+    }
+
+    // ---- acting -------------------------------------------------------------
+
+    function blocksOf(unit) {
+      var blocks = [];
+      unit.forEach(function (u) {
+        Ryker.outline.blocksIn(u).forEach(function (b) {
+          if (blocks.indexOf(b) === -1) blocks.push(b);
+        });
+      });
+      return blocks;
+    }
+
+    function activate(row) {
+      Ryker.pick.set(blocksOf(Ryker.outline.unitOf(row.el)));
+      try { row.el.scrollIntoView({ block: 'start', behavior: 'instant' }); } catch (e) {
+        row.el.scrollIntoView(true);
+      }
+    }
+
+    // ---- moving -------------------------------------------------------------
+    //
+    // The browser's own drag and drop, which is the opposite of the choice made
+    // for selecting in the page. There a native drag had to be suppressed,
+    // because a press on selected text starts one and then delivers no mousemove
+    // at all, leaving the gesture invisible. Here the rows are plain list items
+    // with nothing selectable in them, the browser's drag image is exactly the
+    // row being moved, and pick.js already ignores anything inside the shell, so
+    // the two never meet.
+
+    var dragging = null, over = null, edge = 'after';
+    var scrollRaf = 0, scrollDy = 0;
+
+    function mark(el, where) {
+      if (over === el.__row && edge === where) return;
+      clearMark();
+      over = el.__row;
+      edge = where;
+      el.classList.add(where === 'before' ? 'drop-before' : 'drop-after');
+    }
+
+    function clearMark() {
+      Array.prototype.forEach.call(body.querySelectorAll('.drop-before, .drop-after'),
+        function (n) { n.classList.remove('drop-before', 'drop-after'); });
+      over = null;
+    }
+
+    // The rail scrolls independently of the page, and a section being dragged to
+    // the far end of a 150 row outline has to be able to get there.
+    function autoScroll(y) {
+      var box = body.getBoundingClientRect(), band = 48;
+      scrollDy = 0;
+      if (y < box.top + band) scrollDy = -Math.ceil(16 * (box.top + band - y) / band);
+      else if (y > box.bottom - band) scrollDy = Math.ceil(16 * (y - (box.bottom - band)) / band);
+      if (scrollDy && !scrollRaf) scrollRaf = requestAnimationFrame(stepScroll);
+    }
+
+    function stepScroll() {
+      scrollRaf = 0;
+      if (!dragging || !scrollDy) return;
+      body.scrollTop += scrollDy;
+      scrollRaf = requestAnimationFrame(stepScroll);
+    }
+
+    function stopScroll() {
+      scrollDy = 0;
+      if (scrollRaf) { cancelAnimationFrame(scrollRaf); scrollRaf = 0; }
+    }
+
+    // Delegated to the scrolling body rather than bound per row. A row contains
+    // three spans, and dragleave fires when the pointer crosses into one of them,
+    // so per-row handlers spend the whole gesture clearing their own indicator.
+    function initDrag() {
+      body.addEventListener('dragover', function (e) {
+        if (!dragging) return;
+        autoScroll(e.clientY);
+        var el = e.target && e.target.closest ? e.target.closest('.rail-row') : null;
+        if (!el || !el.__row || el.__row === dragging) return;
+        e.preventDefault();
+        try { e.dataTransfer.dropEffect = 'move'; } catch (err) {}
+        var box = el.getBoundingClientRect();
+        mark(el, (e.clientY - box.top) < box.height / 2 ? 'before' : 'after');
+      });
+      body.addEventListener('dragleave', function (e) {
+        if (dragging && e.target === body) clearMark();
+      });
+      body.addEventListener('drop', function (e) {
+        if (!dragging || !over) return;
+        e.preventDefault();
+        e.stopPropagation();
+        drop();
+      });
+    }
+
+    function drop() {
+      var src = dragging, dst = over, where = edge;
+      clearMark();
+      stopScroll();
+      dragging = null;
+      if (!src || !dst || src === dst) return;
+
+      var unit = Ryker.outline.unitOf(dst.el);
+      // A heading owns everything under it, so landing after an h2 means after
+      // the section it opens rather than between the heading and its first
+      // paragraph, which is the only reading that makes dropping onto a
+      // collapsed row mean anything.
+      var target = where === 'before' ? unit[0] : unit[unit.length - 1];
+      report(Ryker.move.apply(Ryker.outline.unitOf(src.el), target, where), src);
+    }
+
+    // One place where a refusal is spoken. Every move path can fail for the same
+    // few reasons and each of them is a sentence, not a code.
+    function report(why, row) {
+      render();
+      if (why) {
+        if (Ryker.pane) Ryker.pane.flash(why, 'warn');
+        return false;
+      }
+      if (row) {
+        Ryker.pick.set(blocksOf(Ryker.outline.unitOf(row.el)));
+        focusRow(row.el);
+      }
+      return true;
+    }
+
+    function focusRow(el) {
+      var found = null;
+      Array.prototype.forEach.call(body.querySelectorAll('.rail-row'), function (n) {
+        if (n.__row && n.__row.el === el) found = n;
+      });
+      if (found) {
+        found.focus();
+        try { found.scrollIntoView({ block: 'nearest', behavior: 'instant' }); } catch (e) {}
+      }
+    }
+
+    // Right-click deletes the row and everything under it. A heading takes its
+    // run, an h2 opening a section takes the section, and a table takes the
+    // wrapper that gives it its scrolling. Counting the blocks first is what makes
+    // the confirmation honest: "delete 24 blocks" is a different decision from
+    // "delete a paragraph", and only the row knows which this is.
+    function menuFor(row, x, y) {
+      var unit = Ryker.outline.unitOf(row.el);
+      var blocks = blocksOf(unit);
+
+      Ryker.menu.at(x, y, [
+        { label: 'Select', icon: 'copy', run: function () { activate(row); } },
+        { label: 'Move up', icon: 'up',
+          run: function () { report(Ryker.move.nudge(unit, 'up'), row); } },
+        { label: 'Move down', icon: 'down',
+          run: function () { report(Ryker.move.nudge(unit, 'down'), row); } },
+        null,
+        { label: blocks.length > 1
+            ? 'Delete this and its ' + (blocks.length - 1) + ' block(s)'
+            : 'Delete this',
+          icon: 'trash', danger: true,
+          run: function () { confirmDelete(row, unit, blocks); } }
+      ]);
+    }
+
+    function confirmDelete(row, unit, blocks) {
+      var what = Ryker.outline.kindOf(row.el);
+      var many = blocks.length > 1 || unit.length > 1;
+
+      if (!many) {
+        remove(unit);
         return;
       }
-      confirmDialog(p);
-    }
-
-    function conflictDialog(res) {
-      var d = Ryker.dom;
       Ryker.dialog.open({
-        title: 'The document changed on GitHub',
-        body: d.el('div', {}, [
-          d.el('div', { class: 'note bad' }, [
-            d.el('div', {
-              text: 'The document changed on GitHub since you began editing. Saving now would ' +
-                'overwrite whatever that change was.'
-            })
-          ]),
-          d.el('p', {
-            text: 'Ryker will not merge two versions of a report automatically, because a wrong ' +
-              'merge here loses someone\'s work silently. Export your version, reload the page to ' +
-              'pick up theirs, and reapply your edits.'
-          }),
-          d.el('p', { class: 'muted', text: 'Loaded at ' + short(res.loadedSha) + ', now at ' + short(res.liveSha) + '.' })
-        ]),
-        buttons: [
-          { label: 'Close' },
-          {
-            label: 'Export my version', primary: true,
-            action: function () {
-              var out = Ryker.exportHtml.scanned('clean');
-              if (out.hits.length) { Ryker.dialog.leak(out.hits); return; }
-              Ryker.exportHtml.download(out.html, Ryker.exportHtml.baseName() + '-mine.html');
-            }
-          }
-        ]
-      });
-    }
-
-    function short(sha) { return sha ? String(sha).slice(0, 8) : 'unknown'; }
-
-    function confirmDialog(p) {
-      var d = Ryker.dom;
-      var cfg = Ryker.config.load();
-      var backend = Ryker.storage.current();
-
-      var msg = d.el('input', {
-        class: 'rk', type: 'text',
-        placeholder: 'What changed, in a few words',
-        value: 'Update ' + cfg.RYKER_DOCUMENT_PATH
-      });
-
-      var list = d.el('div', { class: 'filelist' });
-      p.changes.forEach(function (c) {
-        var n = Ryker.diff.countChange(c);
-        list.appendChild(d.el('div', { class: 'filerow' }, [
-          d.el('span', { class: 'nm', text: Ryker.blocks.label(c.id) }),
-          d.el('span', { class: 'sz', text: '+' + n.additions + ' / -' + n.removals })
-        ]));
-      });
-      if (!p.changes.length) {
-        list.appendChild(d.el('div', { class: 'filerow' }, [
-          d.el('span', { class: 'nm muted', text: 'No text changes, comments only' })
-        ]));
-      }
-
-      Ryker.dialog.open({
-        title: 'Save changes',
-        body: d.el('div', {}, [
-          d.el('div', { class: 'note ' + (Ryker.storage.canWrite() ? 'ok' : 'warn') }, [
-            d.el('div', {
-              text: 'Saving to: ' + backend.describe() + '. ' + (backend.detail ? backend.detail() : '')
-            })
-          ]),
-          d.el('label', { class: 'rk', text: 'Blocks changing' }),
-          list,
-          d.el('label', { class: 'rk', text: 'Comments' }),
-          d.el('div', {
-            text: p.commentsAdded + ' added, ' + p.commentsResolved + ' resolved'
-          }),
-          d.el('label', { class: 'rk', text: 'Author' }),
-          d.el('div', { text: Ryker.identity.label() }),
-          d.el('label', { class: 'rk', text: 'Message' }),
-          msg
-        ]),
+        title: 'Delete this ' + (what === 'heading' ? 'heading and everything under it' : what) + '?',
+        body: '<p>' + Ryker.dom.escapeHtml(row.label) + '</p>' +
+          '<div class="note"><b>' + blocks.length + ' block(s)</b> go with it' +
+          (unit.length > 1 ? ', across ' + unit.length + ' element(s)' : '') +
+          '. Ctrl+Z brings all of it back as one step.</div>',
         buttons: [
           { label: 'Cancel' },
-          {
-            label: 'Save', primary: true,
-            action: function (api) {
-              commit(msg.value.trim(), api);
-              return false;
-            },
-            keepOpen: true
-          }
+          { label: 'Delete', danger: true, primary: true,
+            action: function () { remove(unit); } }
         ]
       });
     }
 
-    function commit(message, api) {
-      var p = pending();
-      var cfg = Ryker.config.load();
-      var drained = Ryker.comments.drain();
+    function remove(unit) {
+      Ryker.pick.clear();
+      Ryker.multi.removeNodes(unit.slice());
+      render();
+    }
 
-      var record = Ryker.journal.make({
-        documentId: cfg.RYKER_DOCUMENT_ID,
-        author: Ryker.identity.current(),
-        message: message,
-        changes: p.changes,
-        commentsAdded: drained.added,
-        commentsResolved: drained.resolved,
-        commentsReopened: drained.reopened,
-        commentsDeleted: drained.deleted
+    // ---- state --------------------------------------------------------------
+
+    function sync() {
+      if (!built) return;
+      var marked = Ryker.outline.rowsFor(Ryker.pick.picked());
+      Array.prototype.forEach.call(body.querySelectorAll('.rail-row'), function (el) {
+        var row = el.__row;
+        el.classList.toggle('on', !!(row && marked.indexOf(row.el) !== -1));
       });
-      Ryker.journal.append(record);
+    }
 
-      // The document written out is the clean copy, with Ryker's own chrome and
-      // editing attributes removed, so what lands in storage is the report rather
-      // than the report plus an editor session.
-      var out = Ryker.exportHtml.scanned('ryker');
-      if (out.hits.length) {
-        Ryker.dialog.leak(out.hits);
-        return;
+    function scheduleRender() {
+      clearTimeout(rebuildTimer);
+      // blocks.sequence() is cheap but onChange fires on every keystroke, so an
+      // undebounced rebuild would run hundreds of times while someone types.
+      rebuildTimer = setTimeout(function () { if (open) render(); }, 200);
+    }
+
+    function toggle(want) {
+      build();
+      open = want === undefined ? !open : !!want;
+      node.style.display = open ? 'flex' : 'none';
+      document.body.toggleAttribute('data-ryker-rail', open);
+      if (open) { render(); Ryker.shell.setEdgeSpace(node, 'left'); }
+      else Ryker.shell.setEdgeSpace(null, 'left');
+      toggleListeners.forEach(function (f) { try { f(open); } catch (e) {} });
+      return open;
+    }
+
+    function onToggle(fn) { toggleListeners.push(fn); }
+
+    function isOpen() { return open; }
+
+    function reflow() { if (open) Ryker.shell.setEdgeSpace(node, 'left'); }
+
+    // ---- resizing, mirrored from lite/pane.js -------------------------------
+
+    function applyWidth(px) {
+      var max = Math.max(MIN_W, document.documentElement.clientWidth - 320);
+      var w = Math.min(Math.max(px, MIN_W), max);
+      node.style.width = w + 'px';
+      try { localStorage.setItem(widthKey(), String(w)); } catch (e) {}
+      if (open) Ryker.shell.setEdgeSpace(node, 'left');
+    }
+
+    function initResize() {
+      var grip = node.querySelector('.rail-grip');
+      var startX = 0, startW = 0, dragging = false;
+
+      grip.addEventListener('mousedown', function (e) {
+        dragging = true;
+        startX = e.clientX;
+        startW = node.getBoundingClientRect().width;
+        e.preventDefault();
+      });
+      document.addEventListener('mousemove', function (e) {
+        // Mirrored: the rail grows to the RIGHT, so the delta is not negated.
+        if (dragging) applyWidth(startW + (e.clientX - startX));
+      });
+      document.addEventListener('mouseup', function () { dragging = false; });
+      grip.addEventListener('keydown', function (e) {
+        if (e.key === 'ArrowRight') applyWidth(node.getBoundingClientRect().width + 24);
+        else if (e.key === 'ArrowLeft') applyWidth(node.getBoundingClientRect().width - 24);
+        else return;
+        e.preventDefault();
+      });
+    }
+
+    function init() {
+      Ryker.pick.onChange(sync);
+      Ryker.editable.onChange(scheduleRender);
+    }
+
+    return {
+      build: build, init: init, render: render, toggle: toggle, isOpen: isOpen,
+      onToggle: onToggle,
+      reflow: reflow, sync: sync, applyWidth: applyWidth
+    };
+  })();
+
+
+  /* ---- lite/instructions.js -------------------------------------- */
+  // Turns a session's edits into a prompt an AI can act on.
+  //
+  // This is what ryker-lite exists for. The full editor records revisions so a
+  // person can review history; lite records nothing durable and instead describes
+  // the difference between the document as authored and the document as it now
+  // stands, in terms someone can apply to the source file.
+  //
+  // Two rules govern the output. Everything is expressed against the ORIGINAL
+  // document, so five edits to one paragraph read as one change from the text
+  // that is actually in the file. And nothing refers to Ryker's own machinery:
+  // the source HTML has never heard of a block id, so an instruction that cites
+  // one cannot be followed.
+  Ryker.instructions = (function () {
+    'use strict';
+
+    var pristine = null; // blockId -> html as the document was authored
+    var saved = null;    // blockId -> html as of the last save
+    var saves = 0;
+    var listeners = [];
+
+    function captureOrigin() {
+      pristine = Ryker.blocks.snapshot();
+      return Object.keys(pristine).length;
+    }
+
+    function pristineHtml(id) {
+      if (!pristine || !Object.prototype.hasOwnProperty.call(pristine, id)) return undefined;
+      return Ryker.blocks.htmlOf(pristine[id]);
+    }
+
+    function onChange(fn) { listeners.push(fn); }
+    function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
+
+    function reset() { saved = null; saves = 0; emit(); }
+    function originalOf(id) { return pristineHtml(id); }
+    function saveCount() { return saves; }
+
+    // Recomputed from the document, not accumulated. Accumulating each save's
+    // changes meant the set could describe blocks that no longer existed.
+    function record() {
+      saved = Ryker.blocks.snapshot();
+      saves += 1;
+      emit();
+    }
+
+    // Reordering, which no block-by-block comparison can see. Derived the same
+    // way edits are, against the document as authored, so a section dragged out
+    // and dragged back again reports nothing.
+    function moves() {
+      if (!pristine || !saved) return [];
+      return Ryker.move.between(pristine, saved).map(function (m) {
+        var d = Ryker.move.describe(m);
+        return d ? { rec: m, at: d } : null;
+      }).filter(Boolean);
+    }
+
+    function edits() {
+      if (!pristine || !saved) return [];
+      return Ryker.blocks.diffSnapshots(pristine, saved).map(function (c) {
+        return {
+          id: c.id,
+          kind: c.kind === 'added' ? 'insert' : (c.kind === 'removed' ? 'delete' : 'replace'),
+          before: c.before, after: c.after,
+          tag: c.tag || null, prev: c.prev || null,
+          box: c.box || null, boxTag: c.boxTag || null
+        };
+      });
+    }
+
+    // A table holds no blocks of its own: every cell is one. Deleting a table of
+    // ten cells therefore reads as ten instructions to remove a word each, which
+    // is both unfollowable and hides what actually happened. Where every block
+    // inside a table is gone, say it once.
+    //
+    // The test matches the one the editor applies when it decides to remove a
+    // table whole rather than cell by cell, and only tables qualify. A figure
+    // reported this way would take an image out of the document on the strength
+    // of a deleted caption.
+    function groupBoxes(list) {
+      var total = {};
+      if (pristine) {
+        Object.keys(pristine).forEach(function (id) {
+          var e = pristine[id];
+          var b = e && typeof e === 'object' ? e.box : null;
+          if (b && e.boxTag === 'TABLE') total[b] = (total[b] || 0) + 1;
+        });
       }
 
-      Ryker.storage.save({
-        records: Ryker.journal.serialize(),
-        appended: [record],
-        documentHtml: out.html,
-        message: message,
-        summary: Ryker.journal.summarize(record)
-      }).then(function (res) {
-        Ryker.editable.rebase();
-        Ryker.comments.rebuild();
-        if (api) api.close();
-        Ryker.toolbar.sync();
-        Ryker.panel.refresh();
-        Ryker.dialog.alert('Saved',
-          'Revision ' + record.seq + ' written to ' + Ryker.dom.escapeHtml(res.where || 'storage') + '.', 'ok');
-      }).catch(function (err) {
-        // The record stays in the journal and the working copy stays in the page.
-        // Nothing is discarded because a write failed, per spec section 36.
-        if (api) api.close();
+      var gone = {};
+      list.forEach(function (e, i) {
+        if (e.kind !== 'delete' || !e.box || e.boxTag !== 'TABLE') return;
+        (gone[e.box] = gone[e.box] || []).push(i);
+      });
+
+      var whole = {};
+      Object.keys(gone).forEach(function (b) {
+        if (gone[b].length > 1 && gone[b].length === total[b]) whole[b] = gone[b];
+      });
+      if (!Object.keys(whole).length) return list;
+
+      var out = [], done = {};
+      list.forEach(function (e) {
+        if (!e.box || !whole[e.box]) { out.push(e); return; }
+        if (done[e.box]) return;
+        done[e.box] = true;
+        out.push({
+          kind: 'deletebox', tag: 'TABLE',
+          cells: whole[e.box].map(function (j) { return list[j].before; })
+        });
+      });
+      return out;
+    }
+
+    function text(html) {
+      var t = document.createElement('div');
+      t.innerHTML = html == null ? '' : html;
+      return (t.textContent || '').replace(/\s+/g, ' ').trim();
+    }
+
+    function ordinal(n) {
+      var s = ['th', 'st', 'nd', 'rd'], v = n % 100;
+      return n + (s[(v - 20) % 10] || s[v] || s[0]);
+    }
+
+    // Where a block is, said in terms the source file actually contains.
+    //
+    // Ryker's own ids are derived from content or stamped at runtime, so neither
+    // appears in the HTML being edited and neither can be used to find anything.
+    // A real id attribute is used when the element has one; otherwise the block is
+    // located by its position inside the nearest section that does.
+    function where(id) { return placeOf(Ryker.blocks.byId(id)); }
+
+    function placeOf(node) {
+      if (!node) return null;
+      if (node.id) return 'the element with id="' + node.id + '"';
+
+      var scope = node.parentElement;
+      while (scope && !scope.id && scope !== document.body) scope = scope.parentElement;
+      var scopeName = scope && scope.id ? 'the section with id="' + scope.id + '"' : 'the document body';
+      var within = (scope && scope.id) ? scope : Ryker.blocks.root();
+
+      var tag = node.tagName.toLowerCase();
+      var same = Array.prototype.filter.call(within.querySelectorAll(tag), function (n) {
+        return !Ryker.blocks.excluded(n);
+      });
+      var idx = same.indexOf(node);
+      if (idx === -1) return 'a <' + tag + '> inside ' + scopeName;
+      return 'the ' + ordinal(idx + 1) + ' <' + tag + '> inside ' + scopeName;
+    }
+
+    // Identical content inserted more than once is almost always a slip, and an
+    // instruction set that repeats it reads as deliberate unless something says
+    // so. Named rather than silently deduplicated, because only the author knows
+    // which copy was meant.
+    function suspicious(list) {
+      var out = [];
+      var byText = {};
+      list.forEach(function (e, i) {
+        if (e.kind !== 'insert') return;
+        var k = text(e.after);
+        if (!k) return;
+        (byText[k] = byText[k] || []).push(i + 1);
+      });
+      Object.keys(byText).forEach(function (k) {
+        var steps = byText[k];
+        if (steps.length < 2) return;
+        out.push('Steps ' + steps.join(', ') + ' insert identical content: "' +
+          (k.length > 70 ? k.slice(0, 67) + '...' : k) + '". ' +
+          'That is usually a duplicate paste. Keep one unless all of them are meant.');
+      });
+
+      // Text removed from one block and inserted as another is a paragraph split,
+      // which is fine, but the same text being both removed and inserted several
+      // times is not.
+      list.forEach(function (e, i) {
+        if (e.kind !== 'replace') return;
+        var lost = text(e.before).replace(text(e.after), '').trim();
+        if (lost.length < 40) return;
+        var echoes = [];
+        list.forEach(function (o, j) {
+          if (o.kind === 'insert' && text(o.after).indexOf(lost.slice(0, 40)) !== -1) echoes.push(j + 1);
+        });
+        if (echoes.length > 1) {
+          out.push('Step ' + (i + 1) + ' removes a sentence that steps ' + echoes.join(', ') +
+            ' then add back. Check the split was intended once, not ' + echoes.length + ' times.');
+        }
+      });
+      return out;
+    }
+
+    // Where a moved element ends up, named at the level the element itself sits
+    // at.
+    //
+    // The obvious answer, the block that precedes it in the finished order, is
+    // the wrong one and reads as nonsense: a whole <section> came out as "move it
+    // after the 101st <p> inside the section with id=rationale", and a <p> after
+    // a <td>. Nothing can be placed after a cell.
+    //
+    // The move has already happened in the document, so the element's own
+    // previous sibling IS the answer, exact and at the right level by
+    // construction. Move steps are emitted in finished-document order, so where
+    // one move lands against another the earlier step has already put its element
+    // in place.
+    function anchorOf(el) {
+      var n = el.previousElementSibling;
+      while (n && (n.tagName === 'SCRIPT' || n.tagName === 'STYLE')) n = n.previousElementSibling;
+      return n;
+    }
+
+    // How to recognise the anchor, in one line.
+    //
+    // For a block that is its opening words, taken from the document as authored
+    // rather than as edited: moves are applied before the rewrites, so quoting
+    // the new wording would point at text the file does not contain yet.
+    //
+    // For a container it is the outline's own label, because textContent on a
+    // table returns every cell run together with no spaces between them, which
+    // came out as "#What changesWhereImpactEffortWhy R1Fix the Apple Pay hire
+    // path" and identified nothing.
+    function anchorLine(node) {
+      var id = safeId(node);
+      if (id != null) {
+        var was = pristineHtml(id);
+        var t = clipText(was !== undefined ? text(was) : Ryker.dom.textOf(node));
+        return t ? 'That element begins: "' + t + '"' : null;
+      }
+      var label = Ryker.outline.label(node);
+      return label ? 'That element is a ' + label.charAt(0).toLowerCase() + label.slice(1) : null;
+    }
+
+    // One move, written so it can be followed without knowing anything about
+    // Ryker. What moves is identified by the exact opening markup of its first
+    // block, which is text the file actually contains.
+    function moveStep(m, n, stepOf, out) {
+      var rec = m.rec, at = m.at;
+      var el = at.elements[0];
+      var tag = at.tag ? '<' + at.tag.toLowerCase() + '>' : null;
+
+      out.push('## ' + n + '. Move ' + (tag ? 'a ' + tag : at.elements.length + ' elements'));
+      out.push('');
+      if (at.elements.length === 1) {
+        out.push('Move this one ' + (tag || 'element') + ' and everything inside it. Change nothing');
+        out.push('about its contents. It is the element whose first block reads, exactly:');
+      } else {
+        out.push('Move these ' + at.elements.length + ' consecutive elements together, keeping their');
+        out.push('order and changing nothing inside them. The first of them contains:');
+      }
+      out.push('<<<'); out.push(pristineHtml(rec.ids[0]) != null
+        ? pristineHtml(rec.ids[0]) : ''); out.push('>>>');
+      out.push('');
+
+      var anchor = anchorOf(el);
+      if (!anchor) {
+        var host = placeOf(el.parentElement);
+        out.push('Put it first inside ' + (host || 'the document body') + ', before');
+        out.push('everything else in there.');
+      } else if (stepOf[safeId(anchor)]) {
+        out.push('Put it immediately after the element added in step ' +
+          stepOf[safeId(anchor)] + '.');
+        out.push('Apply that step before this one.');
+      } else {
+        out.push('Put it immediately after ' + (placeOf(anchor) || 'the preceding element') + ',');
+        out.push('as a sibling of it, not inside it.');
+        var line = anchorLine(anchor);
+        if (line) out.push(line);
+      }
+      out.push('');
+
+      if (rec.wasAfter) {
+        var w = text(pristineHtml(rec.wasAfter) != null ? pristineHtml(rec.wasAfter) : '');
+        if (w) out.push('In the file it currently sits just after this text: "' +
+          clipText(w) + '"');
+      } else {
+        out.push('In the file it is currently the first thing in the document body.');
+      }
+      out.push('');
+      out.push('Blocks carried along: ' + at.blocks);
+
+      if (at.nav.length) {
+        out.push('');
+        out.push('The contents list links into what moved. Move ' +
+          (at.nav.length > 1 ? 'these entries' : 'the entry') + ' to match, so the list');
+        out.push('stays in document order:');
+        at.nav.forEach(function (t2) { out.push('  - "' + t2 + '"'); });
+      }
+    }
+
+    // Only a block has a block id, and asking for one anywhere else costs a walk
+    // of the whole document to answer null.
+    function safeId(node) {
+      if (!node || !node.matches || !node.matches(Ryker.blocks.SELECTOR)) return null;
+      if (Ryker.blocks.excluded(node)) return null;
+      try { return Ryker.blocks.blockId(node); } catch (e) { return null; }
+    }
+
+    function clipText(s) {
+      return s.length > 80 ? s.slice(0, 77) + '...' : s;
+    }
+
+    function build() {
+      var cfg = Ryker.config.load();
+      var list = groupBoxes(edits());
+      var mv = moves();
+      var out = [];
+
+      out.push('# Document edit instructions');
+      out.push('');
+      out.push('Document: ' + (document.title || cfg.RYKER_DOCUMENT_ID));
+      out.push('File: ' + cfg.RYKER_DOCUMENT_PATH);
+      out.push('Edits: ' + list.length + ' change(s)' +
+        (mv.length ? ' and ' + mv.length + ' move(s)' : '') +
+        ' across ' + saves + ' save(s) this session');
+      out.push('');
+
+      if (!list.length && !mv.length) {
+        out.push('No edits have been made yet. Edit the document and press Save to');
+        out.push('build a set of instructions here.');
+        return out.join('\n');
+      }
+
+      var warnings = suspicious(list);
+      if (warnings.length) {
+        out.push('## Check these before applying');
+        out.push('');
+        warnings.forEach(function (w) { out.push('- ' + w); });
+        out.push('');
+        out.push('Everything below describes the document as it stands. Resolve anything');
+        out.push('above first, or delete the steps you do not want, rather than applying a');
+        out.push('set you already doubt.');
+        out.push('');
+      }
+
+      out.push('Apply every edit below to the source HTML of this document as it was');
+      out.push('authored. Every FROM below is the original text, so this applies cleanly');
+      out.push('to a fresh copy of the file even where a block was edited several times.');
+      out.push('');
+      out.push('Locate each element by the quoted FROM text, which is exact and unique.');
+      out.push('The position given alongside it is a cross-check, not a selector. Replace');
+      out.push('only the inner HTML, leaving the tag and its attributes alone. Add no');
+      out.push('attributes of your own. Text between <<< and >>> is literal and includes');
+      out.push('markup. Change nothing that is not named here.');
+      out.push('');
+      if (mv.length) {
+        out.push('The first ' + mv.length + ' step(s) move elements rather than rewrite them.');
+        out.push('Do those first and in the order given: each one names where an element');
+        out.push('ends up in the finished document, so an earlier move has already put the');
+        out.push('anchor a later one refers to in place. Move the element itself, with');
+        out.push('everything inside it. Nothing inside a moved element changes.');
+        out.push('');
+      }
+
+      // Moves run first, and the content steps are numbered from where they end.
+      // A move is described by where its element sits in the FINAL document, so
+      // applying them in the order given always finds the anchor already in
+      // place. Doing them before the content edits also means every position a
+      // later step quotes is the position that step will actually find.
+      var base = mv.length;
+      // Inserts chained off other inserts refer to the step that creates them,
+      // since the element they follow does not exist in the file yet.
+      var stepOf = {};       // blocks this set creates
+      var editedAt = {};     // blocks this set rewrites
+      list.forEach(function (e, i) {
+        if (e.kind === 'insert') stepOf[e.id] = base + i + 1;
+        else if (e.kind === 'replace') editedAt[e.id] = base + i + 1;
+      });
+
+      mv.forEach(function (m, i) {
+        out.push('---');
+        out.push('');
+        moveStep(m, i + 1, stepOf, out);
+        out.push('');
+      });
+
+      list.forEach(function (e, i) {
+        var n = base + i + 1;
+        out.push('---');
+        out.push('');
+
+        if (e.kind === 'replace') {
+          out.push('## ' + n + '. Replace the contents of ' + (e.tag ? '<' + e.tag.toLowerCase() + '>' : 'a block'));
+          out.push('');
+          var w = where(e.id);
+          if (w) out.push('Position: ' + w);
+          out.push('');
+          out.push('FROM:');
+          out.push('<<<'); out.push(e.before); out.push('>>>');
+          out.push('');
+          out.push('TO:');
+          out.push('<<<'); out.push(e.after); out.push('>>>');
+          out.push('');
+          out.push('Plain text of the new version, for confirmation:');
+          out.push('  ' + text(e.after));
+
+        } else if (e.kind === 'insert') {
+          var tag = (e.tag || 'p').toLowerCase();
+          out.push('## ' + n + '. Insert a new <' + tag + '>');
+          out.push('');
+          if (e.prev && stepOf[e.prev]) {
+            out.push('Position: immediately after the element added in step ' + stepOf[e.prev] + '.');
+          } else if (e.prev && editedAt[e.prev]) {
+            // Quoting the original text here would point at wording an earlier
+            // step has already replaced.
+            out.push('Position: immediately after the element edited in step ' + editedAt[e.prev] + '.');
+          } else if (e.prev) {
+            var pw = where(e.prev);
+            out.push('Position: immediately after ' + (pw || 'the preceding block') + '.');
+            var ptext = text(pristineHtml(e.prev) != null ? pristineHtml(e.prev) : '');
+            if (ptext) {
+              out.push('That element begins: "' + (ptext.length > 80 ? ptext.slice(0, 77) + '...' : ptext) + '"');
+            }
+          } else {
+            out.push('Position: as the first block of the document body.');
+          }
+          out.push('');
+          out.push('CONTENT:');
+          out.push('<<<'); out.push(e.after); out.push('>>>');
+          out.push('');
+          out.push('Plain text, for confirmation:');
+          out.push('  ' + text(e.after));
+
+        } else if (e.kind === 'deletebox') {
+          out.push('## ' + n + '. Delete a whole <table>');
+          out.push('');
+          out.push('Remove the entire <table> element, its rows and its cells. Leave any');
+          out.push('caption, heading or paragraph around it alone unless another step names');
+          out.push('it. The table is the one whose cells read, in order:');
+          out.push('');
+          e.cells.forEach(function (c, k) {
+            var t = text(c);
+            out.push('  ' + (k + 1) + '. ' + (t.length > 90 ? t.slice(0, 87) + '...' : t));
+          });
+
+        } else {
+          out.push('## ' + n + '. Delete a block');
+          out.push('');
+          out.push('Remove the element whose exact contents are:');
+          out.push('<<<'); out.push(e.before); out.push('>>>');
+          out.push('');
+          out.push('Plain text, for confirmation:');
+          out.push('  ' + text(e.before));
+        }
+        out.push('');
+      });
+
+      out.push('---');
+      out.push('');
+      out.push('End of instructions. ' + list.length + ' edit(s)' +
+        (mv.length ? ' and ' + mv.length + ' move(s)' : '') + '.');
+      return out.join('\n');
+    }
+
+    return {
+      record: record, build: build, edits: edits, moves: moves, reset: reset,
+      captureOrigin: captureOrigin, originalOf: originalOf,
+      saveCount: saveCount, onChange: onChange, where: where, suspicious: suspicious
+    };
+  })();
+
+
+  /* ---- lite/logger.js -------------------------------------------- */
+  // Writing a copy of the instructions to disk on every save, as training data.
+  //
+  // "Silently" is achievable, with one honest caveat stated up front: a browser
+  // cannot write to a folder it has never been shown. Somebody grants access to
+  // the report's folder once, and from then on every save writes without a prompt,
+  // a dialog or a download. Chrome remembers the folder between visits, so the
+  // most a reload costs is a single click to confirm it again.
+  //
+  // Each save writes one JSON file holding the prose prompt AND the structured
+  // edits behind it. Training on the prompt alone would lose the before and after
+  // pairs, which are the part with signal in them.
+  Ryker.logger = (function () {
+    'use strict';
+
+    // Decided rather than asked. The only thing the browser insists on is being
+    // shown a folder once; everything below that point is Ryker's choice, so it
+    // is made here instead of being put to whoever is editing.
+    var LIB = 'ryker';
+    var DIR_NAME = 'revisions';
+    var DB = 'ryker', STORE = 'handles', KEY = 'log-dir';
+
+    var dir = null;
+    var seq = 0;
+    var lastError = null;
+    var listeners = [];
+    // Saves made before the folder was granted. Logging is not optional, so a
+    // save that happens while the grant is still outstanding is held rather than
+    // dropped, and written the moment the folder arrives. Without this, "always
+    // on" would quietly mean "on from the second save onward".
+    var pending = [];
+
+    function onChange(fn) { listeners.push(fn); }
+    function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
+
+    function supported() { return typeof window.showDirectoryPicker === 'function'; }
+    function isOn() { return !!dir; }
+    function folderName() { return dir ? dir.name : null; }
+    function error() { return lastError; }
+    function count() { return seq; }
+
+    // ---- remembering the folder across reloads ------------------------------
+
+    function idb(mode, fn) {
+      return new Promise(function (resolve) {
+        var open;
+        try { open = indexedDB.open(DB, 1); } catch (e) { resolve(null); return; }
+        open.onupgradeneeded = function () {
+          if (!open.result.objectStoreNames.contains(STORE)) open.result.createObjectStore(STORE);
+        };
+        open.onerror = function () { resolve(null); };
+        open.onsuccess = function () {
+          var db = open.result;
+          var tx = db.transaction(STORE, mode);
+          var req = fn(tx.objectStore(STORE));
+          tx.oncomplete = function () { db.close(); resolve(req ? req.result : null); };
+          tx.onerror = function () { db.close(); resolve(null); };
+        };
+      });
+    }
+
+    function remember(handle) { return idb('readwrite', function (s) { return s.put(handle, KEY); }); }
+    function forget() { return idb('readwrite', function (s) { return s.delete(KEY); }); }
+    function recall() { return idb('readonly', function (s) { return s.get(KEY); }); }
+
+    // ---- turning it on ------------------------------------------------------
+
+    function choose() {
+      if (!supported()) {
+        lastError = 'This browser cannot write to a folder. Logging needs Chrome or Edge.';
+        emit();
+        return Promise.resolve(false);
+      }
+      return window.showDirectoryPicker({ mode: 'readwrite', id: 'ryker-log',
+                                          startIn: 'documents' })
+        .then(function (handle) {
+          dir = handle;
+          lastError = null;
+          return remember(handle)
+            .then(flush)
+            .then(function () { emit(); return true; });
+        })
+        .catch(function (e) {
+          // An abort is someone closing the picker, which is not an error.
+          if (e && e.name !== 'AbortError') lastError = e.message;
+          emit();
+          return false;
+        });
+    }
+
+    // Called at startup. Re-uses the remembered folder when permission is still
+    // granted, and stays quiet when it is not: asking on load would be a prompt
+    // nobody asked for.
+    function resume() {
+      if (!supported()) return Promise.resolve(false);
+      return recall().then(function (handle) {
+        if (!handle || !handle.queryPermission) return false;
+        return handle.queryPermission({ mode: 'readwrite' }).then(function (state) {
+          if (state !== 'granted') return false;
+          dir = handle;
+          return flush().then(function () { emit(); return true; });
+        });
+      }).catch(function () { return false; });
+    }
+
+    // There is deliberately no stop(). Logging is part of what this build is for,
+    // and a switch that turns the record off is a switch that silently loses the
+    // training data the record exists to collect. forget() survives only for the
+    // revoked-permission path below, which re-asks rather than gives up.
+
+    // ---- writing ------------------------------------------------------------
+
+    function stamp() {
+      var d = new Date();
+      function p(n, w) { return String(n).padStart(w || 2, '0'); }
+      return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' +
+        p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+    }
+
+    // The log belongs beside the library rather than beside the reports, so a
+    // folder someone keeps documents in does not fill with machine output. When
+    // the granted folder is already the library folder, it is used as-is instead
+    // of nesting a second ryker inside itself.
+    function libraryDir() {
+      if (dir.name.toLowerCase() === LIB) return Promise.resolve(dir);
+      return dir.getDirectoryHandle(LIB, { create: true });
+    }
+
+    function ensureDir() {
+      return libraryDir()
+        .then(function (lib) { return lib.getDirectoryHandle(DIR_NAME, { create: true }); })
+        .then(function (logs) {
+          var id = Ryker.config.load().RYKER_DOCUMENT_ID;
+          return logs.getDirectoryHandle(id, { create: true });
+        });
+    }
+
+    // The path as it will actually read on disk, for saying out loud.
+    function where() {
+      if (!dir) return LIB + '/' + DIR_NAME;
+      return dir.name.toLowerCase() === LIB
+        ? dir.name + '/' + DIR_NAME
+        : dir.name + '/' + LIB + '/' + DIR_NAME;
+    }
+
+    function write(handle, name, contents) {
+      return handle.getFileHandle(name, { create: true })
+        .then(function (fh) { return fh.createWritable(); })
+        .then(function (w) { return w.write(contents).then(function () { return w.close(); }); });
+    }
+
+    // Called after every save. Failures are recorded and surfaced in the pane
+    // rather than thrown: a logging problem must never cost someone their edit.
+    // Separated from the write so the shape of the training data can be checked
+    // without a filesystem, which is the only part of this worth testing.
+    function buildPayload(promptText) {
+      var cfg = Ryker.config.load();
+      var edits = Ryker.instructions.edits();
+      return {
+        rykerVersion: Ryker.VERSION,
+        build: Ryker.BUILD || 'Ryker Lite',
+        documentId: cfg.RYKER_DOCUMENT_ID,
+        documentPath: cfg.RYKER_DOCUMENT_PATH,
+        documentTitle: document.title,
+        savedAt: new Date().toISOString(),
+        saveNumber: Ryker.instructions.saveCount(),
+        editCount: edits.length,
+        // The prose prompt, exactly as the pane shows it.
+        prompt: promptText,
+        // And the pairs behind it, which is the part worth training on.
+        edits: edits.map(function (e) {
+          return {
+            kind: e.kind, tag: e.tag,
+            before: e.before, after: e.after,
+            position: Ryker.instructions.where(e.id) || null
+          };
+        })
+      };
+    }
+
+    function record(promptText) {
+      seq += 1;
+      var payload = buildPayload(promptText);
+      if (!dir) {
+        pending.push({ name: stamp() + '-save-' + payload.saveNumber + '.json', payload: payload });
+        emit();
+        return Promise.resolve(false);
+      }
+      return put(stamp() + '-save-' + payload.saveNumber + '.json', payload);
+    }
+
+    // Everything held while the grant was outstanding, oldest first. A failure
+    // part way through leaves the rest queued rather than discarding them.
+    function flush() {
+      if (!dir || !pending.length) return Promise.resolve(0);
+      var queued = pending.slice();
+      pending = [];
+      var done = 0;
+      return queued.reduce(function (chain, item) {
+        return chain.then(function () {
+          return put(item.name, item.payload).then(function (ok) {
+            if (ok) done += 1; else pending.push(item);
+          });
+        });
+      }, Promise.resolve()).then(function () { return done; });
+    }
+
+    function pendingCount() { return pending.length; }
+
+    function put(name, payload) {
+      return ensureDir()
+        .then(function (docDir) {
+          return write(docDir, name, JSON.stringify(payload, null, 2));
+        })
+        .then(function () { lastError = null; emit(); return true; })
+        .catch(function (e) {
+          lastError = e && e.message ? e.message : String(e);
+          // A revoked permission is worth forgetting, so the next attempt offers
+          // the picker again rather than failing the same way forever.
+          if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) dir = null;
+          emit();
+          return false;
+        });
+    }
+
+    // ---- reading the log back ------------------------------------------------
+
+    // The folder handle can list its own contents, so the log is browsable from
+    // inside the report without going anywhere near the file system dialog again.
+    function list() {
+      if (!dir) return Promise.resolve([]);
+      return ensureDir().then(function (docDir) {
+        var out = [];
+        var it = docDir.values();
+        function step() {
+          return it.next().then(function (res) {
+            if (res.done) return null;
+            var entry = res.value;
+            if (entry.kind !== 'file' || !/\.json$/.test(entry.name)) return step();
+            return entry.getFile().then(function (f) {
+              out.push({ name: entry.name, size: f.size, modified: f.lastModified, handle: entry });
+              return step();
+            }).catch(step);
+          });
+        }
+        return step().then(function () {
+          return out.sort(function (a, b) { return b.name.localeCompare(a.name); });
+        });
+      }).catch(function () { return []; });
+    }
+
+    function read(entry) {
+      return entry.handle.getFile().then(function (f) { return f.text(); });
+    }
+
+    // A browser cannot open the operating system's file manager, and pretending
+    // otherwise would be a button that does nothing. What it can do, when the
+    // report is being read from disk, is open the folder as a directory listing
+    // in a new tab, which is the closest thing available and is genuinely useful.
+    function folderUrl() {
+      if (location.protocol !== 'file:') return null;
+      var base = location.href.replace(/[^/]*$/, '');
+      return base + LIB + '/' + DIR_NAME + '/' +
+        encodeURIComponent(Ryker.config.load().RYKER_DOCUMENT_ID) + '/';
+    }
+
+    function describe() {
+      if (!supported()) return 'Logging needs Chrome or Edge';
+      if (!dir) {
+        return pending.length
+          ? pending.length + ' save(s) waiting for a folder'
+          : 'Waiting for a folder';
+      }
+      return 'Logging to ' + where();
+    }
+
+    return {
+      supported: supported, isOn: isOn, choose: choose, resume: resume,
+      record: record, buildPayload: buildPayload, describe: describe,
+      flush: flush, pendingCount: pendingCount, where: where, LIB: LIB,
+      list: list, read: read, folderUrl: folderUrl,
+      folderName: folderName, error: error,
+      count: count, onChange: onChange, DIR_NAME: DIR_NAME
+    };
+  })();
+
+
+  /* ---- lite/browser.js ------------------------------------------- */
+  // Browsing the change requests already written for this document.
+  //
+  // The log is a folder of JSON files. Somebody who wants to look at what they
+  // have sent should not have to leave the report, hunt for the folder and open
+  // files by hand, so this reads them back through the same directory handle the
+  // logging uses.
+  Ryker.browser = (function () {
+    'use strict';
+
+    function d() { return Ryker.dom; }
+
+    function fmtSize(n) {
+      return n > 1024 ? Math.round(n / 1024) + ' KB' : n + ' B';
+    }
+
+    function fmtWhen(ms) {
+      try { return Ryker.dom.fmtDate(new Date(ms).toISOString()); } catch (e) { return ''; }
+    }
+
+    function open() {
+      if (!Ryker.logger.isOn()) {
+        offerToTurnOn();
+        return;
+      }
+      var body = d().el('div', {}, [d().el('div', { class: 'pane-status', text: 'Reading the folder...' })]);
+      var dlg = Ryker.dialog.open({ title: 'Change requests', body: body });
+
+      Ryker.logger.list().then(function (files) {
+        body.innerHTML = '';
+
+        var url = Ryker.logger.folderUrl();
+        body.appendChild(d().el('div', { class: 'note' }, [
+          d().el('div', {
+            text: files.length
+              ? files.length + ' change request(s) logged for this document in ' +
+                Ryker.logger.folderName() + '/' + Ryker.logger.DIR_NAME + '.'
+              : 'No change requests logged yet. The next save writes the first one.'
+          })
+        ]));
+
+        if (url) {
+          body.appendChild(d().el('div', { class: 'acts', style: 'margin-bottom:12px' }, [
+            d().el('button', {
+              class: 'rk', text: 'Open the folder in a new tab',
+              onclick: function () { window.open(url, '_blank', 'noopener'); }
+            })
+          ]));
+        }
+
+        if (!files.length) return;
+
+        var list = d().el('div', { class: 'filelist' });
+        files.forEach(function (f) {
+          var row = d().el('div', { class: 'filerow' }, [
+            d().el('span', { class: 'nm', text: f.name }),
+            d().el('span', { class: 'sz', text: fmtSize(f.size) })
+          ]);
+          row.appendChild(d().el('button', {
+            class: 'rk', text: 'View',
+            onclick: function () { view(f); }
+          }));
+          list.appendChild(row);
+        });
+        body.appendChild(list);
+      }).catch(function (e) {
+        body.innerHTML = '<div class="note bad">Could not read the folder: ' +
+          Ryker.dom.escapeHtml(e.message) + '</div>';
+      });
+
+      return dlg;
+    }
+
+    function view(entry) {
+      Ryker.logger.read(entry).then(function (text) {
+        var parsed = null;
+        try { parsed = JSON.parse(text); } catch (e) {}
+
+        var area = d().el('textarea', { class: 'rk pane-text', spellcheck: 'false' });
+        area.value = parsed && parsed.prompt ? parsed.prompt : text;
+        area.style.minHeight = '46vh';
+
+        var meta = parsed
+          ? (parsed.editCount + ' edit(s), saved ' + (parsed.savedAt || 'at an unknown time') +
+             (parsed.backfilled ? ', backfilled from an export' : '') +
+             (parsed.applied ? ', applied to the source' : ''))
+          : 'Raw file contents';
+
         Ryker.dialog.open({
-          title: 'Could not save',
-          body: '<div class="note bad">' + Ryker.dom.escapeHtml(err.message) + '</div>' +
-            '<p>Your edits and comments are still here. Nothing was discarded. ' +
-            'Export them if you need to leave this page before the problem is fixed.</p>',
+          title: entry.name,
+          body: d().el('div', {}, [
+            d().el('div', { class: 'pane-status', text: meta }),
+            area
+          ]),
           buttons: [
             { label: 'Close' },
             {
-              label: 'Export a copy', primary: true,
+              label: 'Download JSON',
               action: function () {
-                var o = Ryker.exportHtml.scanned('clean');
-                if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
-                Ryker.exportHtml.download(o.html, Ryker.exportHtml.baseName() + '-unsaved.html');
+                Ryker.exportHtml.download(text, entry.name, 'application/json');
+              }
+            },
+            {
+              label: 'Copy prompt', primary: true,
+              action: function () {
+                area.focus();
+                area.select();
+                try { document.execCommand('copy'); } catch (e) {}
               }
             }
           ]
@@ -5629,319 +5557,451 @@
       });
     }
 
-    return { start: start, pending: pending };
-  })();
-
-
-  /* ---- github/onboard.js ----------------------------------------- */
-  // Setup, driven by what is missing rather than by a documentation page.
-  //
-  // The important part is the last step: the token is verified by calling the API
-  // and reporting the access actually found. A paste is never trusted on its own,
-  // because a token that reads but cannot write would otherwise let someone edit
-  // for an hour and discover it at the save.
-  Ryker.onboard = (function () {
-    'use strict';
-
-    var TOKEN_URL = 'https://github.com/settings/personal-access-tokens/new';
-
-    function d() { return Ryker.dom; }
-
-    function open() {
-      var cfg = Ryker.config.load();
-      switch (cfg._state) {
-        case 'unconfigured': return unconfigured(cfg);
-        case 'repo-missing': return repoMissing(cfg);
-        case 'auth-missing': return authMissing(cfg);
-        default: return signIn(cfg);
-      }
-    }
-
-    function configBlock(cfg) {
-      return 'window.RYKER_CONFIG = {\n' +
-        '  RYKER_ENABLED: true,\n' +
-        '  RYKER_DOCUMENT_ID: "' + (cfg.RYKER_DOCUMENT_ID || 'my-report') + '",\n' +
-        '  RYKER_DOCUMENT_PATH: "' + (cfg.RYKER_DOCUMENT_PATH || 'report.html') + '",\n' +
-        '  RYKER_GITHUB_ENABLED: true,\n' +
-        '  RYKER_GITHUB_OWNER: "your-org",\n' +
-        '  RYKER_GITHUB_REPO: "your-report-repo",\n' +
-        '  RYKER_GITHUB_BRANCH: "main"\n' +
-        '};';
-    }
-
-    function unconfigured(cfg) {
+    function offerToTurnOn() {
       Ryker.dialog.open({
-        title: 'GitHub collaboration not configured',
-        body: '<p>This report is not connected to a repository, so it saves into this browser ' +
-          'and nowhere else. That is a working setup: you can edit, comment and export without ' +
-          'configuring anything.</p>' +
-          '<p>To collaborate through GitHub instead, put a <code>ryker.config.js</code> next to ' +
-          'the report and load it before <code>ryker.js</code>:</p>' +
-          '<pre><code>' + d().escapeHtml(configBlock(cfg)) + '</code></pre>' +
-          '<div class="note"><b>A config file, not a fetch.</b> A page opened from disk cannot ' +
-          'read a sibling <code>.json</code> at all, so the configuration ships as a script that ' +
-          'assigns <code>window.RYKER_CONFIG</code>. That loads from a file:// URL; a fetched ' +
-          'JSON file does not.</div>' +
-          '<div class="note warn"><b>Nothing secret goes in that file.</b> It ships inside the ' +
-          'report, so anyone who opens the report can read it. A repository name and a client id ' +
-          'are public by design. A client secret, a private key or a token is not, and Ryker ' +
-          'refuses to start with one present.</div>'
-      });
-    }
-
-    function repoMissing(cfg) {
-      Ryker.dialog.open({
-        title: 'Repository not set',
-        body: '<p>GitHub is enabled for this report but it does not know which repository holds ' +
-          'the document. Add the owner and repository name to <code>ryker.config.js</code>:</p>' +
-          '<pre><code>' + d().escapeHtml(configBlock(cfg)) + '</code></pre>'
-      });
-    }
-
-    function authMissing(cfg) {
-      Ryker.dialog.open({
-        title: 'GitHub sign-in not enabled',
-        body: '<p>The repository <code>' + d().escapeHtml(Ryker.config.repoSlug(cfg)) + '</code> is ' +
-          'configured, but <code>RYKER_GITHUB_ENABLED</code> is not <code>true</code>, so Ryker will ' +
-          'not attempt to authenticate anyone.</p>' +
-          '<p>Set it to <code>true</code> in <code>ryker.config.js</code> to turn the sign-in step on.</p>'
-      });
-    }
-
-    function signIn(cfg) {
-      var gh = Ryker.storage.get('github');
-      var input = d().el('input', {
-        class: 'rk', type: 'password', placeholder: 'github_pat_...',
-        autocomplete: 'off', spellcheck: 'false'
-      });
-      var result = d().el('div');
-
-      var body = d().el('div', {}, [
-        d().el('div', { class: 'note' }, [
-          d().el('div', {
-            text: 'This report commits to ' + Ryker.config.repoSlug(cfg) + ' on branch ' +
-              cfg.RYKER_GITHUB_BRANCH + '. Nothing else is reachable with the token you paste.'
-          })
-        ]),
-        html('<p>Create a <b>fine-grained personal access token</b> scoped to that one repository, ' +
-          'with <b>Contents: Read and write</b> and no other permission. GitHub enforces the ' +
-          'repository restriction itself, which is why Ryker asks for a fine-grained token rather ' +
-          'than a classic one.</p>' +
-          '<p><a href="' + TOKEN_URL + '" target="_blank" rel="noopener noreferrer">' +
-          'Open the token page on GitHub</a>, then paste the result below.</p>'),
-        html('<div class="note warn"><b>Ryker does not need your GitHub App private key or client ' +
-          'secret for normal document editing. Do not place those credentials in this report.</b> ' +
-          'The token you paste is held in this tab only. It is never written into the HTML, the ' +
-          'configuration, an export, a commit, or localStorage, and it is gone when the tab ' +
-          'closes.</div>'),
-        d().el('label', { class: 'rk', text: 'Fine-grained token' }),
-        input,
-        result
-      ]);
-
-      var dlg = Ryker.dialog.open({
-        title: 'Sign in to GitHub',
-        body: body,
+        title: 'Change requests are not being logged',
+        body: '<p>Ryker Lite can write a copy of the instructions to a folder every time you ' +
+          'save, so the change requests build into a record rather than living only in this ' +
+          'tab.</p>' +
+          '<div class="note"><b>The folder has to be granted once.</b> A browser cannot read or ' +
+          'write a directory it has never been shown. After that, saving is silent and browsing ' +
+          'them happens here.</div>',
         buttons: [
-          { label: 'Cancel' },
-          gh && gh.hasToken() ? {
-            label: 'Sign out', danger: true,
-            action: function () { gh.signOut(); Ryker.toolbar.sync(); }
-          } : null,
+          { label: 'Not now' },
           {
-            label: 'Verify and continue', primary: true, keepOpen: true,
+            label: 'Choose folder', primary: true,
             action: function () {
-              var t = input.value.trim();
-              if (!t) return false;
-              result.innerHTML = '<div class="note">Checking with GitHub...</div>';
-              gh.setToken(t);
-              gh.verify().then(function (res) {
-                if (!res.ok) {
-                  gh.setToken(null);
-                  result.innerHTML = '<div class="note bad">' + d().escapeHtml(res.reason) + '</div>';
-                  return;
-                }
-                result.innerHTML = '<div class="note ok">Signed in as <b>' +
-                  d().escapeHtml(res.identity.login) + '</b>, user id ' + res.identity.id +
-                  '. Write access to ' + d().escapeHtml(Ryker.config.repoSlug(cfg)) +
-                  ' confirmed by GitHub.</div>';
-                Ryker.storage.detect();
-                Ryker.boot.reload().then(function () {
-                  Ryker.toolbar.sync();
-                  Ryker.panel.refresh();
-                  setTimeout(function () { dlg.close(); }, 900);
-                });
+              Ryker.logger.choose().then(function (ok) {
+                Ryker.lite.sync();
+                if (ok) open();
               });
-              return false;
-            }
-          }
-        ].filter(Boolean)
-      });
-    }
-
-    function html(s) {
-      var n = document.createElement('div');
-      n.innerHTML = s;
-      return n;
-    }
-
-    return { open: open, signIn: signIn };
-  })();
-
-
-  /* ---- comments/select.js ---------------------------------------- */
-  // Making a comment: highlight text, right click, Add comment.
-  //
-  // The context menu is overridden only when there is a selection inside the
-  // report, so right-clicking anything else keeps the browser's own menu. A
-  // floating action appears on selection as well, which is what covers touch and
-  // trackpad users, and holding Shift while right-clicking always gives the
-  // native menu back.
-  Ryker.select = (function () {
-    'use strict';
-
-    var floater = null;
-    var pending = null;
-
-    function d() { return Ryker.dom; }
-
-    function init() {
-      document.addEventListener('contextmenu', onContext, true);
-      document.addEventListener('mouseup', onMouseUp);
-      document.addEventListener('keyup', onKeyUp);
-      document.addEventListener('scroll', hideFloater, true);
-    }
-
-    function usableSelection() {
-      var sel = window.getSelection();
-      if (!sel || sel.isCollapsed || !sel.rangeCount) return null;
-      var range = sel.getRangeAt(0);
-      if (!String(sel).trim()) return null;
-      var node = range.commonAncestorContainer;
-      var el = node.nodeType === 3 ? node.parentNode : node;
-      if (!el || !el.closest) return null;
-      if (el.closest('#ryker-root')) return null;
-      if (!Ryker.blocks.root().contains(el)) return null;
-      return range;
-    }
-
-    function onContext(e) {
-      if (e.shiftKey) return;
-      var range = usableSelection();
-      if (!range) return;
-      e.preventDefault();
-      e.stopPropagation();
-      compose(range);
-    }
-
-    function onMouseUp() { setTimeout(showFloaterIfUseful, 10); }
-    function onKeyUp(e) { if (e.shiftKey || e.key === 'Escape') setTimeout(showFloaterIfUseful, 10); }
-
-    function showFloaterIfUseful() {
-      var range = usableSelection();
-      if (!range) { hideFloater(); return; }
-      var rect = range.getBoundingClientRect();
-      if (!rect || (!rect.width && !rect.height)) { hideFloater(); return; }
-      if (!floater) {
-        floater = d().el('button', { class: 'floater', type: 'button',
-          onclick: function () {
-            var r = pending;
-            hideFloater();
-            if (r) compose(r);
-          }
-        }, [
-          d().el('span', { class: 'fdot' }),
-          d().el('span', { text: 'Comment' })
-        ]);
-        Ryker.shell.add(floater);
-      }
-      pending = range.cloneRange();
-      floater.style.display = '';
-
-      // Anchored to the top right of the selection. Measured after it is visible,
-      // because the button's own width decides where its right edge can sit, and
-      // clamped so a selection at the edge of the viewport does not push it off.
-      var w = floater.offsetWidth || 108;
-      var h = floater.offsetHeight || 30;
-      var left = Math.min(window.innerWidth - w - 8, Math.max(8, rect.right - w));
-      var top = rect.top - h - 8;
-      if (top < 8) top = Math.min(window.innerHeight - h - 8, rect.bottom + 8);
-      floater.style.left = left + 'px';
-      floater.style.top = top + 'px';
-    }
-
-    function hideFloater() {
-      if (floater) floater.style.display = 'none';
-      pending = null;
-    }
-
-    function compose(range) {
-      hideFloater();
-      var quote = String(range).replace(/\s+/g, ' ').trim();
-      var box = d().el('textarea', { class: 'rk', rows: '4', placeholder: 'Your comment' });
-
-      Ryker.dialog.open({
-        title: 'Add a comment',
-        body: d().el('div', {}, [
-          d().el('div', { class: 'quote', text: '“' + trim(quote) + '”' }),
-          d().el('label', { class: 'rk', text: 'Comment' }),
-          box,
-          d().el('div', { class: 'note' }, [
-            d().el('div', {
-              text: 'Anchored to the quoted words plus the text around them, not to a position, ' +
-                'so it survives edits elsewhere in the document. If the words themselves go, the ' +
-                'comment is listed as unanchored rather than moved to something else.'
-            })
-          ])
-        ]),
-        buttons: [
-          { label: 'Cancel' },
-          {
-            label: 'Add comment', primary: true,
-            action: function () {
-              var body = box.value.trim();
-              if (!body) return false;
-              if (Ryker.identity.needsName()) {
-                Ryker.identity.promptForName(function () { finish(range, body); });
-                return;
-              }
-              finish(range, body);
             }
           }
         ]
       });
-      setTimeout(function () { box.focus(); }, 30);
     }
 
-    function finish(range, body) {
-      var c = Ryker.comments.add(range, body, Ryker.identity.current());
-      if (!c) {
-        Ryker.dialog.alert('Could not anchor that',
-          'The selection could not be turned into a stable anchor. Try selecting inside a single ' +
-          'paragraph rather than across several.', 'warn');
-        return;
-      }
-      Ryker.comments.setActive(c.id);
-      Ryker.toolbar.sync();
-      Ryker.panel.open('comments');
-      window.getSelection().removeAllRanges();
-    }
-
-    function trim(s) { return s.length > 140 ? s.slice(0, 137) + '...' : s; }
-
-    return { init: init, hideFloater: hideFloater, compose: compose };
+    return { open: open, view: view };
   })();
 
 
-  /* ---- ui/toolbar.js --------------------------------------------- */
-  // The toolbar. Collapsed to a handle by default, because the reports put their
-  // table of contents at position:sticky; top:0 and an idle editor should cost
-  // the reader nothing.
-  Ryker.toolbar = (function () {
+  /* ---- lite/pane.js ---------------------------------------------- */
+  // The instruction pane. Open by default, because in ryker-lite it is the point
+  // of the tool rather than a panel you go and find.
+  Ryker.pane = (function () {
+    'use strict';
+
+    var node = null, area = null, countEl = null, statusEl = null;
+    var dirtyText = false;
+
+    function d() { return Ryker.dom; }
+
+    function build() {
+      if (node) return node;
+
+      area = d().el('textarea', {
+        class: 'rk pane-text', spellcheck: 'false',
+        'aria-label': 'Edit instructions for an AI'
+      });
+      // Hand-editing is expected: the generated text is a starting point, and a
+      // person will want to add context a diff cannot know. So a rebuild must not
+      // silently discard what they wrote.
+      area.addEventListener('input', function () { dirtyText = true; status(); });
+
+      countEl = d().el('span', { class: 'count' });
+      statusEl = d().el('div', { class: 'pane-status' });
+
+      node = d().el('aside', { class: 'pane', role: 'complementary', 'aria-label': 'Ryker instructions' }, [
+        d().el('div', { class: 'pane-grip', title: 'Drag to resize', 'aria-hidden': 'true' }),
+        d().el('header', {}, [
+          d().el('h2', { text: 'Instructions' }),
+          countEl,
+          d().el('span', { class: 'spacer' }),
+          Ryker.icons.button('copy', 'Copy the instructions', copy),
+          Ryker.icons.button('download', 'Download as a text file', download),
+          Ryker.icons.button('rebuild', 'Rebuild from the edits made this session', function () {
+            dirtyText = false;
+            refresh(true);
+          }),
+          // Destructive, so it is last in the row and carries the danger colour
+          // rather than sitting quietly among the others. Its confirmation is
+          // what actually protects the work; the colour only sets expectations.
+          Ryker.icons.button('trash', 'Clear the document and discard every edit',
+            confirmClear, 'danger')
+        ]),
+        d().el('div', { class: 'pane-body' }, [area]),
+        statusEl
+      ]);
+      Ryker.shell.add(node);
+      initResize();
+      applyWidth(storedWidth());
+      refresh(true);
+      return node;
+    }
+
+    // ---- resizing -----------------------------------------------------------
+    //
+    // The pane holds a prompt someone is going to read and edit, and how much room
+    // that needs depends entirely on the document. Width persists per browser
+    // rather than per document, because it is a preference about the tool.
+
+    var WIDTH_KEY = 'ryker:pane-width';
+    var MIN_W = 300;
+
+    function storedWidth() {
+      var v;
+      try { v = parseInt(localStorage.getItem(WIDTH_KEY), 10); } catch (e) { v = NaN; }
+      return isNaN(v) ? 430 : v;
+    }
+
+    function maxWidth() { return Math.max(MIN_W, document.documentElement.clientWidth - 240); }
+
+    function applyWidth(px, persist) {
+      var w = Math.max(MIN_W, Math.min(maxWidth(), Math.round(px)));
+      node.style.width = w + 'px';
+      if (persist) { try { localStorage.setItem(WIDTH_KEY, String(w)); } catch (e) {} }
+      return w;
+    }
+
+    function initResize() {
+      var grip = node.querySelector('.pane-grip');
+      var startX = 0, startW = 0, dragging = false;
+
+      grip.addEventListener('pointerdown', function (e) {
+        dragging = true;
+        startX = e.clientX;
+        startW = node.getBoundingClientRect().width;
+        grip.setPointerCapture(e.pointerId);
+        node.classList.add('resizing');
+        e.preventDefault();
+      });
+      grip.addEventListener('pointermove', function (e) {
+        if (!dragging) return;
+        // The pane is anchored right, so dragging left widens it.
+        applyWidth(startW + (startX - e.clientX));
+        reflow();
+      });
+      function stop(e) {
+        if (!dragging) return;
+        dragging = false;
+        node.classList.remove('resizing');
+        try { grip.releasePointerCapture(e.pointerId); } catch (err) {}
+        applyWidth(node.getBoundingClientRect().width, true);
+        reflow();
+      }
+      grip.addEventListener('pointerup', stop);
+      grip.addEventListener('pointercancel', stop);
+
+      // Keyboard resizing, because a drag handle is unusable without a pointer.
+      grip.setAttribute('tabindex', '0');
+      grip.setAttribute('role', 'separator');
+      grip.setAttribute('aria-label', 'Resize the instructions pane');
+      grip.addEventListener('keydown', function (e) {
+        var step = e.shiftKey ? 60 : 20;
+        if (e.key === 'ArrowLeft') { applyWidth(node.getBoundingClientRect().width + step, true); reflow(); e.preventDefault(); }
+        if (e.key === 'ArrowRight') { applyWidth(node.getBoundingClientRect().width - step, true); reflow(); e.preventDefault(); }
+      });
+    }
+
+    function status() {
+      if (!statusEl) return;
+      var n = Ryker.instructions.saveCount();
+      statusEl.textContent = dirtyText
+        ? 'Edited by hand. Rebuild will replace what you wrote.'
+        : (n ? n + ' save(s) this session.' : 'Nothing saved yet this session.');
+      statusEl.className = 'pane-status' + (dirtyText ? ' warn' : '');
+    }
+
+    function refresh(force) {
+      if (!node) return;
+      var edits = Ryker.instructions.edits().length;
+      countEl.textContent = String(edits);
+      countEl.className = 'count' + (edits ? ' warn' : '');
+      if (force || !dirtyText) {
+        // Rebuilding over hand-written text would throw away context a diff
+        // cannot know, so the old version is kept and offered back rather than
+        // just overwritten.
+        var replaced = dirtyText ? area.value : null;
+        area.value = Ryker.instructions.build();
+        dirtyText = false;
+        if (replaced) { offerUndo(replaced); return; }
+      }
+      status();
+      reflow();
+    }
+
+    var undoTimer = null;
+
+    function offerUndo(previous) {
+      clearTimeout(undoTimer);
+      statusEl.className = 'pane-status warn';
+      statusEl.textContent = 'Rebuilt. Your hand-written version was replaced. ';
+      statusEl.appendChild(d().el('button', {
+        class: 'rk linkish', text: 'Put it back', type: 'button',
+        onclick: function () {
+          area.value = previous;
+          dirtyText = true;
+          clearTimeout(undoTimer);
+          status();
+        }
+      }));
+      undoTimer = setTimeout(status, 12000);
+      reflow();
+    }
+
+    // A short-lived message in the status line, for actions with no dialog.
+    function flash(message, kind) {
+      if (!statusEl) return;
+      clearTimeout(undoTimer);
+      statusEl.textContent = message;
+      statusEl.className = 'pane-status ' + (kind || '');
+      undoTimer = setTimeout(status, 2600);
+    }
+
+    function copy() {
+      var text = area.value;
+      var done = function (ok) {
+        statusEl.textContent = ok ? 'Copied to the clipboard.' : 'Could not copy. Select the text and copy it.';
+        statusEl.className = 'pane-status' + (ok ? ' ok' : ' warn');
+        setTimeout(status, 2600);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(function () { done(true); }, function () { fallback(done); });
+      } else {
+        fallback(done);
+      }
+    }
+
+    // Clipboard access is refused outright on some file:// origins, so selecting
+    // the text and letting the browser's own copy run is the path that always
+    // works.
+    function fallback(done) {
+      try {
+        area.focus();
+        area.select();
+        done(document.execCommand('copy'));
+      } catch (e) { done(false); }
+    }
+
+    function download() {
+      Ryker.exportHtml.download(area.value,
+        Ryker.exportHtml.baseName() + '-instructions.txt', 'text/plain;charset=utf-8');
+    }
+
+    // Clearing throws away every edit made this session and cannot be undone,
+    // because lite keeps no revisions by design. So the warning leads with the
+    // consequence and offers the copy button in the same breath, rather than
+    // telling someone to go and do it first.
+    function confirmClear() {
+      var edits = Ryker.instructions.edits().length;
+      if (!edits) {
+        Ryker.dialog.alert('Nothing to clear', 'No edits have been made this session.');
+        return;
+      }
+      var copied = d().el('div', { class: 'pane-status' });
+      Ryker.dialog.open({
+        title: 'Reset the document?',
+        body: d().el('div', {}, [
+          d().el('p', { text:
+            edits + ' block(s) will be discarded. This cannot be undone.' }),
+          d().el('p', { class: 'muted', text: 'Save a copy of the instructions first:' }),
+          d().el('div', { class: 'acts' }, [
+            d().el('button', {
+              class: 'rk on', text: 'Copy',
+              onclick: function () {
+                var t = area.value;
+                var ok = function (good) {
+                  copied.textContent = good
+                    ? 'Copied.'
+                    : 'Copy failed. Close this and copy from the pane.';
+                  copied.className = 'pane-status ' + (good ? 'ok' : 'warn');
+                };
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                  navigator.clipboard.writeText(t).then(function () { ok(true); }, function () { ok(false); });
+                } else { fallback(ok); }
+              }
+            }),
+            d().el('button', { class: 'rk', text: 'Download', onclick: download })
+          ]),
+          copied
+        ]),
+        buttons: [
+          { label: 'Cancel', primary: true },
+          { label: 'Discard', danger: true, action: doClear }
+        ]
+      });
+    }
+
+    function doClear() {
+      Ryker.editable.revertAll();
+      Ryker.instructions.reset();
+      if (Ryker.recover) Ryker.recover.dismiss();
+      dirtyText = false;
+      refresh(true);
+      Ryker.lite.sync();
+      Ryker.dialog.alert('Document reset', 'Every edit from this session has been discarded.', 'ok');
+    }
+
+    function reflow() {
+      if (node && node.style.display !== 'none') Ryker.shell.setPanelSpace(node);
+    }
+
+    function toggle() {
+      if (!node) return;
+      var open = node.style.display === 'none';
+      node.style.display = open ? 'flex' : 'none';
+      if (open) reflow(); else Ryker.shell.releasePanelSpace();
+      Ryker.lite.sync();
+    }
+
+    function isOpen() { return !!node && node.style.display !== 'none'; }
+    function value() { return area ? area.value : ''; }
+
+    return {
+      build: build, refresh: refresh, toggle: toggle, isOpen: isOpen,
+      reflow: reflow, copy: copy, value: value, confirmClear: confirmClear,
+      download: download, applyWidth: applyWidth, flash: flash
+    };
+  })();
+
+
+  /* ---- lite/recover.js ------------------------------------------- */
+  // Finding work left behind by the full build.
+  //
+  // The full editor saves a revision journal into browser storage under this
+  // document's id. Lite has no storage adapter and never reads it, so switching a
+  // report from one build to the other makes previously saved edits look like they
+  // vanished: the file loads pristine and nothing says why.
+  //
+  // Rather than pretend that cannot happen, lite looks for the key directly, says
+  // what it found, and offers to bring the work across as a starting point. It
+  // reads and never writes, so declining leaves the saved journal exactly as it
+  // was, still there for the full build.
+  Ryker.recover = (function () {
+    'use strict';
+
+    function key() {
+      return 'ryker:' + Ryker.config.load().RYKER_DOCUMENT_ID + ':journal';
+    }
+
+    function seenKey() {
+      return 'ryker:' + Ryker.config.load().RYKER_DOCUMENT_ID + ':journal-seen';
+    }
+
+    // Keyed on what the journal IS, not just that one was seen. Declining the
+    // offer settles this journal; a later one, with more records or a newer
+    // timestamp, is a different question and gets asked again.
+    function fingerprint(found) {
+      return (found.records.length + '@' + (found.savedAt || ''));
+    }
+
+    function settled(found) {
+      try { return localStorage.getItem(seenKey()) === fingerprint(found); } catch (e) { return false; }
+    }
+
+    function settle(found) {
+      try { localStorage.setItem(seenKey(), fingerprint(found)); } catch (e) {}
+    }
+
+    // Called when the document is cleared. Someone who has just thrown away every
+    // edit this session does not want the same edits offered back on reload.
+    function dismiss() {
+      var found = stored();
+      if (found) settle(found);
+    }
+
+    function stored() {
+      var raw;
+      try { raw = localStorage.getItem(key()); } catch (e) { return null; }
+      if (!raw) return null;
+      try {
+        var parsed = JSON.parse(raw);
+        var records = (parsed && parsed.records) || [];
+        return records.length ? { records: records, savedAt: parsed.savedAt } : null;
+      } catch (e) { return null; }
+    }
+
+    function countBlocks(records) {
+      var ids = {};
+      records.forEach(function (r) {
+        (r.changes || []).forEach(function (c) { ids[c.id] = true; });
+      });
+      return Object.keys(ids).length;
+    }
+
+    function offer() {
+      var found = stored();
+      if (!found) return false;
+
+      var blocks = countBlocks(found.records);
+      if (!blocks) return false;
+      if (settled(found)) return false;
+
+      var d = Ryker.dom;
+      Ryker.dialog.open({
+        title: 'Bring in earlier edits?',
+        body: d.el('div', {}, [
+          d.el('p', {
+            text: blocks + ' block(s) were edited here earlier' +
+              (found.savedAt ? ', on ' + d.fmtDate(found.savedAt) : '') +
+              ', and are still in this browser.'
+          }),
+          d.el('p', { class: 'muted', text: 'Nothing is deleted either way.' })
+        ]),
+        buttons: [
+          { label: 'Cancel', action: function () { settle(found); } },
+          { label: 'Restore', primary: true, action: function () {
+              settle(found);
+              apply(found.records);
+            } }
+        ]
+      });
+      return true;
+    }
+
+    // Applied on top of the pristine document, then recorded as one save, so every
+    // instruction still quotes the document as authored.
+    function apply(records) {
+      var before = Ryker.blocks.snapshot();
+      var out = Ryker.blocks.applyRecords(records);
+      var changes = Ryker.blocks.diffSnapshots(before, Ryker.blocks.snapshot());
+
+      if (!changes.length) {
+        Ryker.dialog.alert('Nothing to bring in',
+          'Those revisions are already reflected in this document.', 'ok');
+        return;
+      }
+
+      Ryker.instructions.record();
+      Ryker.editable.rebase();
+      Ryker.pane.refresh(true);
+      if (!Ryker.pane.isOpen()) Ryker.pane.toggle();
+      Ryker.lite.sync();
+
+      Ryker.dialog.alert('Edits restored',
+        changes.length + ' block(s) applied and folded into the instructions.' +
+        (out.missed ? ' ' + out.missed + ' change(s) could not be placed in this document and were skipped.' : ''),
+        out.missed ? 'warn' : 'ok');
+    }
+
+    return { offer: offer, apply: apply, stored: stored, key: key, dismiss: dismiss };
+  })();
+
+
+  /* ---- lite/lite.js ---------------------------------------------- */
+  // Ryker Lite: the toolbar and boot sequence for the instruction-writing build.
+  //
+  // Lite shares the shell, styles, dialogs, editor, sanitiser and export code with
+  // the full build. What it drops is everything durable: no journal, no revision
+  // browser, no comment engine, no storage backends. A save here does not write
+  // anywhere. It folds the edit into a set of instructions in the pane, which is
+  // the artifact the person actually leaves with.
+  Ryker.lite = (function () {
     'use strict';
 
     var handle = null, bar = null, expanded = false;
     var els = {};
+    var started = false;
 
     function d() { return Ryker.dom; }
 
@@ -5949,7 +6009,7 @@
       if (bar) return;
 
       handle = d().el('button', {
-        class: 'handle', title: 'Open Ryker', 'aria-expanded': 'false',
+        class: 'handle', title: 'Open Ryker Lite', 'aria-expanded': 'false',
         onclick: function () { expand(true); }
       }, [
         d().el('span', { class: 'dot' }),
@@ -5958,353 +6018,308 @@
       ]);
       Ryker.shell.add(handle);
 
-      els.mode = d().el('button', {
-        class: 'rk', text: 'Edit', title: 'Turn Edit Mode on or off',
-        onclick: toggleEdit
-      });
-      els.save = d().el('button', { class: 'rk', text: 'Save', onclick: function () { Ryker.save.start(); } });
-      els.comments = d().el('button', {
-        class: 'rk', onclick: function () { Ryker.panel.toggle('comments'); }
-      });
-      els.showHide = d().el('button', {
-        class: 'rk', onclick: function () {
-          Ryker.comments.setVisible(!Ryker.comments.isVisible());
-          sync();
-        }
-      });
-      els.revisions = d().el('button', {
-        class: 'rk', onclick: function () { Ryker.panel.toggle('revisions'); }
-      });
-      els.exportBtn = d().el('button', { class: 'rk', text: 'Export', onclick: exportMenu });
-      els.pkg = d().el('button', { class: 'rk', text: 'Package', onclick: function () { Ryker.packager.open(); } });
-      els.auth = d().el('button', { class: 'rk', onclick: function () { Ryker.onboard.open(); } });
-      els.where = d().el('span', { class: 'where' }, [
-        d().el('span', { class: 'dot' }),
-        d().el('span', { class: 'lbl' })
-      ]);
-      els.collapse = d().el('button', {
-        class: 'rk', text: 'Hide', title: 'Collapse the toolbar',
-        onclick: function () { expand(false); }
-      });
+      // No Edit toggle. Lite exists to edit, and a mode switch that is always in
+      // the same position is a control nobody ever needs to touch.
+      els.save = d().el('button', { class: 'rk', text: 'Save', onclick: save });
+      els.pane = d().el('button', { class: 'rk count-only',
+        onclick: function () { Ryker.pane.toggle(); } });
 
-      bar = d().el('div', { class: 'bar', role: 'toolbar', 'aria-label': 'Ryker' }, [
-        d().el('span', { class: 'brand', text: 'Ryker' }),
-        els.mode, els.save,
-        d().el('span', { class: 'sep' }),
-        els.comments, els.showHide, els.revisions,
-        d().el('span', { class: 'sep' }),
-        els.exportBtn, els.pkg,
-        d().el('span', { class: 'spacer' }),
-        els.where, els.auth, els.collapse
+      // Export is gone: the instruction pane is what someone leaves with. What
+      // remains is occasional, so it sits behind the ellipsis rather than taking
+      // permanent room in the bar.
+      els.more = Ryker.icons.button('more', 'More actions');
+      els.more.setAttribute('aria-haspopup', 'menu');
+      els.more.setAttribute('aria-expanded', 'false');
+      els.more.addEventListener('click', buildMenu);
+      buildMenu();
+
+      els.note = d().el('button', { class: 'where', type: 'button',
+        onclick: function () { if (!Ryker.logger.isOn()) startLogging(); } }, [
+        d().el('span', { class: 'dot' }),
+        d().el('span', { class: 'lbl', text: 'Nothing is saved anywhere' })
       ]);
+      els.collapse = d().el('button', { class: 'rk', text: 'Hide', onclick: function () { expand(false); } });
+
+      // Left of the name, not among the actions on the right: the outline is a
+      // view of the document rather than a thing done to it. Ghost, so it reads as
+      // part of the name beside it. The active state still paints, because .on is
+      // declared after .ghost at equal specificity.
+      els.outline = Ryker.icons.button('outline', 'Show or hide the outline', function () {
+        Ryker.rail.toggle();
+      }, 'ghost rail-toggle');
+      Ryker.rail.onToggle(sync);
+
+      bar = d().el('div', { class: 'bar', role: 'toolbar', 'aria-label': 'Ryker Lite' }, [
+        els.outline,
+        d().el('span', { class: 'brand', text: 'Ryker Lite' }),
+        d().el('span', { class: 'spacer' }),
+        els.note, els.more, els.pane, els.collapse, els.save
+      ]);
+
+      Ryker.tooltip.attach(els.save, 'Save the edits into the instructions (Ctrl+S)');
+      Ryker.tooltip.attach(els.pane, 'Show or hide the instructions');
+      Ryker.tooltip.attach(els.outline, 'Show or hide the outline');
+      Ryker.tooltip.attach(els.more, 'More actions');
+      Ryker.tooltip.attach(els.collapse, 'Collapse the toolbar');
       bar.style.display = 'none';
       Ryker.shell.add(bar);
     }
 
+    // Rebuilt on open so the logging entry reflects whether it is currently on.
+    function buildMenu() {
+      Ryker.menu.attach(els.more, [
+        { label: 'Package report', icon: 'package', run: function () { Ryker.packager.open(); } },
+        { label: 'Download instructions', icon: 'download', run: function () { Ryker.pane.download(); } },
+        { label: 'Copy instructions', icon: 'copy', run: function () { Ryker.pane.copy(); } },
+        null,
+        { label: 'Change requests...', icon: 'package', run: function () { Ryker.browser.open(); } },
+        Ryker.logger.isOn()
+          ? { label: 'Logging to ' + Ryker.logger.where(), icon: 'download', disabled: true }
+          : { label: 'Choose the folder to log to...', icon: 'download', run: startLogging },
+        null,
+        { label: 'Clear document', icon: 'trash', danger: true,
+          run: function () { Ryker.pane.confirmClear(); } }
+      ]);
+    }
+
+    function startLogging() {
+      if (!Ryker.logger.supported()) {
+        Ryker.dialog.alert('Not available in this browser',
+          'Writing to a folder needs the File System Access API, which Chrome and Edge ' +
+          'have and other browsers do not. Use Download instructions instead.', 'warn');
+        return;
+      }
+      var held = Ryker.logger.pendingCount();
+      Ryker.dialog.open({
+        title: 'Choose where change requests are written',
+        body: '<p>Pick the folder this report is in. Every save is then written to ' +
+          '<code>' + Ryker.logger.LIB + '/' + Ryker.logger.DIR_NAME + '/</code>.</p>' +
+          (held ? '<p class="muted">' + held + ' save(s) are waiting and will be written ' +
+            'straight away.</p>' : '') +
+          '<p class="muted">A browser cannot write to a folder it has not been shown. ' +
+          'This is asked once.</p>',
+        buttons: [
+          { label: 'Cancel' },
+          { label: 'Choose folder', primary: true, action: function () {
+              Ryker.logger.choose().then(function (ok) {
+                sync();
+                if (ok) Ryker.pane.flash('Logging to ' + Ryker.logger.where() +
+                  (held ? '. ' + held + ' held save(s) written.' : '.'), 'ok');
+                else if (Ryker.logger.error()) Ryker.dialog.alert('Could not use that folder',
+                  Ryker.dom.escapeHtml(Ryker.logger.error()), 'bad');
+              });
+            } }
+        ]
+      });
+    }
+
+    // Polls rather than subscribes, because a dialog can be closed by Escape, by
+    // the backdrop or by any of its own buttons, and one timer is cheaper than
+    // teaching every one of those paths to notify.
+    function askWhenClear() {
+      var tries = 0;
+      (function wait() {
+        if (Ryker.logger.isOn()) return;
+        if (!Ryker.dialog.isOpen()) { startLogging(); return; }
+        if (++tries > 240) return;
+        setTimeout(wait, 500);
+      })();
+    }
+
     function expand(open) {
       expanded = !!open;
+      if (!expanded && Ryker.rail && Ryker.rail.isOpen()) Ryker.rail.toggle(false);
       bar.style.display = expanded ? 'flex' : 'none';
       handle.style.display = expanded ? 'none' : 'flex';
       handle.setAttribute('aria-expanded', String(expanded));
-      if (expanded) {
-        // Measured rather than assumed, because the bar wraps at narrow widths.
-        Ryker.shell.setOffset(bar.getBoundingClientRect().height);
-      } else {
+      if (!expanded) {
         Ryker.formatbar.hide();
         Ryker.shell.releaseOffset();
-        Ryker.panel.close();
       }
       sync();
     }
 
-    function toggleEdit() {
-      if (Ryker.editable.isOn()) {
-        if (Ryker.editable.isDirty()) {
-          Ryker.dialog.confirm('Leave Edit Mode?',
-            '<p>You have unsaved changes. Leaving Edit Mode keeps them in the page; it does not ' +
-            'discard them and it does not save them.</p>',
-            'Leave Edit Mode', function () { Ryker.editable.disable(); sync(); });
+    // Only one row now that formatting floats over the selection, so the offset
+    // is simply the bar's own height.
+    function layout() {
+      if (!expanded) return;
+      Ryker.shell.setOffset(bar.getBoundingClientRect().height);
+      Ryker.pane.reflow();
+    }
+
+    // A save in lite writes nothing. It takes the edits made since the last one,
+    // folds them into the instruction set, and rebases so the next save records
+    // only what changed after this point. The instructions themselves still quote
+    // the document as authored, not as it was at the previous save.
+    function save(quiet) {
+      var changes = Ryker.editable.changes();
+      // A move rewrites no block, so changes() is empty after one and this used
+      // to refuse the save that would have recorded it. Order is the other half
+      // of what a save captures.
+      var moves = Ryker.move.count();
+      if (!changes.length && !moves) {
+        // A keyboard save that found nothing should not put a dialog in the way.
+        // Someone pressing Ctrl+S out of habit gets a note, not an interruption.
+        if (quiet) {
+          if (!Ryker.pane.isOpen()) Ryker.pane.toggle();
+          Ryker.pane.flash('Nothing to save. The instructions are already current.');
           return;
         }
-        Ryker.editable.disable();
-        sync();
+        Ryker.dialog.alert('Nothing to save', 'No text has changed since the last save.');
         return;
       }
-
-      if (!Ryker.storage.canWrite()) {
-        var cfg = Ryker.config.load();
-        if (cfg._state === 'configured') {
-          Ryker.dialog.confirm('Sign in before editing',
-            '<p>This report saves to <code>' + d().escapeHtml(Ryker.config.repoSlug(cfg)) + '</code>, ' +
-            'and Ryker has not confirmed you can write there yet.</p>' +
-            '<p>You can edit anyway. Changes stay in this browser and are clearly marked as local ' +
-            'and uncommitted until you sign in.</p>',
-            'Edit locally', function () { Ryker.editable.enable(); sync(); });
+      Ryker.instructions.record();
+      Ryker.editable.rebase();
+      Ryker.pane.refresh(true);
+      if (!Ryker.pane.isOpen()) Ryker.pane.toggle();
+      sync();
+      // Fire and forget. A logging failure is reported in the pane and never
+      // interrupts the save that produced it.
+      Ryker.logger.record(Ryker.pane.value()).then(function (ok) {
+        if (!ok && !Ryker.logger.isOn() && Ryker.logger.supported()) {
+          // No dialog. A modal over the report to ask about a folder was worse
+          // than the problem it solved: it covered the document, swallowed
+          // clicks, and arrived at the moment someone had just finished working.
+          // The held count sits in the toolbar and the chip grants the folder.
+          Ryker.pane.flash(Ryker.logger.pendingCount() +
+            ' save(s) held in this tab. Click "held in this tab only" to write them.', 'warn');
+          sync();
           return;
         }
-      }
-      Ryker.editable.enable();
-      sync();
-    }
-
-    function exportMenu() {
-      var base = Ryker.exportHtml.baseName();
-      Ryker.dialog.open({
-        title: 'Export',
-        body: '<p><b>Clean HTML</b> is the report on its own, with Ryker taken out. This is what ' +
-          'you send to someone who should read it rather than edit it.</p>' +
-          '<p><b>With Ryker</b> keeps the editor attached, so whoever opens it can carry on ' +
-          'commenting and editing.</p>' +
-          '<p><b>Journal</b> is the revision and comment record as JSON, for handing your work back ' +
-          'to the author when you have no repository to commit to.</p>',
-        buttons: [
-          { label: 'Cancel' },
-          {
-            label: 'Journal JSON',
-            action: function () {
-              Ryker.exportHtml.download(Ryker.exportHtml.journalJson(),
-                base + '-ryker-journal.json', 'application/json');
-            }
-          },
-          {
-            label: 'With Ryker',
-            action: function () {
-              var o = Ryker.exportHtml.scanned('ryker');
-              if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
-              Ryker.exportHtml.download(o.html, base + '-ryker.html');
-            }
-          },
-          {
-            label: 'Clean HTML', primary: true,
-            action: function () {
-              var o = Ryker.exportHtml.scanned('clean');
-              if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
-              Ryker.exportHtml.download(o.html, base + '.html');
-            }
-          }
-        ]
+        if (ok) Ryker.pane.flash('Saved. Copy written to ' + Ryker.logger.where() + '.', 'ok');
+        else if (Ryker.logger.error()) Ryker.pane.flash('Could not write the log copy: ' +
+          Ryker.logger.error(), 'warn');
+        sync();
       });
     }
 
     function sync() {
       if (!bar) return;
-      var counts = Ryker.comments.counts();
       var editing = Ryker.editable.isOn();
-      var dirty = Ryker.editable.isDirty() || Ryker.comments.hasPending();
-      var cfg = Ryker.config.load();
+      var dirty = Ryker.editable.isDirty();
+      var edits = Ryker.instructions.edits().length + Ryker.instructions.moves().length;
 
-      els.mode.textContent = editing ? 'Editing' : 'Edit';
-      els.mode.classList.toggle('on', editing);
+      // Save keeps the same plain treatment as Hide. It sits beside it and they
+      // are both ordinary actions; colouring one of them made it read as a state.
       els.save.disabled = !dirty;
-      els.save.textContent = dirty ? 'Save changes' : 'Save';
-      els.save.classList.toggle('on', dirty);
+      els.save.textContent = 'Save';
 
-      els.comments.textContent = 'Comments';
-      els.comments.appendChild(d().el('span', {
-        class: 'count' + (counts.open ? ' warn' : ''),
-        text: String(counts.open)
+      els.pane.textContent = '';
+      els.pane.appendChild(d().el('span', {
+        class: 'count' + (edits ? ' warn' : ''), text: String(edits)
       }));
-      els.comments.classList.toggle('on', Ryker.panel.isOpen('comments'));
-      els.comments.title = counts.open + ' open, ' + counts.resolved + ' resolved' +
-        (counts.unanchored ? ', ' + counts.unanchored + ' unanchored' : '');
-
-      els.showHide.textContent = Ryker.comments.isVisible() ? 'Hide marks' : 'Show marks';
-
-      els.revisions.textContent = 'Revisions';
-      els.revisions.appendChild(d().el('span', { class: 'count', text: String(Ryker.journal.count()) }));
-      els.revisions.classList.toggle('on', Ryker.panel.isOpen('revisions'));
-
-      var backend = Ryker.storage.current();
-      els.where.querySelector('.lbl').textContent = backend.describe();
-      var dot = els.where.querySelector('.dot');
-      dot.className = 'dot ' + (Ryker.storage.canWrite() ? 'ok' : 'warn');
-      els.where.title = backend.detail ? backend.detail() : '';
-
-      var gh = Ryker.storage.get('github');
-      if (cfg._state === 'configured') {
-        els.auth.textContent = gh && gh.canWrite() ? (gh.identity() ? gh.identity().login : 'Signed in') : 'Sign in';
-        els.auth.classList.toggle('on', !!(gh && gh.canWrite()));
-      } else {
-        els.auth.textContent = 'Set up';
-        els.auth.classList.remove('on');
+      els.pane.classList.toggle('on', Ryker.pane.isOpen());
+      if (els.outline) {
+        els.outline.classList.toggle('on', Ryker.rail.isOpen());
+        Ryker.tooltip.attach(els.outline,
+          Ryker.rail.isOpen() ? 'Hide the outline' : 'Show the outline');
       }
+
+      var held = Ryker.logger.pendingCount();
+      els.note.querySelector('.lbl').textContent = Ryker.logger.isOn()
+        ? 'Writing to ' + Ryker.logger.where()
+        : (held
+            ? held + ' save(s) held in this tab only'
+            : (edits ? edits + ' edit(s) held in this tab only' : 'Nothing is saved anywhere'));
+      els.note.disabled = Ryker.logger.isOn() || !Ryker.logger.supported();
+      els.note.querySelector('.dot').className = 'dot ' + (edits ? 'warn' : '');
+      Ryker.tooltip.attach(els.note, Ryker.logger.isOn()
+        ? 'Every save also writes a copy to ' + Ryker.logger.where() + '.'
+        : 'Nothing has been written to disk yet. Click to choose the folder, ' +
+          'and every save held in this tab is written straight away.');
+      els.note.querySelector('.dot').classList.toggle('ok', Ryker.logger.isOn());
+
+      Ryker.tooltip.attach(els.pane,
+        edits + ' edit(s) recorded. Show or hide the instructions.');
 
       var badge = handle.querySelector('.badge');
-      badge.textContent = counts.open ? String(counts.open) : '';
-      badge.style.display = counts.open ? '' : 'none';
+      badge.textContent = edits ? String(edits) : '';
+      badge.style.display = edits ? '' : 'none';
       handle.querySelector('.dot').classList.toggle('on', editing);
-      handle.title = 'Open Ryker' + (counts.open ? ' (' + counts.open + ' open comments)' : '');
 
-      if (expanded) {
-        Ryker.shell.setOffset(bar.getBoundingClientRect().height);
-        if (Ryker.panel.isOpen()) Ryker.panel.reflow();
-      }
-    }
-
-    function isExpanded() { return expanded; }
-
-    return { build: build, sync: sync, expand: expand, isExpanded: isExpanded };
-  })();
-
-
-  /* ---- bootstrap/boot.js ----------------------------------------- */
-  // Boot. Asynchronous and defensive: the report must remain fully usable if
-  // Ryker fails to initialise, so every stage is wrapped and a failure downgrades
-  // the toolbar rather than taking the document down.
-  Ryker.boot = (function () {
-    'use strict';
-
-    var started = false;
-    var problems = [];
-
-    function log(msg) {
-      problems.push(msg);
-      if (window.console && console.warn) console.warn('[ryker] ' + msg);
-    }
-
-    function guard(label, fn) {
-      try { return fn(); }
-      catch (e) { log(label + ': ' + (e && e.message)); return null; }
+      layout();
     }
 
     function start() {
-      if (started) return Promise.resolve();
+      if (started) return;
       started = true;
-
-      var cfg = guard('config', function () { return Ryker.config.load(); });
-      if (!cfg) return Promise.resolve();
-      if (cfg.RYKER_ENABLED === false) return Promise.resolve();
-
-      // A secret in shipped configuration is a hard stop rather than a warning.
-      // Ryker refuses to run rather than operate a report that is leaking one.
+      var cfg = Ryker.config.load();
+      if (cfg.RYKER_ENABLED === false) return;
       if (cfg._leaked && cfg._leaked.length) {
-        guard('shell', function () { Ryker.shell.mount(); });
-        guard('leak', function () {
-          Ryker.dialog.open({
-            title: 'Ryker did not start',
-            body: '<div class="note bad">This report ships configuration keys that must never ' +
-              'leave a build machine: <b>' + Ryker.dom.escapeHtml(cfg._leaked.join(', ')) + '</b>.</div>' +
-              '<p>Anything in Ryker configuration is readable by anyone who opens the report, so ' +
-              'these are already exposed. Rotate them, remove them from the config, and rebuild.</p>',
-            dismissable: false
-          });
+        Ryker.shell.mount();
+        Ryker.dialog.open({
+          title: 'Ryker did not start',
+          body: '<div class="note bad">This report ships configuration keys that must never ' +
+            'leave a build machine: <b>' + Ryker.dom.escapeHtml(cfg._leaked.join(', ')) + '</b>.</div>',
+          dismissable: false
         });
-        return Promise.resolve();
+        return;
       }
 
-      guard('shell', function () { Ryker.shell.mount(); });
-      guard('toolbar', function () { Ryker.toolbar.build(); });
-      guard('select', function () { Ryker.select.init(); });
-      guard('formatbar', function () { Ryker.formatbar.init(); });
-      guard('multi', function () { Ryker.multi.init(); });
-      guard('history', function () { Ryker.history.bind(); });
-      guard('tooltip', function () { Ryker.tooltip.init(); });
-      guard('keys', bindKeys);
+      Ryker.shell.mount();
+      // Taken before Edit Mode opens, so every instruction can quote the document
+      // as authored rather than as it stood at the previous save.
+      Ryker.instructions.captureOrigin();
+      build();
+      Ryker.pane.build();
+      Ryker.formatbar.init();
+      Ryker.pick.init();
+      Ryker.multi.init();
+      Ryker.rail.build();
+      Ryker.rail.init();
+      Ryker.history.bind();
+      Ryker.tooltip.init();
 
-      guard('wire', function () {
-        Ryker.comments.onChange(function () { Ryker.toolbar.sync(); Ryker.panel.refresh(); });
-        Ryker.editable.onChange(function () { Ryker.toolbar.sync(); });
-        Ryker.storage.onChange(function () { Ryker.toolbar.sync(); });
-      });
+      Ryker.editable.onChange(sync);
+      Ryker.instructions.onChange(function () { Ryker.pane.refresh(); sync(); });
 
-      return reload().then(function () {
-        guard('sync', function () { Ryker.toolbar.sync(); });
-      });
-    }
-
-    // Picks the backend, loads its journal, folds comments, anchors them. Called
-    // again after sign-in, when a better backend becomes available.
-    function reload() {
-      return Promise.resolve()
-        .then(function () {
-          var gh = Ryker.storage.get('github');
-          if (gh && gh.hasToken() && !gh.access()) return gh.verify();
-          return null;
-        })
-        .then(function () { Ryker.storage.detect(); })
-        .then(function () { return Ryker.storage.load(); })
-        .then(function (res) {
-          Ryker.journal.reset(res.records || []);
-
-          // Identity is derived from the document's own text, so it has to be
-          // computed while the document still IS its own text, before any saved
-          // edit is put back on top of it.
-          Ryker.blocks.seedIds();
-
-          // A backend that rewrites the document has already put the edits back;
-          // one that only holds a journal has not, and the file on disk is still
-          // the original. Replaying before the baseline is taken is what makes a
-          // save survive a reload in browser-only mode.
-          var backend = Ryker.storage.current();
-          if (backend && !backend.ownsDocument && Ryker.journal.count()) {
-            var out = Ryker.blocks.applyRecords(Ryker.journal.all());
-            if (out.missed) {
-              log('restored ' + out.applied + ' change(s), ' + out.missed +
-                  ' could not be placed and were skipped');
-            }
-          }
-
-          Ryker.editable.setBaseline(Ryker.blocks.snapshot());
-          Ryker.comments.rebuild();
-          if (res && res.error) log('journal load: ' + (res.error.message || res.error));
-        })
-        .catch(function (e) { log('reload: ' + (e && e.message)); });
-    }
-
-    function bindKeys() {
       document.addEventListener('keydown', function (e) {
-        // Ctrl+S, or Cmd+S. Only while editing: a reader pressing it means "save
-        // this page to disk" and should keep the browser's own behaviour.
+        // Ctrl+S, or Cmd+S. Taken over because in a document with an editor
+        // attached it plainly means "save my edits", not "write this page to
+        // disk", and the browser's own dialog would do the wrong thing.
         if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 's' || e.key === 'S')) {
-          if (!Ryker.editable.isOn()) return;
           e.preventDefault();
           e.stopPropagation();
-          if (Ryker.editable.isDirty() || Ryker.comments.hasPending()) Ryker.save.start();
+          save(true);
           return;
         }
         if (e.key !== 'Escape') return;
-        // Ryker's own overlays close first, and the event stops here so the
-        // report's Escape handler does not also fire and close its lightbox.
-        if (Ryker.dialog.isOpen()) {
-          Ryker.dialog.closeTop();
-          e.stopPropagation();
-          e.preventDefault();
-          return;
-        }
-        if (Ryker.panel.isOpen()) {
-          Ryker.panel.close();
-          e.stopPropagation();
-        }
+        if (Ryker.menu.isOpen()) { Ryker.menu.close(); e.stopPropagation(); e.preventDefault(); return; }
+        if (Ryker.dialog.isOpen()) { Ryker.dialog.closeTop(); e.stopPropagation(); e.preventDefault(); }
       }, true);
+
+      // Lite opens ready to work and stays that way: expanded, editing, pane
+      // showing. Its whole purpose is the pane, so starting collapsed would hide
+      // the point of it, and a mode switch would only ever be turned back on.
+      expand(true);
+      Ryker.editable.enable();
+      sync();
+      Ryker.recover.offer();
+      Ryker.logger.resume().then(function (ok) {
+        sync();
+        // Asking on load is the only honest reading of "always on": the picker
+        // needs a click, so the click has to be offered rather than waited for.
+        // Deliberately not asked here. A modal on load covers the report with a
+        // backdrop that swallows every click before anyone has done anything,
+        // which is a poor trade for a grant that is only needed once a save
+        // exists to write. Saves are queued until it arrives, so nothing is lost
+        // by waiting for the first one.
+      });
+      Ryker.logger.onChange(buildMenu);
     }
 
-    function status() {
-      return { started: started, problems: problems.slice() };
-    }
-
-    return { start: start, reload: reload, status: status, log: log };
+    return { start: start, sync: sync, save: save, expand: expand };
   })();
 
-  Ryker.log = Ryker.boot.log;
-
-  // Deferred so the report paints before Ryker does any work, per spec section
-  // 41. requestAnimationFrame is the right signal when the page is visible and
-  // the wrong one to depend on: it does not fire in a background tab, during a
-  // headless render, or while printing, and Ryker would then never initialise at
-  // all. So a timer races it and whichever arrives first wins, with start()
-  // idempotent so the loser is harmless.
   (function () {
     'use strict';
-    function go() { Ryker.boot.start(); }
+    function go() { Ryker.lite.start(); }
     function schedule() {
       if (typeof requestAnimationFrame === 'function') requestAnimationFrame(go);
       setTimeout(go, 50);
     }
-    if (document.readyState === 'loading') {
-      document.addEventListener('DOMContentLoaded', schedule);
-    } else {
-      schedule();
-    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', schedule);
+    else schedule();
   })();
 
 

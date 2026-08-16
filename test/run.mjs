@@ -133,7 +133,13 @@ async function runBuild(sess, file) {
 
   // --- an edit becomes exactly one instruction ------------------------------
 
-  if (Ryker_isInstructionBuild(info.build)) {
+  // Capability, not name. This was a name test until the decommission renamed
+  // the only surviving build from "Ryker Lite" to "Ryker", which would have
+  // silently skipped these three checks at exactly the moment they mattered.
+  const hasInstructions = await evaluate(sess,
+    `!!(window.Ryker && Ryker.instructions && Ryker.pane)`);
+
+  if (hasInstructions) {
     const before = MUST_BE_EDITABLE[2]; // 'List item alpha'
     const result = await evaluate(sess, `(function () {
       var hit = Ryker.blocks.all().filter(function (b) {
@@ -164,9 +170,6 @@ async function runBuild(sess, file) {
   }
 }
 
-function Ryker_isInstructionBuild(build) {
-  return typeof build === 'string' && /lite/i.test(build);
-}
 
 const bundles = ['ryker.js', 'ryker-lite.js'].filter((f) => existsSync(join(DIST, f)));
 if (!bundles.length) {
