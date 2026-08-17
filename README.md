@@ -31,6 +31,6 @@ sold or shipped or featured as part of a commercial product or software as a
 service offering without prior written permission from GETHSEMANE LLC. The
 license and copyright notice must remain intact.
 
-This package is not published yet. The `@next` command above becomes available
-after the first release candidate is published. The `@latest` tag is reserved
-for a release that has passed public-package acceptance testing.
+Release candidate `0.1.1-rc.1` is available from npm through the `next`
+distribution tag. During the prerelease period, use `@next` or the exact
+version rather than relying on npm's default tag.
