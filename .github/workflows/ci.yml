@@ -1,0 +1,55 @@
+name: build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 22 specifically. The test harness drives Chrome over the DevTools
+      # Protocol using the global WebSocket, which is what lets this repository
+      # have no package.json and no node_modules. On an older Node there is no
+      # global WebSocket and the suite cannot run at all.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Confirm the runner has what the suite needs
+        run: |
+          node --version
+          node -e "if (typeof WebSocket !== 'function') { console.error('no global WebSocket'); process.exit(1); }"
+          which google-chrome || which google-chrome-stable || which chromium-browser
+          google-chrome --version || google-chrome-stable --version
+
+      # The lint lives in the bundler rather than in a separate tool: the 600
+      # line cap, the load order, the UNBUNDLED exemption in both directions,
+      # literal control characters and the sequences that break an inlined
+      # script. It exits non-zero on any of them.
+      - name: Build and lint
+        run: node drop-in/build/bundle.mjs
+
+      # dist/ is committed, because the README tells people to copy it next to
+      # their report, so it is the distributable rather than build scratch. That
+      # makes a stale bundle possible: a commit that changes src/ and not dist/
+      # ships the old code to anyone who copies the file. The build above has
+      # just regenerated it, so any diff here is exactly that.
+      - name: Fail if the committed bundle is stale
+        run: |
+          if ! git diff --quiet -- drop-in/dist; then
+            echo "drop-in/dist is out of date with drop-in/src."
+            echo "Run: node drop-in/build/bundle.mjs, and commit the result."
+            git diff --stat -- drop-in/dist
+            exit 1
+          fi
+
+      - name: Test
+        run: node test/run.mjs
+        env:
+          RYKER_CHROME: google-chrome
