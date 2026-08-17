@@ -295,7 +295,7 @@ Ryker.blocks = (function () {
   }
 
   return {
-    SELECTOR: SELECTOR, root: root, all: all, blockId: blockId, byId: byId,
+    SELECTOR: SELECTOR, root: root, all: all, blockId: blockId, byId: byId, hash: hash,
     excluded: excluded, snapshot: snapshot, diffSnapshots: diffSnapshots, label: label,
     seedIds: seedIds, stamp: stamp, htmlOf: htmlOf, sequence: sequence,
     boxOf: boxOf, boxKey: boxKey,

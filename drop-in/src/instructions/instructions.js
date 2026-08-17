@@ -18,11 +18,42 @@ Ryker.instructions = (function () {
   var pristine = null; // blockId -> html as the document was authored
   var saved = null;    // blockId -> html as of the last save
   var saves = 0;
+  var baseline = null;
   var listeners = [];
 
   function captureOrigin() {
     pristine = Ryker.blocks.snapshot();
+    baseline = null;
     return Object.keys(pristine).length;
+  }
+
+  // What the instructions in this session are measured against.
+  //
+  // Every record written from one page load quotes the same pristine document,
+  // so all of them are cumulative supersets of each other and only the last is
+  // worth keeping. A reload re-runs captureOrigin() against the document as it
+  // then stands, and from that point the records quote a different starting
+  // text, so they have to be COMPOSED with the earlier ones rather than
+  // deduplicated against them.
+  //
+  // Nothing written before 2026-08-16 recorded which of those two cases it was
+  // in. saveNumber resets on reload and is not it: the 17 records in the corpus
+  // run to 5, reset to 2, reset to 1, then continue at 6.
+  //
+  // Derived from the content rather than minted at random on purpose. Two loads
+  // of an unmodified document produce the same id and their records correctly
+  // deduplicate; a load after edits produces a different one and its records
+  // correctly compose. The grouping falls out of what the document was instead
+  // of being asserted by whoever happened to be running.
+  function baselineId() {
+    if (baseline) return baseline;
+    if (!pristine) return null;
+    var keys = Object.keys(pristine).sort();
+    var parts = keys.map(function (k) {
+      return k + '\u0000' + Ryker.blocks.htmlOf(pristine[k]);
+    });
+    baseline = Ryker.blocks.hash(parts.join('\u0001'));
+    return baseline;
   }
 
   function pristineHtml(id) {
@@ -453,7 +484,7 @@ Ryker.instructions = (function () {
 
   return {
     record: record, build: build, edits: edits, moves: moves, reset: reset,
-    captureOrigin: captureOrigin, originalOf: originalOf,
+    captureOrigin: captureOrigin, originalOf: originalOf, baselineId: baselineId,
     saveCount: saveCount, onChange: onChange, where: where, suspicious: suspicious
   };
 })();

@@ -162,6 +162,15 @@ Ryker.logger = (function () {
       documentPath: cfg.RYKER_DOCUMENT_PATH,
       documentTitle: document.title,
       savedAt: new Date().toISOString(),
+      // Which document text every FROM in this record is quoting.
+      //
+      // Records sharing a baseline are cumulative supersets of one another, so
+      // merging them means keeping the last. Records with different baselines
+      // quote different starting text and have to be composed instead. Without
+      // this field neither case can be told from the other: saveNumber below
+      // resets on reload, so the 17 records written before this was added run
+      // 1 to 5, reset to 2, reset to 1, then continue at 6.
+      baselineId: Ryker.instructions.baselineId(),
       saveNumber: Ryker.instructions.saveCount(),
       editCount: edits.length,
       // The prose prompt, exactly as the pane shows it.

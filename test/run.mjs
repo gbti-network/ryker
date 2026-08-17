@@ -15,6 +15,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launch, navigate, evaluate, waitInPage } from './cdp.mjs';
+import * as RECORDS from './fixtures/records.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = join(HERE, '..', 'drop-in', 'dist');
@@ -327,6 +328,115 @@ async function runPackager(sess, file) {
   }
 }
 
+// Folding many saved records into one instruction set.
+//
+// The hard case is not deduplication. Records from one page load share a
+// baseline and are cumulative supersets, so the last supersedes the rest.
+// Records from different loads quote different starting text and have to be
+// composed. The fixtures reproduce the shape of the real corpus, including
+// saveNumber restarting and a session with no baselineId at all.
+async function runMerge(sess, file) {
+  console.log(`\n${file} (merge)`);
+  const code = readFileSync(join(DIST, file), 'utf8');
+
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && Ryker.merge)`, 10000, 'the merge module');
+
+  const call = async (records) => evaluate(sess,
+    `JSON.parse(JSON.stringify(Ryker.merge.fold(${JSON.stringify(records)})))`);
+
+  // 1. Same baseline: keep the last, drop the rest, change nothing else.
+  const a = await call(RECORDS.SESSION_A);
+  assert(a.superseded === 2, 'records sharing a baseline collapse to the latest',
+    a.superseded === 2 ? null : `superseded ${a.superseded}, expected 2`);
+  assert(a.steps.length === 3, 'the surviving record keeps all of its own steps',
+    a.steps.length === 3 ? null : `got ${a.steps.length}`);
+
+  // 2. Composition. Session B edits session A's output, and C edits B's, so the
+  //    first line should read as one step from the ORIGINAL text to the final
+  //    text rather than as three separate rewrites.
+  const chained = await call([].concat(RECORDS.SESSION_A, RECORDS.SESSION_B, RECORDS.SESSION_C));
+  const firstLine = chained.steps.filter((s) => /first line/.test(s.before || ''));
+  assert(firstLine.length === 1,
+    'three sessions editing one paragraph compose into a single step',
+    firstLine.length === 1 ? null
+      : 'got ' + JSON.stringify(firstLine.map((s) => `${s.before} -> ${s.after}`), null, 1));
+  if (firstLine.length === 1) {
+    assert(firstLine[0].before === 'The original first line.' &&
+           firstLine[0].after === 'The final first line.',
+      'the composed step runs from the original text to the final text',
+      `got "${firstLine[0].before}" -> "${firstLine[0].after}"`);
+  }
+
+  // 3. A conflict is refused, not guessed. Session D rewrites the ORIGINAL
+  //    first line to something incompatible with what A already did to it.
+  const conflict = await call([].concat(RECORDS.SESSION_A, RECORDS.SESSION_D));
+  assert(conflict.refused.length === 1,
+    'an unfoldable change is reported rather than dropped or guessed',
+    conflict.refused.length === 1 ? null : `refused ${conflict.refused.length}, expected 1`);
+  const lost = JSON.stringify(conflict.steps).includes('A completely different first line');
+  assert(!lost || conflict.refused.length > 0,
+    'nothing is silently discarded when a fold fails');
+
+  // 4. The refusal to deduplicate identical inserts survives the fold. This is
+  //    a rule instructions.js applies within one record and it is no more
+  //    knowable across records than within one.
+  const dupes = await call(RECORDS.SESSION_E);
+  assert(dupes.steps.length === 2,
+    'identical inserts are kept, not tidied away',
+    dupes.steps.length === 2 ? null : `got ${dupes.steps.length} steps`);
+  assert(dupes.warnings.some((w) => /identical content/i.test(w)),
+    'identical inserts are reported as a suggestion',
+    'warnings: ' + JSON.stringify(dupes.warnings));
+
+  // 5. A record with no baselineId, which is every record written before
+  //    2026-08-16, still folds by matching content.
+  const legacy = await call([].concat(RECORDS.SESSION_B, RECORDS.SESSION_C));
+  assert(legacy.inferred === true,
+    'a record with no baseline is folded but flagged as inferred',
+    `inferred was ${legacy.inferred}`);
+  assert(legacy.warnings.some((w) => /predate baseline tracking/i.test(w)),
+    'the inferred grouping says so rather than presenting itself as certain');
+
+  // 6. Conservation. The one property that matters more than any individual
+  //    rule: every structured edit that goes in has to come out somewhere. This
+  //    is the assertion that would have caught the real bug, where a corpus
+  //    with no baselineId on any record collapsed into one group and 16 of 17
+  //    records were discarded while the fold reported success.
+  const all = await call(RECORDS.ALL);
+  const acc = all.accounted;
+  const out = acc.kept + acc.refused + acc.duplicated + acc.composed + acc.supersededEdits;
+  assert(out === acc.in,
+    'every edit that goes into a fold comes out of it somewhere',
+    out === acc.in
+      ? null
+      : `${acc.in} edits in, ${out} accounted for ` +
+        `(kept ${acc.kept}, refused ${acc.refused}, duplicate ${acc.duplicated}, ` +
+        `composed ${acc.composed}, ` +
+        `superseded ${acc.supersededEdits}). The difference is work that vanished.`);
+
+  // 7. The real-corpus shape: many records, not one of them carrying a
+  //    baselineId. Every record written before 2026-08-16 looks like this.
+  const unkeyed = RECORDS.ALL.map(({ baselineId, ...rest }) => rest);
+  const noKeys = await call(unkeyed);
+  assert(noKeys.superseded === 0,
+    'records with no baseline are never discarded as superseded',
+    noKeys.superseded === 0 ? null
+      : `${noKeys.superseded} records dropped, which is the bug the real corpus exposed`);
+  const na = noKeys.accounted;
+  assert(na.kept + na.refused + na.duplicated + na.composed + na.supersededEdits === na.in,
+    'a fold with no baselines anywhere still loses nothing');
+
+  // 8. Order independence. The caller lists a directory and gets whatever order
+  //    the filesystem hands back, so the fold sorts by savedAt itself.
+  const shuffled = await call(RECORDS.ALL);
+  const inOrder = await call(RECORDS.ALL.slice().sort((x, y) =>
+    Date.parse(x.savedAt) - Date.parse(y.savedAt)));
+  assert(JSON.stringify(shuffled.steps) === JSON.stringify(inOrder.steps),
+    'the fold does not depend on the order records arrive in');
+}
+
 const bundles = ['ryker.js'].filter((f) => existsSync(join(DIST, f)));
 if (!bundles.length) {
   console.error('No bundle found in drop-in/dist. Run: node drop-in/build/bundle.mjs');
@@ -335,7 +445,7 @@ if (!bundles.length) {
 
 const sess = await launch();
 try {
-  for (const file of bundles) { await runBuild(sess, file); await runPackager(sess, file); await runFailureIsolation(sess, file); }
+  for (const file of bundles) { await runBuild(sess, file); await runMerge(sess, file); await runPackager(sess, file); await runFailureIsolation(sess, file); }
 } finally {
   await sess.close();
 }

@@ -52,6 +52,7 @@ const MODULES = [
   'editor/move.js',
   'ui/rail.js',
   'instructions/instructions.js',
+  'instructions/merge.js',
   'storage/logger.js',
   'instructions/browser.js',
   'ui/pane.js',
