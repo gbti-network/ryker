@@ -16,6 +16,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { launch, navigate, evaluate, waitInPage } from './cdp.mjs';
 import * as RECORDS from './fixtures/records.mjs';
+import { FAKE_FS } from './fixtures/fakefs.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = join(HERE, '..', 'drop-in', 'dist');
@@ -459,6 +460,159 @@ async function runMerge(sess, file) {
     'the fold does not depend on the order records arrive in');
 }
 
+// The change request log, end to end, against an in-memory filesystem.
+//
+// Everything here was unverified until now because it all sits behind
+// showDirectoryPicker, which needs a real click. The fake resolves immediately,
+// so the grant, the write, the merged export and the clear all become drivable.
+// What stays unproven is the real picker itself, which no harness can supply.
+async function runLogging(sess, file) {
+  console.log(`\n${file} (change request log)`);
+  const code = readFileSync(join(DIST, file), 'utf8');
+
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, FAKE_FS);
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && document.getElementById('ryker-root'))`,
+    10000, 'Ryker to boot');
+
+  // A save with no folder granted must prompt, once. The owner asked for that
+  // on 2026-08-16, overriding a comment that refused to open any dialog here.
+  await evaluate(sess, `(function () {
+    var hit = Ryker.blocks.all()[3];
+    hit.node.textContent = 'First edit for the log test.';
+    Ryker.editable.touch();
+    Ryker.boot.save();
+  })()`);
+
+  // Awaited, not read synchronously. save() is fire and forget by design: the
+  // logging attempt happens in the promise record() returns, so the prompt
+  // cannot exist yet on the line after the call.
+  let prompted = false;
+  try {
+    await waitInPage(sess, `Ryker.dialog.isOpen()`, 5000, 'the grant prompt');
+    prompted = true;
+  } catch (e) { /* reported below */ }
+  assert(prompted, 'the first save without a folder prompts for the grant',
+    prompted ? null : 'no dialog appeared within 5s of a save with no folder granted');
+
+  // Grant it, the way the dialog's own button does.
+  const granted = await evaluate(sess,
+    `Ryker.logger.choose().then(function (ok) { return { ok: ok, on: Ryker.logger.isOn() }; })`);
+  assert(granted.ok === true && granted.on === true,
+    'granting the folder turns logging on',
+    JSON.stringify(granted));
+
+  // The held save must be written the moment the folder arrives. Without that,
+  // "always on" would quietly mean "on from the second save onward", which is
+  // the exact thing logger.js's pending queue exists to prevent.
+  const afterGrant = await evaluate(sess, `(function () {
+    var files = window.__fakeFsDump();
+    return { paths: Object.keys(files), held: Ryker.logger.pendingCount() };
+  })()`);
+  assert(afterGrant.paths.length >= 1,
+    'the save held before the grant is written once the folder arrives',
+    `nothing on disk; held ${afterGrant.held}`);
+  assert(afterGrant.paths.every((p) => /^ryker\/revisions\//.test(p)),
+    'records land under the fixed relative path, not wherever',
+    'paths: ' + JSON.stringify(afterGrant.paths));
+
+  // A second save must not re-prompt.
+  const second = await evaluate(sess, `(function () {
+    Ryker.dialog.closeTop();
+    var hit = Ryker.blocks.all()[4];
+    hit.node.textContent = 'Second edit for the log test.';
+    Ryker.editable.touch();
+    Ryker.boot.save();
+    return { dialogOpen: Ryker.dialog.isOpen() };
+  })()`);
+  assert(second.dialogOpen === false,
+    'a later save does not prompt again',
+    'the once-per-session rule is what keeps the override tolerable');
+
+  // The written record has to carry the baseline, or the merge cannot group it.
+  const written = await waitInPage(sess, `(function () {
+    var files = window.__fakeFsDump();
+    var names = Object.keys(files);
+    if (!names.length) return null;
+    var rec = JSON.parse(files[names[names.length - 1]]);
+    return { baselineId: rec.baselineId || null, edits: (rec.edits || []).length,
+             hasPrompt: !!rec.prompt };
+  })()`, 8000, 'a record on the fake disk');
+
+  assert(!!written.baselineId,
+    'the written record carries a baselineId',
+    'without it the merge cannot tell deduplication from composition');
+  assert(written.hasPrompt && written.edits > 0,
+    'the record carries both the prose prompt and the structured pairs',
+    JSON.stringify(written));
+
+  // Read them back and fold them, which is the export path.
+  const merged = await evaluate(sess,
+    `Ryker.logger.list().then(function (files) {
+       return Promise.all(files.map(function (f) { return Ryker.logger.read(f); }))
+         .then(function (texts) {
+           var recs = texts.map(function (t) { return JSON.parse(t); });
+           var r = Ryker.merge.fold(recs);
+           return { records: recs.length, steps: r.steps.length,
+                    text: Ryker.merge.render(r).slice(0, 400) };
+         });
+     })`);
+  assert(merged.records >= 1 && merged.steps >= 1,
+    'the logged records read back and fold into an instruction set',
+    JSON.stringify({ records: merged.records, steps: merged.steps }));
+  assert(/Merged document edit instructions/.test(merged.text),
+    'the merged export renders the artifact an agent receives');
+
+  // Clear removes them, and removes only them.
+  const cleared = await evaluate(sess,
+    `Ryker.logger.clear().then(function (n) {
+       return { removed: n, left: Object.keys(window.__fakeFsDump()).length };
+     })`);
+  assert(cleared.removed >= 1 && cleared.left === 0,
+    'clearing the log removes every record',
+    JSON.stringify(cleared));
+
+  // A cancelled picker is not an error, and must not leave a stuck state.
+  const cancelled = await evaluate(sess, `(function () {
+    window.__fakeFsCancel = true;
+    return Ryker.logger.choose().then(function (ok) {
+      window.__fakeFsCancel = false;
+      return { ok: ok, error: Ryker.logger.error() };
+    });
+  })()`);
+  assert(cancelled.ok === false && !cancelled.error,
+    'closing the picker is not reported as an error',
+    JSON.stringify(cancelled));
+
+  // Granting must still complete when the handle cannot be persisted.
+  //
+  // choose() awaits remember() before it emits, and remember() goes through
+  // IndexedDB. idb() ran fn() unguarded with no onabort handler, so a throw
+  // there aborted the transaction and the promise never settled: the grant hung
+  // with no error, no toolbar change and nothing in the console. Private
+  // browsing, a disabled store or a quota failure all produce that throw.
+  //
+  // The folder is expected to work for the session regardless. Only remembering
+  // it across a reload is lost.
+  const uncloneable = await evaluate(sess, `(function () {
+    window.__fakeFsUncloneable();
+    return Promise.race([
+      Ryker.logger.choose().then(function (ok) {
+        return { settled: true, ok: ok, on: Ryker.logger.isOn() };
+      }),
+      new Promise(function (r) { setTimeout(function () { r({ settled: false }); }, 4000); })
+    ]);
+  })()`);
+  assert(uncloneable.settled === true,
+    'granting completes even when the handle cannot be persisted',
+    uncloneable.settled ? null
+      : 'choose() never settled, so the grant hangs silently and the toolbar never updates');
+  assert(uncloneable.on === true,
+    'the folder still works for this session when it cannot be remembered',
+    JSON.stringify(uncloneable));
+}
+
 const bundles = ['ryker.js'].filter((f) => existsSync(join(DIST, f)));
 if (!bundles.length) {
   console.error('No bundle found in drop-in/dist. Run: node drop-in/build/bundle.mjs');
@@ -467,7 +621,7 @@ if (!bundles.length) {
 
 const sess = await launch();
 try {
-  for (const file of bundles) { await runBuild(sess, file); await runMerge(sess, file); await runPackager(sess, file); await runFailureIsolation(sess, file); }
+  for (const file of bundles) { await runBuild(sess, file); await runMerge(sess, file); await runPackager(sess, file); await runLogging(sess, file); await runFailureIsolation(sess, file); }
 } finally {
   await sess.close();
 }

@@ -28,7 +28,7 @@
  *   ui/rail.js  (435 lines)
  *   instructions/instructions.js  (491 lines)
  *   instructions/merge.js  (326 lines)
- *   storage/logger.js  (318 lines)
+ *   storage/logger.js  (336 lines)
  *   instructions/browser.js  (250 lines)
  *   ui/pane.js  (278 lines)
  *   storage/recover.js  (126 lines)
@@ -5515,10 +5515,28 @@
         open.onerror = function () { resolve(null); };
         open.onsuccess = function () {
           var db = open.result;
-          var tx = db.transaction(STORE, mode);
-          var req = fn(tx.objectStore(STORE));
+          var tx, req;
+          // Guarded, and onabort handled, because neither was and the failure was
+          // silent and total. put() throws DataCloneError on a handle the browser
+          // will not structured-clone, and can throw if the store is gone. The
+          // exception escaped this handler, the transaction aborted, no onabort
+          // existed to catch it, and the promise never settled. choose() awaits
+          // remember() before it emits, so granting a folder simply hung: no
+          // error, no toolbar change, nothing.
+          //
+          // Resolving null is the right degradation. The folder still works for
+          // this session; it is only forgotten on reload.
+          try {
+            tx = db.transaction(STORE, mode);
+            req = fn(tx.objectStore(STORE));
+          } catch (e) {
+            try { db.close(); } catch (e2) { /* already closing */ }
+            resolve(null);
+            return;
+          }
           tx.oncomplete = function () { db.close(); resolve(req ? req.result : null); };
           tx.onerror = function () { db.close(); resolve(null); };
+          tx.onabort = function () { db.close(); resolve(null); };
         };
       });
     }
