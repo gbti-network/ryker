@@ -428,7 +428,29 @@ async function runMerge(sess, file) {
   assert(na.kept + na.refused + na.duplicated + na.composed + na.supersededEdits === na.in,
     'a fold with no baselines anywhere still loses nothing');
 
-  // 8. Order independence. The caller lists a directory and gets whatever order
+  // 8. The rendered artifact. This is what someone actually downloads and hands
+  //    to an agent, so the checks are on the text rather than on the object
+  //    behind it. render() lives in the merge module rather than the browser
+  //    precisely so it can be reached without a granted folder.
+  const rendered = await evaluate(sess,
+    `Ryker.merge.render(Ryker.merge.fold(${JSON.stringify(
+      [].concat(RECORDS.SESSION_A, RECORDS.SESSION_B, RECORDS.SESSION_C, RECORDS.SESSION_D))}))`);
+
+  assert(rendered.includes('The original first line.'),
+    'the merged file quotes the original text, not an intermediate version',
+    rendered.includes('The original first line.') ? null
+      : 'the FROM text an agent has to match is missing');
+  assert(rendered.includes('The final first line.'),
+    'the merged file carries the final text');
+  assert(!rendered.includes('The edited first line.\n>>>'),
+    'intermediate versions do not appear as their own steps');
+  assert(/## Not merged/.test(rendered),
+    'what could not be merged is written into the file, not just the dialog',
+    /## Not merged/.test(rendered) ? null
+      : 'a refusal was reported in the object but never reached the artifact, ' +
+        'so whoever downloads it would not know anything was left out');
+
+  // 9. Order independence. The caller lists a directory and gets whatever order
   //    the filesystem hands back, so the fold sorts by savedAt itself.
   const shuffled = await call(RECORDS.ALL);
   const inOrder = await call(RECORDS.ALL.slice().sort((x, y) =>

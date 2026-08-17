@@ -273,5 +273,53 @@ Ryker.merge = (function () {
     return out;
   }
 
-  return { fold: fold, groupKey: groupKey, chronological: chronological };
+  function clip(html) {
+    var t = document.createElement('div');
+    t.innerHTML = html == null ? '' : html;
+    var s = (t.textContent || '').replace(/\s+/g, ' ').trim();
+    return s.length > 90 ? s.slice(0, 87) + '...' : s;
+  }
+
+  // The merged set as the same prose an agent already knows how to follow.
+  function render(r) {
+    var out = [];
+    out.push('# Merged document edit instructions');
+    out.push('');
+    out.push('Folded from ' + r.groups.length + ' record group(s). Every FROM below is the');
+    out.push('text as it stood before any of these edits, so the set applies to a clean copy.');
+    out.push('');
+    r.warnings.forEach(function (w) { out.push('NOTE: ' + w); });
+    if (r.warnings.length) out.push('');
+    out.push('---');
+    out.push('');
+    r.steps.forEach(function (s, i) {
+      out.push('## ' + (i + 1) + '. ' + (s.kind === 'insert' ? 'Insert' :
+        s.kind === 'delete' ? 'Delete' : 'Replace') + ' <' + (s.tag || '?').toLowerCase() + '>');
+      if (s.position) out.push('');
+      if (s.position) out.push('Position: ' + s.position);
+      out.push('');
+      if (s.before) { out.push('FROM:'); out.push('<<<'); out.push(s.before); out.push('>>>'); out.push(''); }
+      if (s.after) { out.push('TO:'); out.push('<<<'); out.push(s.after); out.push('>>>'); out.push(''); }
+    });
+    if (r.refused.length) {
+      out.push('---');
+      out.push('');
+      out.push('## Not merged');
+      out.push('');
+      out.push('These changes could not be folded into the set above and are listed');
+      out.push('so that nothing is lost. Apply them by hand or discard them.');
+      out.push('');
+      r.refused.forEach(function (x, i) {
+        out.push((i + 1) + '. ' + x.why);
+        out.push('   was: ' + clip(x.edit && x.edit.before));
+        out.push('   to:  ' + clip(x.edit && x.edit.after));
+      });
+    }
+    return out.join('\n');
+  }
+
+  return {
+    fold: fold, render: render, clip: clip,
+    groupKey: groupKey, chronological: chronological
+  };
 })();

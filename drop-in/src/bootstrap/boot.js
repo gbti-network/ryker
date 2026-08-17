@@ -16,6 +16,9 @@ Ryker.boot = (function () {
   var handle = null, bar = null, expanded = false;
   var els = {};
   var started = false;
+  // Whether the folder grant has been offered in this session. One prompt, on
+  // the first save that needs it; see the comment in save() for why not more.
+  var askedForGrant = false;
 
   function d() { return Ryker.dom; }
 
@@ -260,10 +263,26 @@ Ryker.boot = (function () {
     // interrupts the save that produced it.
     Ryker.logger.record(Ryker.pane.value()).then(function (ok) {
       if (!ok && !Ryker.logger.isOn() && Ryker.logger.supported()) {
-        // No dialog. A modal over the report to ask about a folder was worse
-        // than the problem it solved: it covered the document, swallowed
-        // clicks, and arrived at the moment someone had just finished working.
-        // The held count sits in the toolbar and the chip grants the folder.
+        // Ask once per session, then never again.
+        //
+        // This used to ask never, and the reasoning is worth keeping because it
+        // is still true of the case it described: a modal over the report
+        // "covered the document, swallowed clicks, and arrived at the moment
+        // someone had just finished working". What made that intolerable was
+        // that it arrived on EVERY save.
+        //
+        // The owner decided on 2026-08-16 that a save needing a grant should
+        // prompt for one, since a browser cannot write to a folder it has not
+        // been shown and silently holding the work teaches nobody that. Asking
+        // on the first save only keeps that decision and keeps what the old one
+        // was protecting against, because the chip and the held count still
+        // carry every save after it.
+        if (!askedForGrant) {
+          askedForGrant = true;
+          startLogging();
+          sync();
+          return;
+        }
         Ryker.pane.flash(Ryker.logger.pendingCount() +
           ' save(s) held in this tab. Click "held in this tab only" to write them.', 'warn');
         sync();

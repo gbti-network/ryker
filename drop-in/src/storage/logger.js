@@ -261,6 +261,30 @@ Ryker.logger = (function () {
     return entry.handle.getFile().then(function (f) { return f.text(); });
   }
 
+  // Delete every logged record for this document.
+  //
+  // Only this document's directory, and only the .json files list() reports, so
+  // a folder somebody granted for a report cannot lose anything else in it to a
+  // button inside that report. Rejects on the first failure rather than
+  // reporting success over a partial delete, because "cleared" that left half
+  // the log behind is worse than an error.
+  function clear() {
+    if (!dir) return Promise.resolve(0);
+    return ensureDir().then(function (docDir) {
+      return list().then(function (files) {
+        return files.reduce(function (chain, f) {
+          return chain.then(function (n) {
+            return docDir.removeEntry(f.name).then(function () { return n + 1; });
+          });
+        }, Promise.resolve(0));
+      });
+    }).then(function (n) {
+      seq = 0;
+      emit();
+      return n;
+    });
+  }
+
   // A browser cannot open the operating system's file manager, and pretending
   // otherwise would be a button that does nothing. What it can do, when the
   // report is being read from disk, is open the folder as a directory listing
@@ -286,7 +310,7 @@ Ryker.logger = (function () {
     supported: supported, isOn: isOn, choose: choose, resume: resume,
     record: record, buildPayload: buildPayload, describe: describe,
     flush: flush, pendingCount: pendingCount, where: where, LIB: LIB,
-    list: list, read: read, folderUrl: folderUrl,
+    list: list, read: read, clear: clear, folderUrl: folderUrl,
     folderName: folderName, error: error,
     count: count, onChange: onChange, DIR_NAME: DIR_NAME
   };

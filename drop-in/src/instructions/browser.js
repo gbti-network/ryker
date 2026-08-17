@@ -49,6 +49,22 @@ Ryker.browser = (function () {
 
       if (!files.length) return;
 
+      // Fold every logged record into one instruction set and hand it over.
+      //
+      // The owner asked for a download of all session changes, deduplicated.
+      // Ryker.merge does the folding and reports what it could not fold; this
+      // only ever writes the result out. Nothing is deleted by exporting.
+      body.appendChild(d().el('div', { class: 'acts', style: 'margin-bottom:12px' }, [
+        d().el('button', {
+          class: 'rk', text: 'Download all changes, merged',
+          onclick: function () { exportMerged(files); }
+        }),
+        d().el('button', {
+          class: 'rk danger', text: 'Clear the log',
+          onclick: function () { confirmClear(files); }
+        })
+      ]));
+
       var list = d().el('div', { class: 'filelist' });
       files.forEach(function (f) {
         var row = d().el('div', { class: 'filerow' }, [
@@ -68,6 +84,99 @@ Ryker.browser = (function () {
     });
 
     return dlg;
+  }
+
+  // ---- merged export ------------------------------------------------------
+
+  function readAll(files) {
+    return Promise.all(files.map(function (f) {
+      return Ryker.logger.read(f)
+        .then(function (t) { try { return JSON.parse(t); } catch (e) { return null; } })
+        .catch(function () { return null; });
+    })).then(function (list) { return list.filter(Boolean); });
+  }
+
+  // Read first, then open one dialog. The buttons depend on the merged text, so
+  // opening a dialog and filling it in later would mean building its footer
+  // twice, and dialog.open() takes its buttons up front.
+  function exportMerged(files) {
+    readAll(files).then(function (records) {
+      var r = Ryker.merge.fold(records);
+      var text = Ryker.merge.render(r);
+
+      var body = d().el('div', {});
+      body.appendChild(d().el('div', { class: 'note' + (r.refused.length ? ' warn' : ' ok') }, [
+        d().el('div', {
+          text: r.steps.length + ' change(s) folded from ' + records.length + ' record(s).'
+        })
+      ]));
+
+      // Everything the fold could not do, said plainly. A merged set that
+      // quietly omitted a change would be worse than one that refused to merge,
+      // because the omission is invisible in the file it produces.
+      r.warnings.forEach(function (w) {
+        body.appendChild(d().el('div', { class: 'note warn', text: w }));
+      });
+      r.refused.forEach(function (x) {
+        body.appendChild(d().el('div', { class: 'note bad' }, [
+          d().el('div', { text: x.why }),
+          d().el('div', { class: 'muted', text: Ryker.merge.clip(x.edit && x.edit.before) })
+        ]));
+      });
+
+      var area = d().el('textarea', { class: 'rk', rows: '12', readonly: 'readonly' });
+      area.value = text;
+      body.appendChild(area);
+
+      Ryker.dialog.open({
+        title: 'Merged changes',
+        body: body,
+        buttons: [
+          { label: 'Close' },
+          { label: 'Copy', keepOpen: true, action: function () {
+              if (navigator.clipboard) navigator.clipboard.writeText(text);
+              return false;
+            } },
+          { label: 'Download', primary: true, action: function () {
+              Ryker.exportHtml.download(text,
+                Ryker.exportHtml.baseName() + '-all-changes.txt', 'text/plain;charset=utf-8');
+            } }
+        ]
+      });
+    }).catch(function (e) {
+      Ryker.dialog.alert('Could not read the records',
+        Ryker.dom.escapeHtml(e.message), 'bad');
+    });
+  }
+
+  // ---- clearing -----------------------------------------------------------
+
+  // Leads with the consequence and puts the way out inside the warning, which
+  // is the shape pane.js already uses for resetting the document. Telling
+  // somebody to go and export first, then asking them to confirm, reliably
+  // produces a confirmed deletion and no export.
+  function confirmClear(files) {
+    Ryker.dialog.open({
+      title: 'Clear the change request log?',
+      body: '<div class="note bad">This deletes all ' + files.length + ' logged change ' +
+        'request(s) for this document. They are the only record of what was changed across ' +
+        'sessions, and nothing else holds a copy.</div>' +
+        '<p>Download the merged set first if you want to keep it.</p>',
+      buttons: [
+        { label: 'Cancel' },
+        { label: 'Download merged first', keepOpen: true, action: function () {
+            exportMerged(files);
+            return false;
+          } },
+        { label: 'Clear the log', danger: true, action: function () {
+            Ryker.logger.clear().then(function () {
+              Ryker.pane.flash('Change request log cleared.', 'ok');
+            }).catch(function (e) {
+              Ryker.dialog.alert('Could not clear the log', Ryker.dom.escapeHtml(e.message), 'bad');
+            });
+          } }
+      ]
+    });
   }
 
   function view(entry) {

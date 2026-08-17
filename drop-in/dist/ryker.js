@@ -27,12 +27,12 @@
  *   editor/move.js  (322 lines)
  *   ui/rail.js  (435 lines)
  *   instructions/instructions.js  (491 lines)
- *   instructions/merge.js  (278 lines)
- *   storage/logger.js  (294 lines)
- *   instructions/browser.js  (141 lines)
+ *   instructions/merge.js  (326 lines)
+ *   storage/logger.js  (318 lines)
+ *   instructions/browser.js  (250 lines)
  *   ui/pane.js  (278 lines)
  *   storage/recover.js  (126 lines)
- *   bootstrap/boot.js  (426 lines)
+ *   bootstrap/boot.js  (445 lines)
  *
  * Classic script by design: module scripts do not load from file:// URLs,
  * and a report handed over as a ZIP is opened from disk.
@@ -5410,7 +5410,55 @@
       return out;
     }
 
-    return { fold: fold, groupKey: groupKey, chronological: chronological };
+    function clip(html) {
+      var t = document.createElement('div');
+      t.innerHTML = html == null ? '' : html;
+      var s = (t.textContent || '').replace(/\s+/g, ' ').trim();
+      return s.length > 90 ? s.slice(0, 87) + '...' : s;
+    }
+
+    // The merged set as the same prose an agent already knows how to follow.
+    function render(r) {
+      var out = [];
+      out.push('# Merged document edit instructions');
+      out.push('');
+      out.push('Folded from ' + r.groups.length + ' record group(s). Every FROM below is the');
+      out.push('text as it stood before any of these edits, so the set applies to a clean copy.');
+      out.push('');
+      r.warnings.forEach(function (w) { out.push('NOTE: ' + w); });
+      if (r.warnings.length) out.push('');
+      out.push('---');
+      out.push('');
+      r.steps.forEach(function (s, i) {
+        out.push('## ' + (i + 1) + '. ' + (s.kind === 'insert' ? 'Insert' :
+          s.kind === 'delete' ? 'Delete' : 'Replace') + ' <' + (s.tag || '?').toLowerCase() + '>');
+        if (s.position) out.push('');
+        if (s.position) out.push('Position: ' + s.position);
+        out.push('');
+        if (s.before) { out.push('FROM:'); out.push('<<<'); out.push(s.before); out.push('>>>'); out.push(''); }
+        if (s.after) { out.push('TO:'); out.push('<<<'); out.push(s.after); out.push('>>>'); out.push(''); }
+      });
+      if (r.refused.length) {
+        out.push('---');
+        out.push('');
+        out.push('## Not merged');
+        out.push('');
+        out.push('These changes could not be folded into the set above and are listed');
+        out.push('so that nothing is lost. Apply them by hand or discard them.');
+        out.push('');
+        r.refused.forEach(function (x, i) {
+          out.push((i + 1) + '. ' + x.why);
+          out.push('   was: ' + clip(x.edit && x.edit.before));
+          out.push('   to:  ' + clip(x.edit && x.edit.after));
+        });
+      }
+      return out.join('\n');
+    }
+
+    return {
+      fold: fold, render: render, clip: clip,
+      groupKey: groupKey, chronological: chronological
+    };
   })();
 
 
@@ -5678,6 +5726,30 @@
       return entry.handle.getFile().then(function (f) { return f.text(); });
     }
 
+    // Delete every logged record for this document.
+    //
+    // Only this document's directory, and only the .json files list() reports, so
+    // a folder somebody granted for a report cannot lose anything else in it to a
+    // button inside that report. Rejects on the first failure rather than
+    // reporting success over a partial delete, because "cleared" that left half
+    // the log behind is worse than an error.
+    function clear() {
+      if (!dir) return Promise.resolve(0);
+      return ensureDir().then(function (docDir) {
+        return list().then(function (files) {
+          return files.reduce(function (chain, f) {
+            return chain.then(function (n) {
+              return docDir.removeEntry(f.name).then(function () { return n + 1; });
+            });
+          }, Promise.resolve(0));
+        });
+      }).then(function (n) {
+        seq = 0;
+        emit();
+        return n;
+      });
+    }
+
     // A browser cannot open the operating system's file manager, and pretending
     // otherwise would be a button that does nothing. What it can do, when the
     // report is being read from disk, is open the folder as a directory listing
@@ -5703,7 +5775,7 @@
       supported: supported, isOn: isOn, choose: choose, resume: resume,
       record: record, buildPayload: buildPayload, describe: describe,
       flush: flush, pendingCount: pendingCount, where: where, LIB: LIB,
-      list: list, read: read, folderUrl: folderUrl,
+      list: list, read: read, clear: clear, folderUrl: folderUrl,
       folderName: folderName, error: error,
       count: count, onChange: onChange, DIR_NAME: DIR_NAME
     };
@@ -5762,6 +5834,22 @@
 
         if (!files.length) return;
 
+        // Fold every logged record into one instruction set and hand it over.
+        //
+        // The owner asked for a download of all session changes, deduplicated.
+        // Ryker.merge does the folding and reports what it could not fold; this
+        // only ever writes the result out. Nothing is deleted by exporting.
+        body.appendChild(d().el('div', { class: 'acts', style: 'margin-bottom:12px' }, [
+          d().el('button', {
+            class: 'rk', text: 'Download all changes, merged',
+            onclick: function () { exportMerged(files); }
+          }),
+          d().el('button', {
+            class: 'rk danger', text: 'Clear the log',
+            onclick: function () { confirmClear(files); }
+          })
+        ]));
+
         var list = d().el('div', { class: 'filelist' });
         files.forEach(function (f) {
           var row = d().el('div', { class: 'filerow' }, [
@@ -5781,6 +5869,99 @@
       });
 
       return dlg;
+    }
+
+    // ---- merged export ------------------------------------------------------
+
+    function readAll(files) {
+      return Promise.all(files.map(function (f) {
+        return Ryker.logger.read(f)
+          .then(function (t) { try { return JSON.parse(t); } catch (e) { return null; } })
+          .catch(function () { return null; });
+      })).then(function (list) { return list.filter(Boolean); });
+    }
+
+    // Read first, then open one dialog. The buttons depend on the merged text, so
+    // opening a dialog and filling it in later would mean building its footer
+    // twice, and dialog.open() takes its buttons up front.
+    function exportMerged(files) {
+      readAll(files).then(function (records) {
+        var r = Ryker.merge.fold(records);
+        var text = Ryker.merge.render(r);
+
+        var body = d().el('div', {});
+        body.appendChild(d().el('div', { class: 'note' + (r.refused.length ? ' warn' : ' ok') }, [
+          d().el('div', {
+            text: r.steps.length + ' change(s) folded from ' + records.length + ' record(s).'
+          })
+        ]));
+
+        // Everything the fold could not do, said plainly. A merged set that
+        // quietly omitted a change would be worse than one that refused to merge,
+        // because the omission is invisible in the file it produces.
+        r.warnings.forEach(function (w) {
+          body.appendChild(d().el('div', { class: 'note warn', text: w }));
+        });
+        r.refused.forEach(function (x) {
+          body.appendChild(d().el('div', { class: 'note bad' }, [
+            d().el('div', { text: x.why }),
+            d().el('div', { class: 'muted', text: Ryker.merge.clip(x.edit && x.edit.before) })
+          ]));
+        });
+
+        var area = d().el('textarea', { class: 'rk', rows: '12', readonly: 'readonly' });
+        area.value = text;
+        body.appendChild(area);
+
+        Ryker.dialog.open({
+          title: 'Merged changes',
+          body: body,
+          buttons: [
+            { label: 'Close' },
+            { label: 'Copy', keepOpen: true, action: function () {
+                if (navigator.clipboard) navigator.clipboard.writeText(text);
+                return false;
+              } },
+            { label: 'Download', primary: true, action: function () {
+                Ryker.exportHtml.download(text,
+                  Ryker.exportHtml.baseName() + '-all-changes.txt', 'text/plain;charset=utf-8');
+              } }
+          ]
+        });
+      }).catch(function (e) {
+        Ryker.dialog.alert('Could not read the records',
+          Ryker.dom.escapeHtml(e.message), 'bad');
+      });
+    }
+
+    // ---- clearing -----------------------------------------------------------
+
+    // Leads with the consequence and puts the way out inside the warning, which
+    // is the shape pane.js already uses for resetting the document. Telling
+    // somebody to go and export first, then asking them to confirm, reliably
+    // produces a confirmed deletion and no export.
+    function confirmClear(files) {
+      Ryker.dialog.open({
+        title: 'Clear the change request log?',
+        body: '<div class="note bad">This deletes all ' + files.length + ' logged change ' +
+          'request(s) for this document. They are the only record of what was changed across ' +
+          'sessions, and nothing else holds a copy.</div>' +
+          '<p>Download the merged set first if you want to keep it.</p>',
+        buttons: [
+          { label: 'Cancel' },
+          { label: 'Download merged first', keepOpen: true, action: function () {
+              exportMerged(files);
+              return false;
+            } },
+          { label: 'Clear the log', danger: true, action: function () {
+              Ryker.logger.clear().then(function () {
+                Ryker.pane.flash('Change request log cleared.', 'ok');
+              }).catch(function (e) {
+                Ryker.dialog.alert('Could not clear the log', Ryker.dom.escapeHtml(e.message), 'bad');
+              });
+            } }
+        ]
+      });
     }
 
     function view(entry) {
@@ -6280,6 +6461,9 @@
     var handle = null, bar = null, expanded = false;
     var els = {};
     var started = false;
+    // Whether the folder grant has been offered in this session. One prompt, on
+    // the first save that needs it; see the comment in save() for why not more.
+    var askedForGrant = false;
 
     function d() { return Ryker.dom; }
 
@@ -6524,10 +6708,26 @@
       // interrupts the save that produced it.
       Ryker.logger.record(Ryker.pane.value()).then(function (ok) {
         if (!ok && !Ryker.logger.isOn() && Ryker.logger.supported()) {
-          // No dialog. A modal over the report to ask about a folder was worse
-          // than the problem it solved: it covered the document, swallowed
-          // clicks, and arrived at the moment someone had just finished working.
-          // The held count sits in the toolbar and the chip grants the folder.
+          // Ask once per session, then never again.
+          //
+          // This used to ask never, and the reasoning is worth keeping because it
+          // is still true of the case it described: a modal over the report
+          // "covered the document, swallowed clicks, and arrived at the moment
+          // someone had just finished working". What made that intolerable was
+          // that it arrived on EVERY save.
+          //
+          // The owner decided on 2026-08-16 that a save needing a grant should
+          // prompt for one, since a browser cannot write to a folder it has not
+          // been shown and silently holding the work teaches nobody that. Asking
+          // on the first save only keeps that decision and keeps what the old one
+          // was protecting against, because the chip and the held count still
+          // carry every save after it.
+          if (!askedForGrant) {
+            askedForGrant = true;
+            startLogging();
+            sync();
+            return;
+          }
           Ryker.pane.flash(Ryker.logger.pendingCount() +
             ' save(s) held in this tab. Click "held in this tab only" to write them.', 'warn');
           sync();
