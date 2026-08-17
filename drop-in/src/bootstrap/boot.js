@@ -15,7 +15,9 @@ Ryker.boot = (function () {
 
   var handle = null, bar = null, expanded = false;
   var els = {};
-  var started = false;
+  var started = false, active = false;
+  var reopenPane = true, reopenRail = false;
+  var saveNotesPreference = null;
   // Whether the folder grant has been offered in this session. One prompt, on
   // the first save that needs it; see the comment in save() for why not more.
   var askedForGrant = false;
@@ -48,18 +50,15 @@ Ryker.boot = (function () {
     if (bar) return;
 
     handle = d().el('button', {
-      class: 'handle', title: 'Open Ryker', 'aria-expanded': 'false',
+      class: 'handle', title: 'Open Ryker', 'aria-label': 'Open Ryker',
+      'aria-expanded': 'false',
       onclick: function () { expand(true); }
-    }, [
-      d().el('span', { class: 'dot' }),
-      d().el('span', { text: 'Ryker' }),
-      d().el('span', { class: 'badge', text: '' })
-    ]);
+    }, [Ryker.icons.brandMark(24)]);
     Ryker.shell.add(handle);
 
     // No Edit toggle. Ryker exists to edit, and a mode switch that is always in
     // the same position is a control nobody ever needs to touch.
-    els.save = d().el('button', { class: 'rk', text: 'Save', onclick: save });
+    els.save = d().el('button', { class: 'rk', text: 'Save', onclick: requestSave });
     els.pane = d().el('button', { class: 'rk count-only',
       onclick: function () { Ryker.pane.toggle(); } });
 
@@ -69,8 +68,7 @@ Ryker.boot = (function () {
     els.more = Ryker.icons.button('more', 'More actions');
     els.more.setAttribute('aria-haspopup', 'menu');
     els.more.setAttribute('aria-expanded', 'false');
-    els.more.addEventListener('click', buildMenu);
-    buildMenu();
+    Ryker.menu.attach(els.more, buildMenu);
 
     els.note = d().el('button', { class: 'where', type: 'button',
       onclick: function () { if (!Ryker.logger.isOn()) startLogging(); } }, [
@@ -90,6 +88,7 @@ Ryker.boot = (function () {
 
     bar = d().el('div', { class: 'bar', role: 'toolbar', 'aria-label': 'Ryker' }, [
       els.outline,
+      Ryker.icons.brandMark(18),
       d().el('span', { class: 'brand', text: 'Ryker' }),
       d().el('span', { class: 'spacer' }),
       els.note, els.more, els.pane, els.collapse, els.save
@@ -104,22 +103,51 @@ Ryker.boot = (function () {
     Ryker.shell.add(bar);
   }
 
-  // Rebuilt on open so the logging entry reflects whether it is currently on.
+  // Resolved on every open so both logging and the save-note preference are
+  // current without attaching another click listener each time state changes.
   function buildMenu() {
-    Ryker.menu.attach(els.more, [
+    return [
       { label: 'Export report...', icon: 'download', run: exportMenu },
       { label: 'Package report', icon: 'package', run: function () { Ryker.packager.open(); } },
       { label: 'Download instructions', icon: 'download', run: function () { Ryker.pane.download(); } },
       { label: 'Copy instructions', icon: 'copy', run: function () { Ryker.pane.copy(); } },
       null,
-      { label: 'Change requests...', icon: 'package', run: function () { Ryker.browser.open(); } },
+      { label: 'Saved change requests...', icon: 'package', run: function () { Ryker.browser.open(); } },
       Ryker.logger.isOn()
         ? { label: 'Logging to ' + Ryker.logger.where(), icon: 'download', disabled: true }
         : { label: 'Choose the folder to log to...', icon: 'download', run: startLogging },
       null,
+      { label: saveNotesEnabled() ? 'Disable save comments' : 'Enable save comments',
+        icon: 'note', run: function () { setSaveNotesEnabled(!saveNotesEnabled()); } },
+      null,
       { label: 'Clear document', icon: 'trash', danger: true,
         run: function () { Ryker.pane.confirmClear(); } }
-    ]);
+    ];
+  }
+
+  function saveNotesEnabled() {
+    if (saveNotesPreference !== null) return saveNotesPreference;
+    if (Ryker.SURFACE === 'extension' && Ryker.extensionConfig &&
+        typeof Ryker.extensionConfig.RYKER_SAVE_NOTES === 'boolean') {
+      return Ryker.extensionConfig.RYKER_SAVE_NOTES;
+    }
+    try { return localStorage.getItem('ryker:save-notes') !== 'off'; } catch (e) { return true; }
+  }
+
+  function setSaveNotesEnabled(on) {
+    saveNotesPreference = !!on;
+    try { localStorage.setItem('ryker:save-notes', on ? 'on' : 'off'); } catch (e) {}
+    if (Ryker.SURFACE === 'extension') {
+      Ryker.extensionConfig = Ryker.extensionConfig || {};
+      Ryker.extensionConfig.RYKER_SAVE_NOTES = !!on;
+      try {
+        if (chrome && chrome.storage && chrome.storage.local) {
+          chrome.storage.local.set({ rykerConfig: Ryker.extensionConfig });
+        }
+      } catch (e) {}
+    }
+    if (Ryker.pane) Ryker.pane.flash('Save comments ' + (on ? 'enabled.' : 'disabled.'));
+    return saveNotesPreference;
   }
 
   // Spec section 21, restored 2026-08-16.
@@ -213,31 +241,71 @@ Ryker.boot = (function () {
     // returned early on this; expand() dereferenced `bar` regardless, which is
     // how a cosmetic failure used to take editing down with it.
     if (!bar || !handle) return;
-    expanded = !!open;
-    if (!expanded && Ryker.rail && Ryker.rail.isOpen()) Ryker.rail.toggle(false);
+    open = !!open;
+    if (!open && expanded) {
+      reopenPane = Ryker.pane && Ryker.pane.isOpen();
+      reopenRail = Ryker.rail && Ryker.rail.isOpen();
+    }
+    expanded = open;
+    if (!expanded) {
+      if (Ryker.menu && Ryker.menu.isOpen()) Ryker.menu.close();
+      while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+      if (Ryker.rail && Ryker.rail.isOpen()) Ryker.rail.toggle(false);
+      if (Ryker.pane && Ryker.pane.isOpen()) Ryker.pane.toggle();
+      if (Ryker.pick) Ryker.pick.clear();
+      if (Ryker.formatbar) Ryker.formatbar.hide();
+      if (Ryker.editable) Ryker.editable.disable();
+      Ryker.shell.releaseEdgeSpace();
+      Ryker.shell.releasePanelSpace();
+      Ryker.shell.releaseOffset();
+    } else {
+      if (Ryker.editable) Ryker.editable.enable();
+      if (reopenPane && Ryker.pane && !Ryker.pane.isOpen()) Ryker.pane.toggle();
+      if (reopenRail && Ryker.rail && !Ryker.rail.isOpen()) Ryker.rail.toggle(true);
+    }
     bar.style.display = expanded ? 'flex' : 'none';
     handle.style.display = expanded ? 'none' : 'flex';
     handle.setAttribute('aria-expanded', String(expanded));
-    if (!expanded) {
-      Ryker.formatbar.hide();
-      Ryker.shell.releaseOffset();
-    }
     sync();
   }
 
   // Only one row now that formatting floats over the selection, so the offset
   // is simply the bar's own height.
   function layout() {
-    if (!expanded) return;
+    if (!active || !expanded) return;
     Ryker.shell.setOffset(bar.getBoundingClientRect().height);
     Ryker.pane.reflow();
+  }
+
+  function requestSave(quiet) {
+    var hasChanges = Ryker.editable.changes().length || Ryker.move.count();
+    if (!hasChanges || !saveNotesEnabled()) { save(quiet, ''); return; }
+
+    var field = d().el('textarea', {
+      class: 'rk save-note', rows: '5',
+      'aria-label': 'Optional context for this save',
+      placeholder: 'Why was this change made? What should the person applying it know?'
+    });
+    var body = d().el('div', {}, [
+      d().el('p', { text: 'Add optional context for this round of changes. It will travel with the instructions and revision record.' }),
+      field
+    ]);
+    Ryker.dialog.open({
+      title: 'Add context to this save', body: body,
+      buttons: [
+        { label: 'Cancel' },
+        { label: 'Save without comment', action: function () { save(quiet, ''); } },
+        { label: 'Save with comment', primary: true,
+          action: function () { save(quiet, field.value); } }
+      ]
+    });
   }
 
   // A save writes nothing. It takes the edits made since the last one,
   // folds them into the instruction set, and rebases so the next save records
   // only what changed after this point. The instructions themselves still quote
   // the document as authored, not as it was at the previous save.
-  function save(quiet) {
+  function save(quiet, saveNote) {
     var changes = Ryker.editable.changes();
     // A move rewrites no block, so changes() is empty after one and this used
     // to refuse the save that would have recorded it. Order is the other half
@@ -254,14 +322,15 @@ Ryker.boot = (function () {
       Ryker.dialog.alert('Nothing to save', 'No text has changed since the last save.');
       return;
     }
-    Ryker.instructions.record();
+    saveNote = String(saveNote || '').trim();
+    Ryker.instructions.record(saveNote);
     Ryker.editable.rebase();
     Ryker.pane.refresh(true);
     if (!Ryker.pane.isOpen()) Ryker.pane.toggle();
     sync();
     // Fire and forget. A logging failure is reported in the pane and never
     // interrupts the save that produced it.
-    Ryker.logger.record(Ryker.pane.value()).then(function (ok) {
+    Ryker.logger.record(Ryker.pane.value(), saveNote).then(function (ok) {
       if (!ok && !Ryker.logger.isOn() && Ryker.logger.supported()) {
         // Ask once per session, then never again.
         //
@@ -296,8 +365,7 @@ Ryker.boot = (function () {
   }
 
   function sync() {
-    if (!bar) return;
-    var editing = Ryker.editable.isOn();
+    if (!bar || !active) return;
     var dirty = Ryker.editable.isDirty();
     var edits = Ryker.instructions.edits().length + Ryker.instructions.moves().length;
 
@@ -334,16 +402,11 @@ Ryker.boot = (function () {
     Ryker.tooltip.attach(els.pane,
       edits + ' edit(s) recorded. Show or hide the instructions.');
 
-    var badge = handle.querySelector('.badge');
-    badge.textContent = edits ? String(edits) : '';
-    badge.style.display = edits ? '' : 'none';
-    handle.querySelector('.dot').classList.toggle('on', editing);
-
     layout();
   }
 
   function start() {
-    if (started) return;
+    if (started) return active;
     started = true;
     var cfg = guard('config', function () { return Ryker.config.load(); });
     if (!cfg) return;
@@ -377,16 +440,18 @@ Ryker.boot = (function () {
     guard('wire', function () {
       Ryker.editable.onChange(sync);
       Ryker.instructions.onChange(function () { Ryker.pane.refresh(); sync(); });
+      Ryker.recover.init();
     });
 
     document.addEventListener('keydown', function (e) {
+      if (!active || !expanded) return;
       // Ctrl+S, or Cmd+S. Taken over because in a document with an editor
       // attached it plainly means "save my edits", not "write this page to
       // disk", and the browser's own dialog would do the wrong thing.
       if ((e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 's' || e.key === 'S')) {
         e.preventDefault();
         e.stopPropagation();
-        save(true);
+        requestSave(true);
         return;
       }
       if (e.key !== 'Escape') return;
@@ -404,12 +469,13 @@ Ryker.boot = (function () {
     // a failure inside build() left `bar` null, expand() threw dereferencing it,
     // and the document was never made editable at all. Toolbar chrome failing
     // now costs the toolbar and nothing else.
+    active = true;
     guard('expand', function () { expand(true); });
     guard('editable', function () { Ryker.editable.enable(); });
     guard('sync', sync);
-    guard('recover', function () { Ryker.recover.offer(); });
     Ryker.logger.resume().then(function (ok) {
       sync();
+      Ryker.recover.offer();
       // Asking on load is the only honest reading of "always on": the picker
       // needs a click, so the click has to be offered rather than waited for.
       // Deliberately not asked here. A modal on load covers the report with a
@@ -418,11 +484,45 @@ Ryker.boot = (function () {
       // exists to write. Saves are queued until it arrives, so nothing is lost
       // by waiting for the first one.
     });
-    Ryker.logger.onChange(buildMenu);
+    return active;
   }
 
+  // Extension action clicks are a reversible session toggle. Closing removes
+  // every visible and editable trace from the host page but keeps Ryker's
+  // in-memory baseline, instructions and unsaved DOM changes, so reopening the
+  // same tab continues the session instead of silently starting over.
+  function close() {
+    if (!started || !active) return false;
+    active = false;
+    expand(false);
+    Ryker.shell.releaseEdgeSpace();
+    Ryker.shell.releaseOffset();
+    var host = Ryker.shell.host();
+    if (host) host.style.display = 'none';
+    return false;
+  }
+
+  function open() {
+    if (!started) return !!start();
+    if (active) return true;
+    var host = Ryker.shell.host();
+    if (!host) return false;
+    active = true;
+    host.style.display = 'block';
+    Ryker.editable.enable();
+    expand(true);
+    if (reopenPane && !Ryker.pane.isOpen()) Ryker.pane.toggle();
+    if (reopenRail && !Ryker.rail.isOpen()) Ryker.rail.toggle(true);
+    sync();
+    return true;
+  }
+
+  function toggle() { return active ? close() : open(); }
+
   return {
-    start: start, sync: sync, save: save, expand: expand,
+    start: start, sync: sync, save: save, requestSave: requestSave, expand: expand,
+    saveNotesEnabled: saveNotesEnabled, setSaveNotesEnabled: setSaveNotesEnabled,
+    open: open, close: close, toggle: toggle, isOpen: function () { return active; },
     log: log, problems: function () { return problems.slice(); }
   };
 })();
@@ -434,6 +534,9 @@ Ryker.log = Ryker.boot.log;
 
 (function () {
   'use strict';
+  // The extension is inert until its toolbar action calls start(). The drop-in
+  // keeps the automatic boot required by reports that carry the script tag.
+  if (Ryker.SURFACE === 'extension') return;
   function go() { Ryker.boot.start(); }
   function schedule() {
     if (typeof requestAnimationFrame === 'function') requestAnimationFrame(go);

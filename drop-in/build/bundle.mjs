@@ -16,8 +16,9 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(HERE, '..');
 const SRC = join(ROOT, 'src');
 const DIST = join(ROOT, 'dist');
+const EXTENSION = join(ROOT, '..', 'extension');
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1-rc.1';
 const MAX_LINES = 600;
 
 // One product, one bundle, per sow-006 decision 1.
@@ -36,6 +37,7 @@ const MODULES = [
   'export/zip.js',
   'export/html.js',
   'export/packager.js',
+  'ui/theme.js',
   'ui/styles.js',
   'ui/shell.js',
   'ui/icons.js',
@@ -53,6 +55,7 @@ const MODULES = [
   'ui/rail.js',
   'instructions/instructions.js',
   'instructions/merge.js',
+  'storage/fs.js',
   'storage/logger.js',
   'instructions/browser.js',
   'ui/pane.js',
@@ -60,20 +63,15 @@ const MODULES = [
   'bootstrap/boot.js'
 ];
 
-const TARGETS = {
-  'ryker.js': { name: 'Ryker', modules: MODULES }
-};
+const TARGETS = [
+  { file: 'ryker.js', dir: DIST, name: 'Ryker', surface: 'drop-in', modules: MODULES },
+  { file: 'ryker.js', dir: EXTENSION, name: 'Ryker Extension', surface: 'extension', modules: MODULES }
+];
 
-// Modules kept on disk on purpose while no bundle loads them.
-//
-// The orphan check below exists to catch a file someone forgot to wire up, so
-// anything deliberately unwired has to be named here or the build fails. Only
-// storage/fs.js qualifies: sow-006 decision 4 says it is "rescued, not deleted"
-// because its File System Access wrapper is what publish needs, and Phase 2
-// converges it with the handle persistence in lite/logger.js. It is unreachable
-// until then, since it registers against the storage adapter that Phase 1
-// removed. Delete this entry when Phase 2 consumes the file.
-const UNBUNDLED = new Set(['storage/fs.js']);
+// Modules kept on disk on purpose while no bundle loads them. The set is empty
+// today, but the checked exemption mechanism remains for intentional future
+// source that is temporarily not shipped.
+const UNBUNDLED = new Set();
 
 function walk(dir, out = []) {
   for (const name of readdirSync(dir)) {
@@ -118,7 +116,7 @@ function lint() {
       }
     }
   }
-  const used = new Set(Object.values(TARGETS).flatMap((t) => t.modules));
+  const used = new Set(TARGETS.flatMap((t) => t.modules));
   for (const rel of onDisk) {
     if (!used.has(rel) && !UNBUNDLED.has(rel)) problems.push(`${rel} exists but no bundle loads it`);
   }
@@ -141,9 +139,8 @@ if (problems.length) {
   process.exit(1);
 }
 
-mkdirSync(DIST, { recursive: true });
-
-for (const [file, target] of Object.entries(TARGETS)) {
+for (const target of TARGETS) {
+  mkdirSync(target.dir, { recursive: true });
   const parts = target.modules.map((rel) => {
     const code = readFileSync(join(SRC, rel), 'utf8');
     return { rel, code, lines: code.split('\n').length };
@@ -166,7 +163,8 @@ for (const [file, target] of Object.entries(TARGETS)) {
     '(function () {',
     "  'use strict';",
     '  if (window.Ryker && window.Ryker.VERSION) return;',
-    '  var Ryker = { VERSION: ' + JSON.stringify(VERSION) + ', BUILD: ' + JSON.stringify(target.name) + ' };',
+    '  var Ryker = { VERSION: ' + JSON.stringify(VERSION) + ', BUILD: ' +
+      JSON.stringify(target.name) + ', SURFACE: ' + JSON.stringify(target.surface) + ' };',
     '  window.Ryker = Ryker;',
     '',
     ...parts.map((p) => [
@@ -178,12 +176,12 @@ for (const [file, target] of Object.entries(TARGETS)) {
   ].join('\n');
 
   const out = header + '\n' + body + '\n';
-  writeFileSync(join(DIST, file), out, 'utf8');
+  writeFileSync(join(target.dir, target.file), out, 'utf8');
 
   const totalSrc = parts.reduce((n, p) => n + p.lines, 0);
   const biggest = parts.slice().sort((a, b) => b.lines - a.lines)[0];
   console.log(
-    `${file}: ${parts.length} modules, ${totalSrc} source lines, ` +
+    `${target.surface}/${target.file}: ${parts.length} modules, ${totalSrc} source lines, ` +
     `${(out.length / 1024).toFixed(1)} KB. Largest: ${biggest.rel} (${biggest.lines} lines, cap ${MAX_LINES}).`
   );
 }

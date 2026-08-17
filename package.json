@@ -1,0 +1,42 @@
+{
+  "name": "@gbti/ryker",
+  "version": "0.1.1-rc.1",
+  "description": "Add Ryker inline editing and prompt-ready change requests to authored HTML documents.",
+  "type": "module",
+  "bin": {
+    "ryker": "bin/ryker.js"
+  },
+  "files": [
+    "bin/",
+    "drop-in/dist/ryker.js",
+    "!drop-in/README.md",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": ["html", "editor", "change-request", "agent", "documentation"],
+  "license": "SEE LICENSE IN LICENSE",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "node drop-in/build/bundle.mjs",
+    "test": "node test/run.mjs",
+    "test:cli": "node test/cli-package.mjs",
+    "package:check": "node test/package-check.mjs",
+    "package:preview": "npm pack --dry-run --ignore-scripts --cache .npm-cache",
+    "package:tarball": "npm pack --cache .npm-cache",
+    "prepack": "npm run build && npm run test:cli && npm run package:check",
+    "prepublishOnly": "npm test && npm run package:check",
+    "sync": "wsl.exe -d Ubuntu -- bash ./scripts/sync-placement-audits.sh"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gbti-network/ryker.git"
+  },
+  "bugs": {
+    "url": "https://github.com/gbti-network/ryker/issues"
+  },
+  "homepage": "https://github.com/gbti-network/ryker#readme"
+}

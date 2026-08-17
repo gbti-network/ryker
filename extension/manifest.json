@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Ryker",
+  "version": "0.1.1",
+  "description": "Ryker adds inline editing to HTML and Markdown, saving changes directly or exporting prompt-ready machine-readable change requests.",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage"
+  ],
+  "background": {
+    "service_worker": "service-worker.js"
+  },
+  "icons": {
+    "16": "icons/ryker-16.png",
+    "32": "icons/ryker-32.png",
+    "48": "icons/ryker-48.png",
+    "128": "icons/ryker-128.png"
+  },
+  "action": {
+    "default_title": "Open Ryker",
+    "default_icon": {
+      "16": "icons/ryker-16.png",
+      "32": "icons/ryker-32.png",
+      "48": "icons/ryker-48.png",
+      "128": "icons/ryker-128.png"
+    }
+  }
+}

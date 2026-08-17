@@ -23,10 +23,16 @@ Ryker.browser = (function () {
       return;
     }
     var body = d().el('div', {}, [d().el('div', { class: 'pane-status', text: 'Reading the folder...' })]);
-    var dlg = Ryker.dialog.open({ title: 'Change requests', body: body });
+    var dlg = Ryker.dialog.open({ title: 'Saved change requests', body: body });
 
     Ryker.logger.list().then(function (files) {
       body.innerHTML = '';
+
+      body.appendChild(d().el('div', { class: 'note' }, [
+        d().el('div', { text: 'The instruction sidebar is the live result for this tab. ' +
+          'Change requests are durable JSON records written on each save so work can be ' +
+          'reviewed, merged or exported across sessions.' })
+      ]));
 
       var url = Ryker.logger.folderUrl();
       body.appendChild(d().el('div', { class: 'note' }, [
@@ -34,7 +40,7 @@ Ryker.browser = (function () {
           text: files.length
             ? files.length + ' change request(s) logged for this document in ' +
               Ryker.logger.folderName() + '/' + Ryker.logger.DIR_NAME + '.'
-            : 'No change requests logged yet. The next save writes the first one.'
+            : 'No durable change-request records exist for this document yet.'
         })
       ]));
 

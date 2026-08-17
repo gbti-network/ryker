@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Nested Article Fixture</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; margin: 0; }
+  header, main, aside, footer { padding: 1rem; }
+  .layout { display: grid; grid-template-columns: 3fr 1fr; }
+  .hidden-copy { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Publisher name</h1>
+</header>
+<main>
+  <h1 class="hidden-copy">Hidden responsive article title</h1>
+  <h2>Preview controls</h2>
+  <div class="layout">
+    <div class="article-column">
+      <!-- This title is deliberately beside <article>, matching the supplied
+           page whose article title and body share a column wrapper. -->
+      <h1>How the migration worked</h1>
+      <article>
+        <div class="prose">
+          <p>The introduction establishes the subject.</p>
+          <h2>What was running</h2>
+          <p>The first section has enough prose to be meaningful.</p>
+          <h3>The smaller service</h3>
+          <p>A nested heading tests hierarchy rather than a flat heading list.</p>
+          <h2>Where it stands now</h2>
+          <p>The final section closes the article.</p>
+        </div>
+      </article>
+    </div>
+    <aside>
+      <h2>Related stories</h2>
+    </aside>
+  </div>
+</main>
+<footer>
+  <h2>About the publisher</h2>
+</footer>
+</body>
+</html>

@@ -10,6 +10,8 @@ Ryker.blocks = (function () {
   'use strict';
 
   var SELECTOR = 'h1, p, li, td, th, h2, h3, h4, h5, figcaption, blockquote p, dd, dt';
+  var ATOMIC_SELECTOR = 'svg';
+  var PICK_SELECTOR = SELECTOR + ', ' + ATOMIC_SELECTOR;
 
   function root() {
     return document.querySelector('main') || document.body;
@@ -23,8 +25,11 @@ Ryker.blocks = (function () {
   function excluded(node) {
     // Anything Ryker owns.
     if (node.closest('#ryker-root')) return true;
-    // The chart and any other vector content.
-    if (node.closest('svg')) return true;
+    // SVG internals are never editable. The root SVG itself is an atomic
+    // selectable object, however, so a person can highlight and remove the
+    // whole chart without being allowed to damage paths, labels or geometry.
+    var vector = node.closest('svg');
+    if (vector && node !== vector) return true;
     // Navigation is not content. Editing the table of contents would desync it
     // from the headings it points at.
     if (node.closest('nav, footer')) return true;
@@ -108,6 +113,43 @@ Ryker.blocks = (function () {
     return out;
   }
 
+  function atomic(node) {
+    return !!(node && node.matches && node.matches(ATOMIC_SELECTOR) &&
+      root().contains(node) && !excluded(node));
+  }
+
+  function atomicNodes() {
+    return Array.prototype.filter.call(root().querySelectorAll(ATOMIC_SELECTOR), atomic);
+  }
+
+  function inDocumentOrder(nodes) {
+    return nodes.sort(function (a, b) {
+      var p = a.compareDocumentPosition(b);
+      if (p & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (p & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+  }
+
+  // Pickable objects include editable prose plus atomic media. Keeping this
+  // separate from sequence() is what prevents enable() from ever placing
+  // contenteditable on an SVG.
+  function pickSequence() {
+    return inDocumentOrder(sequence().concat(atomicNodes()));
+  }
+
+  // Snapshots must include atomic media or removing it would produce no delta,
+  // leave Save disabled and vanish from recovery and generated instructions.
+  function tracked() {
+    var nodes = inDocumentOrder(candidates().concat(atomicNodes()));
+    var counts = {}, seen = {}, out = [];
+    nodes.forEach(function (node) {
+      var id = identify(node, counts);
+      if (!seen[id]) { seen[id] = true; out.push({ id: id, node: node }); }
+    });
+    return out;
+  }
+
   function identify(node, counts) {
     if (node.id) return '#' + node.id;
     var stamped = node.getAttribute && node.getAttribute('data-ryker-id');
@@ -159,9 +201,19 @@ Ryker.blocks = (function () {
     return found || identify(node, {});
   }
 
+  // Replacing an element to change P -> H1 creates a new DOM node. Carry the
+  // authored block identity across that replacement so the change is one tag
+  // conversion, not a deletion plus an unrelated insertion.
+  function transferId(from, to) {
+    if (!from || !to) return null;
+    var id = blockId(from);
+    idCache.set(to, id);
+    return id;
+  }
+
   // Called once at boot, before anything is replayed or edited, so every id is
   // computed from the document as it was authored.
-  function seedIds() { return all().length; }
+  function seedIds() { var editable = all().length; tracked(); return editable; }
 
   function stamp(node) {
     if (node.id) return '#' + node.id;
@@ -185,7 +237,7 @@ Ryker.blocks = (function () {
     }
     // A content-derived id resolves by scanning, which also seeds the cache.
     var found = null;
-    all().some(function (b) {
+    tracked().some(function (b) {
       if (b.id === id) { found = b.node; return true; }
       return false;
     });
@@ -201,18 +253,26 @@ Ryker.blocks = (function () {
   // back: the id says what it is and not where it goes.
   function snapshot() {
     var snap = {};
-    var list = all();
+    var list = tracked();
     list.forEach(function (b, i) {
       var box = boxOf(b.node);
       snap[b.id] = {
-        html: b.node.innerHTML,
+        html: atomic(b.node) ? atomicHtml(b.node) : b.node.innerHTML,
         tag: b.node.tagName,
         prev: i > 0 ? list[i - 1].id : null,
         box: box ? boxKey(b.node) : null,
-        boxTag: box ? box.tagName : null
+        boxTag: box ? box.tagName : null,
+        atomic: atomic(b.node)
       };
     });
     return snap;
+  }
+
+  function atomicHtml(node) {
+    var copy = node.cloneNode(true);
+    copy.classList.remove('ryker-pick', 'ryker-dirty', 'ryker-editing');
+    if (!copy.getAttribute('class')) copy.removeAttribute('class');
+    return copy.outerHTML;
   }
 
   function htmlOf(entry) {
@@ -227,11 +287,14 @@ Ryker.blocks = (function () {
       if (!Object.prototype.hasOwnProperty.call(before, id)) {
         changes.push({
           id: id, before: null, after: htmlOf(a), kind: 'added',
-          tag: a.tag, prev: a.prev
+          tag: a.tag, prev: a.prev, box: a.box || null, boxTag: a.boxTag || null
         });
-      } else if (htmlOf(before[id]) !== htmlOf(a)) {
+      } else if (htmlOf(before[id]) !== htmlOf(a) ||
+                 (before[id] && before[id].tag) !== a.tag) {
         changes.push({ id: id, before: htmlOf(before[id]), after: htmlOf(a),
-                       kind: 'changed', tag: a.tag });
+                       kind: 'changed', tag: a.tag,
+                       beforeTag: before[id] && before[id].tag || null,
+                       afterTag: a.tag || null });
       }
     });
     Object.keys(before).forEach(function (id) {
@@ -239,6 +302,7 @@ Ryker.blocks = (function () {
         var was = before[id];
         var meta = was && typeof was === 'object' ? was : {};
         changes.push({ id: id, before: htmlOf(was), after: null, kind: 'removed',
+                       tag: meta.tag || null, atomic: !!meta.atomic,
                        box: meta.box || null, boxTag: meta.boxTag || null });
       }
     });
@@ -295,7 +359,9 @@ Ryker.blocks = (function () {
   }
 
   return {
-    SELECTOR: SELECTOR, root: root, all: all, blockId: blockId, byId: byId, hash: hash,
+    SELECTOR: SELECTOR, PICK_SELECTOR: PICK_SELECTOR, root: root, all: all,
+    atomic: atomic, pickSequence: pickSequence, blockId: blockId, transferId: transferId,
+    byId: byId, hash: hash,
     excluded: excluded, snapshot: snapshot, diffSnapshots: diffSnapshots, label: label,
     seedIds: seedIds, stamp: stamp, htmlOf: htmlOf, sequence: sequence,
     boxOf: boxOf, boxKey: boxKey,

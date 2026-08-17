@@ -27,6 +27,22 @@ way.
 Nothing is written anywhere unless you point Ryker at a folder. The toolbar says
 which of those two states you are in at all times, and never implies the other.
 
+The instruction sidebar and saved change requests are related but different.
+The sidebar is the live, cumulative prompt for the current tab. **Saved change
+requests** are one JSON record per save, written below `ryker/revisions/` in the
+folder you granted. They preserve save comments and structured before/after
+pairs across sessions, and can later be reviewed or merged. Open them from
+**More → Saved change requests…**. If a record is still being written, the
+dialog waits for it rather than reporting an empty history.
+
+Ryker also checkpoints the complete current edit set while you work. After a
+refresh or browser restart it offers to restore that draft, including changes
+made since the last Save. Extension drafts live in extension-owned Chrome
+storage; the drop-in build uses browser storage for the document origin. A
+restore is offered only when the document baseline still matches. If the source
+has changed, Ryker leaves it untouched and directs you to review the saved
+change requests instead.
+
 ## Installing it
 
 Three lines before `</body>`:
@@ -72,8 +88,10 @@ it is the case Ryker most needs to work in.
   already holds, so a move is found by comparing the order the document was
   authored in against the order it is in now. Move something out and back and
   Ryker correctly reports nothing.
-- **A formatting row** floats over the selection while editing: bold, italic,
-  strikethrough, code, link and clear.
+- **A formatting row** floats over the selection while editing: Paragraph and
+  H1–H5 block types, bold, italic, strikethrough, link and clear formatting.
+  Block-type changes support undo/redo and are emitted as element-name changes,
+  not as fictional text rewrites.
 - **Export** produces the report with Ryker removed, the report with Ryker
   attached, or a ZIP with whatever else you choose.
 - **Failure isolation.** Every stage of the boot is wrapped. A module that
@@ -100,8 +118,8 @@ node build/bundle.mjs
 
 Concatenation, on purpose. Each source file assigns onto the `Ryker` namespace
 rather than importing, so there is no build dependency, nothing to vendor, and
-output anyone can read. One bundle, `dist/ryker.js`, 29 modules and roughly
-259 KB.
+output anyone can read. The drop-in and extension artifacts are generated from
+the same 31-module load order; `dist/ryker.js` is roughly 289 KB.
 
 The build refuses to emit when a source file breaks a rule:
 
@@ -135,6 +153,27 @@ block stamps and the offsets it sets on the root element. The fixture also pins
 which elements are editable, so a change to the exclusion rules cannot pass by
 restoring the count through some other route.
 
+## Placement Audits mirror
+
+The repository's `drop-in/` directory is the source of truth for the deployed
+copy under Codeable Placement Audits. From Windows, build and sync it through
+WSL with:
+
+```powershell
+npm run sync
+```
+
+The underlying PowerShell alternative is:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\sync-placement-audits.ps1
+```
+
+The command mirrors only `README.md`, `build/`, `dist/`, `docs/`, and `src/`.
+It removes retired files inside those managed paths, but deliberately preserves
+`revisions/` and any other deployment data. Use `-WhatIf` to preview the file
+operations or `-SkipBuild` when `dist/ryker.js` is already current.
+
 ## Layout
 
 ```
@@ -144,7 +183,7 @@ src/
   editor/        blocks, sanitiser, contenteditable, outline, move
   instructions/  the instruction set and the change-request browser
   export/        html, zip, packager
-  storage/       the change-request log, and recovery from the old build
+  storage/       shared filesystem access, the change-request log, recovery
   security/      credential scan
   ui/            styles, shadow shell, rail, pane, dialogs
   utils/         dom helpers
@@ -155,9 +194,10 @@ test/
 
 ## Not in this version
 
-Markdown, publish, the app and the Chrome extension are scoped in
-`../.data/sow/0_queue/sow-006-ryker-one-product-app-and-markdown.md` and
-`../.data/sow/0_queue/sow-007-ryker-chrome-extension.md`. Google Drive and Docs
+Markdown, publish and the app are scoped in
+`../.data/sow/1_progressing/sow-006-ryker-one-product-app-and-markdown.md`.
+The first unpacked Chrome extension scaffold is under `../extension/`, governed
+by `../.data/sow/1_progressing/sow-007-ryker-chrome-extension.md`. Google Drive and Docs
 export is staged in `../.data/sow/_staging/sow-005-ryker-google-docs-export.md`.
 
 Comments, the revision journal, revision review and the GitHub backend were

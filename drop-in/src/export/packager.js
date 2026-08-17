@@ -43,12 +43,10 @@ Ryker.packager = (function () {
 
   function folderAssets(dirHandle) {
     var out = [];
-    function walk(handle, prefix) {
-      var it = handle.values();
-      function step() {
-        return it.next().then(function (res) {
-          if (res.done) return null;
-          var e = res.value;
+    function walk(prefix) {
+      return Ryker.fs.list(dirHandle, prefix).then(function (entries) {
+        return entries.reduce(function (chain, e) {
+          return chain.then(function () {
           var name = prefix + e.name;
           // Skip dotfiles, and skip the change-request log wherever it lives.
           //
@@ -64,19 +62,18 @@ Ryker.packager = (function () {
           // Read from the logger rather than repeated here, so the two cannot
           // drift apart again the way they just did.
           var lib = (Ryker.logger && Ryker.logger.LIB) || 'ryker';
-          if (e.name === lib || e.name.charAt(0) === '.') return step();
+          if (e.name === lib || e.name.charAt(0) === '.') return null;
           if (e.kind === 'directory') {
-            return walk(e, name + '/').then(step);
+            return walk(name + '/');
           }
-          return e.getFile().then(function (f) {
-            out.push({ name: name, source: 'folder', bytes: f.size, handle: e });
-            return step();
-          }).catch(step);
-        });
-      }
-      return step();
+          out.push({ name: name, source: 'folder', bytes: e.size,
+                     root: dirHandle, path: name });
+          return null;
+          });
+        }, Promise.resolve());
+      });
     }
-    return walk(dirHandle, '').then(function () { return out; });
+    return walk('').then(function () { return out; });
   }
 
   // The storage adapter went with the full build, so there is no folder backend
@@ -86,7 +83,7 @@ Ryker.packager = (function () {
   // single file-system module, and returning that here is the whole of putting
   // folder access back.
   function fsBackend() {
-    return null;
+    return Ryker.fs;
   }
 
   function open() {
@@ -181,10 +178,9 @@ Ryker.packager = (function () {
         return Promise.resolve({ name: base + '.html', data: out.html });
       }
       var f = p.file;
-      if (f.handle) {
-        return f.handle.getFile()
-          .then(function (file) { return file.arrayBuffer(); })
-          .then(function (buf) { return { name: f.name, data: new Uint8Array(buf) }; });
+      if (f.root && f.path) {
+        return Ryker.fs.readBytes(f.root, f.path)
+          .then(function (bytes) { return { name: f.name, data: bytes }; });
       }
       if (f.href) {
         return fetch(f.href).then(function (r) { return r.arrayBuffer(); })

@@ -35,10 +35,10 @@ Ryker.pick = (function () {
   function blockAt(x, y) {
     var el = document.elementFromPoint(x, y);
     if (!el || inShell(el)) return null;
-    var b = el.closest ? el.closest(Ryker.blocks.SELECTOR) : null;
+    var b = el.closest ? el.closest(Ryker.blocks.PICK_SELECTOR) : null;
     if (!b || inShell(b)) return null;
     if (Ryker.blocks.excluded(b)) return null;
-    if (b.querySelector(Ryker.blocks.SELECTOR)) return null;
+    if (!Ryker.blocks.atomic(b) && b.querySelector(Ryker.blocks.SELECTOR)) return null;
     if (!Ryker.blocks.root().contains(b)) return null;
     return b;
   }
@@ -51,7 +51,7 @@ Ryker.pick = (function () {
     if (hit) return hit;
     var rr = Ryker.blocks.root().getBoundingClientRect();
     if (x < rr.left - 40 || x > rr.right + 40) return null;
-    var list = seq || Ryker.blocks.sequence();
+    var list = seq || Ryker.blocks.pickSequence();
     var best = null, bestD = 200, i, r, d;
     for (i = 0; i < list.length; i++) {
       r = list[i].getBoundingClientRect();
@@ -65,7 +65,7 @@ Ryker.pick = (function () {
   // Drawn from the same sequence multi.collapse() filters, so the two agree
   // about what a block is by construction rather than by coincidence.
   function span(a, b) {
-    var list = seq || (seq = Ryker.blocks.sequence());
+    var list = seq || (seq = Ryker.blocks.pickSequence());
     var i = list.indexOf(a), j = list.indexOf(b);
     if (i === -1 || j === -1) return [];
     return i <= j ? list.slice(i, j + 1) : list.slice(j, i + 1);
@@ -156,8 +156,16 @@ Ryker.pick = (function () {
     }
 
     clear();
-    seq = Ryker.blocks.sequence();
+    seq = Ryker.blocks.pickSequence();
     origin = blockNear(e.clientX, e.clientY);
+    if (Ryker.blocks.atomic(origin)) {
+      e.preventDefault();
+      dropNative();
+      paint([origin]);
+      origin = null;
+      pressed = false;
+      return;
+    }
     pressed = true;
     lastX = e.clientX;
     lastY = e.clientY;

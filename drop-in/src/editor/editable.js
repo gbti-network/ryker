@@ -8,6 +8,7 @@ Ryker.editable = (function () {
   var baseline = null;
   var bound = [];
   var listeners = [];
+  var pendingListSpace = new WeakSet();
 
   function onChange(fn) { listeners.push(fn); }
   function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
@@ -42,7 +43,11 @@ Ryker.editable = (function () {
           // a paragraph is not a workflow anyone needs.
           e.preventDefault();
         },
-        input: function () { Ryker.history.text(n); mark(n, id); },
+        input: function () {
+          if (consumeListSpace(n)) return;
+          if (autoList(n, id)) return;
+          Ryker.history.text(n); mark(n, id);
+        },
         blur: function () {
           if (Ryker.sanitize.element(n)) mark(n, id);
         },
@@ -71,6 +76,71 @@ Ryker.editable = (function () {
     };
     Object.keys(handlers).forEach(function (k) { n.addEventListener(k, handlers[k]); });
     bound.push({ node: n, handlers: handlers });
+  }
+
+  // Turns a list marker typed into an otherwise empty paragraph into semantic
+  // list markup. Conversion happens as soon as the marker is complete. If the
+  // customary space follows, consume it from the new empty item rather than
+  // leaving invisible leading whitespace. Matching the whole block keeps
+  // ordinary prose such as "Step 1. review" untouched.
+  function autoList(node, id) {
+    if (!node || node.tagName !== 'P' || !node.parentNode) return false;
+    var raw = (node.textContent || '').replace(/\u00a0/g, ' ');
+    var tag = raw === '1.' || raw === '1. ' ? 'OL' :
+      (raw === '*' || raw === '* ' ? 'UL' : null);
+    if (!tag) return false;
+    var awaitsSpace = raw === '1.' || raw === '*';
+
+    var host = node.parentNode;
+    var list = document.createElement(tag.toLowerCase());
+    var item = document.createElement('li');
+    Array.prototype.forEach.call(node.attributes, function (attribute) {
+      if (attribute.name === 'contenteditable' || attribute.name === 'spellcheck' ||
+          attribute.name === 'class') return;
+      item.setAttribute(attribute.name, attribute.value);
+    });
+    var keep = (node.getAttribute('class') || '').split(/\s+/)
+      .filter(function (name) { return name && name.indexOf('ryker-') !== 0; });
+    if (keep.length) item.className = keep.join(' ');
+    item.innerHTML = '<br>';
+    list.appendChild(item);
+    node.innerHTML = '<br>';
+    Ryker.blocks.transferId(node, item);
+    host.replaceChild(list, node);
+    rebind(item);
+    item.classList.add('ryker-dirty');
+    if (awaitsSpace) pendingListSpace.add(item);
+
+    Ryker.history.record({
+      label: tag === 'OL' ? 'start ordered list' : 'start unordered list',
+      undo: function () {
+        pendingListSpace.delete(item);
+        if (list.parentNode) list.parentNode.replaceChild(node, list);
+        rebind(node);
+        place(node, 'start');
+      },
+      redo: function () {
+        if (node.parentNode) node.parentNode.replaceChild(list, node);
+        rebind(item);
+        if (awaitsSpace) pendingListSpace.add(item);
+        place(item, 'start');
+      }
+    });
+
+    place(item, 'start');
+    mark(item, id);
+    emit();
+    return true;
+  }
+
+  function consumeListSpace(node) {
+    if (!pendingListSpace.has(node)) return false;
+    pendingListSpace.delete(node);
+    var raw = (node.textContent || '').replace(/\u00a0/g, ' ');
+    if (!/^\s+$/.test(raw)) return false;
+    node.innerHTML = '<br>';
+    place(node, 'start');
+    return true;
   }
 
   // Splits a block at the caret into two siblings of the same kind. The new
@@ -162,7 +232,7 @@ Ryker.editable = (function () {
     } catch (e) {}
   }
 
-  var BLOCK_TYPES = ['P', 'H2', 'H3', 'H4', 'H5'];
+  var BLOCK_TYPES = ['P', 'H1', 'H2', 'H3', 'H4', 'H5'];
 
   // Changes a block's element type, keeping its contents and its attributes.
   //
@@ -186,6 +256,7 @@ Ryker.editable = (function () {
       .filter(function (c) { return c && c.indexOf('ryker-') !== 0; }).join(' ');
     if (!made.className) made.removeAttribute('class');
     while (node.firstChild) made.appendChild(node.firstChild);
+    Ryker.blocks.transferId(node, made);
 
     host.replaceChild(made, node);
     rebind(made);
@@ -266,6 +337,23 @@ Ryker.editable = (function () {
     var mixed = HEADING.test(keep.tagName) !== HEADING.test(drop.tagName) ||
                 (HEADING.test(keep.tagName) && keep.tagName !== drop.tagName);
     if (mixed) {
+      // An empty paragraph between headings has nothing to merge. Treating the
+      // structural guard as a blanket refusal stranded that paragraph: neither
+      // Backspace toward the heading above nor Delete toward the heading below
+      // could remove it. Remove only the empty paragraph and leave the heading
+      // intact, regardless of which side of the paragraph the caret is on.
+      if (node.tagName === 'P' && !Ryker.dom.textOf(node)) {
+        var empty = node, emptyAt = node.nextSibling, emptyHost = node.parentNode;
+        emptyHost.removeChild(empty);
+        Ryker.history.record({
+          label: 'delete empty paragraph',
+          undo: function () { emptyHost.insertBefore(empty, emptyAt); rebind(empty); },
+          redo: function () { if (empty.parentNode) empty.parentNode.removeChild(empty); }
+        });
+        place(other, dir === 'previous' ? 'end' : 'start');
+        emit();
+        return true;
+      }
       // An empty heading is not structure worth keeping, so it goes on its own
       // rather than being merged into anything.
       if (HEADING.test(drop.tagName) && !Ryker.dom.textOf(drop)) {

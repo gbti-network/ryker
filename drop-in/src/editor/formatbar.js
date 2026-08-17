@@ -54,6 +54,7 @@ Ryker.formatbar = (function () {
     typeBtn.addEventListener('mousedown', function (e) { e.preventDefault(); });
     Ryker.menu.attach(typeBtn, [
       { label: 'Paragraph', run: function () { retype('P'); } },
+      { label: 'Heading 1', run: function () { retype('H1'); } },
       { label: 'Heading 2', run: function () { retype('H2'); } },
       { label: 'Heading 3', run: function () { retype('H3'); } },
       { label: 'Heading 4', run: function () { retype('H4'); } },
@@ -63,7 +64,7 @@ Ryker.formatbar = (function () {
     // Destructive, so it is last, separated, and says how much it will take.
     killBtn = act(null, 'Delete', function () {
       if (!Ryker.multi) return;
-      if (Ryker.multi.covered().length > 1) Ryker.multi.removeSelection();
+      if (Ryker.multi.covered().length) Ryker.multi.removeSelection();
       else Ryker.multi.removeTableAt(currentBlock());
       hide();
     }, 'trash');
@@ -109,7 +110,7 @@ Ryker.formatbar = (function () {
     hide();
   }
 
-  var LABEL = { P: 'Paragraph', H2: 'H2', H3: 'H3', H4: 'H4', H5: 'H5' };
+  var LABEL = { P: 'Paragraph', H1: 'H1', H2: 'H2', H3: 'H3', H4: 'H4', H5: 'H5' };
 
   function editableSelection() {
     if (!Ryker.editable.isOn()) return null;
@@ -139,8 +140,8 @@ Ryker.formatbar = (function () {
     if (Ryker.pick && Ryker.pick.isEngaged()) { hide(); return; }
     var many = spanning();
     var range = editableSelection();
-    var link = (!range && many.length < 2 && Ryker.links) ? Ryker.links.at(null) : null;
-    if (!range && many.length < 2 && !link) { hide(); return; }
+    var link = (!range && !many.length && Ryker.links) ? Ryker.links.at(null) : null;
+    if (!range && !many.length && !link) { hide(); return; }
     build();
 
     if (range) lastRange = range.cloneRange();
@@ -152,7 +153,8 @@ Ryker.formatbar = (function () {
 
     var block = range ? currentBlock() : null;
     var table = Ryker.multi && block ? Ryker.multi.tableAt(block) : null;
-    var wide = many.length > 1;
+    var atomic = many.length === 1 && Ryker.blocks.atomic(many[0]);
+    var wide = many.length > 1 || atomic;
 
     // Three modes. A picked run of blocks gets only Delete, a caret resting in
     // a link gets only the link control, and ordinary selected text gets the
@@ -167,7 +169,8 @@ Ryker.formatbar = (function () {
     node.querySelector('.fb-kill-sep').style.display = (show && !wide) ? '' : 'none';
     if (show) {
       Ryker.tooltip.attach(killBtn,
-        wide ? 'Delete the ' + many.length + ' selected blocks' : 'Delete this whole table');
+        atomic ? 'Delete this whole SVG' :
+          (many.length > 1 ? 'Delete the ' + many.length + ' selected blocks' : 'Delete this whole table'));
     }
 
     if (!wide && !link) {

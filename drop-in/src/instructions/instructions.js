@@ -18,6 +18,7 @@ Ryker.instructions = (function () {
   var pristine = null; // blockId -> html as the document was authored
   var saved = null;    // blockId -> html as of the last save
   var saves = 0;
+  var saveNotes = [];
   var baseline = null;
   var listeners = [];
 
@@ -64,16 +65,22 @@ Ryker.instructions = (function () {
   function onChange(fn) { listeners.push(fn); }
   function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
 
-  function reset() { saved = null; saves = 0; emit(); }
+  function reset() { saved = null; saves = 0; saveNotes = []; emit(); }
   function originalOf(id) { return pristineHtml(id); }
   function saveCount() { return saves; }
 
   // Recomputed from the document, not accumulated. Accumulating each save's
   // changes meant the set could describe blocks that no longer existed.
-  function record() {
+  function record(note) {
     saved = Ryker.blocks.snapshot();
     saves += 1;
+    note = String(note || '').trim();
+    if (note) saveNotes.push({ saveNumber: saves, text: note });
     emit();
+  }
+
+  function notes() {
+    return saveNotes.map(function (n) { return { saveNumber: n.saveNumber, text: n.text }; });
   }
 
   // Reordering, which no block-by-block comparison can see. Derived the same
@@ -94,10 +101,20 @@ Ryker.instructions = (function () {
         id: c.id,
         kind: c.kind === 'added' ? 'insert' : (c.kind === 'removed' ? 'delete' : 'replace'),
         before: c.before, after: c.after,
-        tag: c.tag || null, prev: c.prev || null,
-        box: c.box || null, boxTag: c.boxTag || null
+        tag: c.tag || null, beforeTag: c.beforeTag || null,
+        afterTag: c.afterTag || c.tag || null, prev: c.prev || null,
+        atomic: !!c.atomic, box: c.box || null, boxTag: c.boxTag || null
       };
     });
+  }
+
+  // The complete replayable delta from the authored document to what is on
+  // screen now. Unlike edits(), this does not stop at the last Save boundary,
+  // so it can checkpoint both saved rounds and typing still in progress for
+  // recovery after a refresh.
+  function recoveryChanges() {
+    if (!pristine) return [];
+    return Ryker.blocks.diffSnapshots(pristine, Ryker.blocks.snapshot());
   }
 
   // A table holds no blocks of its own: every cell is one. Deleting a table of
@@ -345,6 +362,21 @@ Ryker.instructions = (function () {
       ' across ' + saves + ' save(s) this session');
     out.push('');
 
+    if (saveNotes.length) {
+      out.push('## Context supplied with saves');
+      out.push('');
+      out.push('These optional notes explain the intent behind individual save rounds.');
+      out.push('');
+      saveNotes.forEach(function (note) {
+        out.push('### Save ' + note.saveNumber);
+        out.push('');
+        String(note.text).split(/\r?\n/).forEach(function (line) {
+          out.push('> ' + line);
+        });
+        out.push('');
+      });
+    }
+
     if (!list.length && !mv.length) {
       out.push('No edits have been made yet. Edit the document and press Save to');
       out.push('build a set of instructions here.');
@@ -410,23 +442,46 @@ Ryker.instructions = (function () {
       out.push('');
 
       if (e.kind === 'replace') {
-        out.push('## ' + n + '. Replace the contents of ' + (e.tag ? '<' + e.tag.toLowerCase() + '>' : 'a block'));
+        var changesTag = e.beforeTag && e.afterTag && e.beforeTag !== e.afterTag;
+        var sameContents = e.before === e.after;
+        var replacementList = e.afterTag === 'LI' && (e.boxTag === 'OL' || e.boxTag === 'UL');
+        if (replacementList) {
+          out.push('## ' + n + '. Change <' + e.beforeTag.toLowerCase() + '> to an ' +
+            (e.boxTag === 'OL' ? 'ordered' : 'unordered') + ' list');
+        } else if (changesTag) {
+          out.push('## ' + n + '. Change <' + e.beforeTag.toLowerCase() + '> to <' +
+            e.afterTag.toLowerCase() + '>' + (sameContents ? '' : ' and replace its contents'));
+        } else {
+          out.push('## ' + n + '. Replace the contents of ' +
+            (e.tag ? '<' + e.tag.toLowerCase() + '>' : 'a block'));
+        }
         out.push('');
         var w = where(e.id);
         if (w) out.push('Position: ' + w);
         out.push('');
-        out.push('FROM:');
-        out.push('<<<'); out.push(e.before); out.push('>>>');
-        out.push('');
-        out.push('TO:');
-        out.push('<<<'); out.push(e.after); out.push('>>>');
-        out.push('');
-        out.push('Plain text of the new version, for confirmation:');
-        out.push('  ' + text(e.after));
+        if (changesTag && sameContents) {
+          out.push('Keep the element\'s contents and attributes unchanged. Its current contents are:');
+          out.push('<<<'); out.push(e.before); out.push('>>>');
+        } else {
+          out.push('FROM:');
+          out.push('<<<'); out.push(e.before); out.push('>>>');
+          out.push('');
+          out.push('TO:');
+          out.push('<<<'); out.push(e.after); out.push('>>>');
+          out.push('');
+          out.push('Plain text of the new version, for confirmation:');
+          out.push('  ' + text(e.after));
+        }
 
       } else if (e.kind === 'insert') {
         var tag = (e.tag || 'p').toLowerCase();
-        out.push('## ' + n + '. Insert a new <' + tag + '>');
+        var insertedList = tag === 'li' && (e.boxTag === 'OL' || e.boxTag === 'UL');
+        if (insertedList) {
+          out.push('## ' + n + '. Insert a new ' + (e.boxTag === 'OL' ? 'ordered' : 'unordered') +
+            ' list (<'+ e.boxTag.toLowerCase() + '>) containing one <li>');
+        } else {
+          out.push('## ' + n + '. Insert a new <' + tag + '>');
+        }
         out.push('');
         if (e.prev && stepOf[e.prev]) {
           out.push('Position: immediately after the element added in step ' + stepOf[e.prev] + '.');
@@ -446,7 +501,10 @@ Ryker.instructions = (function () {
         }
         out.push('');
         out.push('CONTENT:');
-        out.push('<<<'); out.push(e.after); out.push('>>>');
+        out.push('<<<');
+        out.push(insertedList ? '<' + e.boxTag.toLowerCase() + '><li>' + e.after + '</li></' +
+          e.boxTag.toLowerCase() + '>' : e.after);
+        out.push('>>>');
         out.push('');
         out.push('Plain text, for confirmation:');
         out.push('  ' + text(e.after));
@@ -462,6 +520,13 @@ Ryker.instructions = (function () {
           var t = text(c);
           out.push('  ' + (k + 1) + '. ' + (t.length > 90 ? t.slice(0, 87) + '...' : t));
         });
+
+      } else if (e.kind === 'delete' && e.atomic && String(e.tag).toUpperCase() === 'SVG') {
+        out.push('## ' + n + '. Delete the whole <svg>');
+        out.push('');
+        out.push('Remove the entire SVG element, including all paths, shapes, labels and attributes.');
+        out.push('Leave its surrounding container and adjacent content unchanged. Match this exact element:');
+        out.push('<<<'); out.push(e.before); out.push('>>>');
 
       } else {
         out.push('## ' + n + '. Delete a block');
@@ -485,6 +550,8 @@ Ryker.instructions = (function () {
   return {
     record: record, build: build, edits: edits, moves: moves, reset: reset,
     captureOrigin: captureOrigin, originalOf: originalOf, baselineId: baselineId,
-    saveCount: saveCount, onChange: onChange, where: where, suspicious: suspicious
+    recoveryChanges: recoveryChanges,
+    saveCount: saveCount, saveNotes: notes,
+    onChange: onChange, where: where, suspicious: suspicious
   };
 })();

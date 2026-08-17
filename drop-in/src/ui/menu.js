@@ -12,7 +12,7 @@ Ryker.menu = (function () {
       e.preventDefault();
       e.stopPropagation();
       if (open) { close(); return; }
-      show(button, items);
+      show(button, typeof items === 'function' ? items() : items);
     });
     return button;
   }

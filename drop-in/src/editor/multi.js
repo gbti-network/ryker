@@ -129,7 +129,7 @@ Ryker.multi = (function () {
   // The selection route: what someone gets from dragging across blocks.
   function removeSelection() {
     var nodes = covered();
-    if (nodes.length < 2) return false;
+    if (nodes.length < 2 && !(nodes.length === 1 && Ryker.blocks.atomic(nodes[0]))) return false;
     return removeNodes(collapse(nodes));
   }
 
@@ -155,7 +155,8 @@ Ryker.multi = (function () {
         if (path[i] && path[i].id === 'ryker-root') return;
         if (path[i] && path[i].tagName === 'TEXTAREA') return;
       }
-      if (Ryker.pick.picked().length < 2) return;
+      var picked = Ryker.pick.picked();
+      if (picked.length < 2 && !(picked.length === 1 && Ryker.blocks.atomic(picked[0]))) return;
       e.preventDefault();
       e.stopPropagation();
       removeSelection();

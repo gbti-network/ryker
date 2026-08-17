@@ -31,10 +31,28 @@ Ryker.merge = (function () {
     return Array.isArray(rec && rec.edits) ? rec.edits : [];
   }
 
+  function notesOf(rec) {
+    if (Array.isArray(rec && rec.saveNotes)) return rec.saveNotes;
+    if (rec && rec.saveNote) {
+      return [{ saveNumber: rec.saveNumber || null, text: rec.saveNote }];
+    }
+    return [];
+  }
+
   function norm(html) {
     if (html == null) return '';
     return String(html).replace(/\s+/g, ' ').trim();
   }
+
+  function beforeTag(edit) {
+    return String(edit.beforeTag || (edit.kind === 'insert' ? '' : edit.tag) || '').toUpperCase();
+  }
+
+  function afterTag(edit) {
+    return String(edit.afterTag || edit.tag || '').toUpperCase();
+  }
+
+  function stateKey(html, tag) { return String(tag || '').toUpperCase() + '|' + norm(html); }
 
   function when(rec) {
     var t = Date.parse(rec && rec.savedAt);
@@ -99,8 +117,9 @@ Ryker.merge = (function () {
     var refused = [];
 
     editsOf(group.winner).forEach(function (e) {
-      var from = norm(e.before);
-      var to = norm(e.after);
+      var fromText = norm(e.before);
+      var from = stateKey(e.before, beforeTag(e));
+      var to = stateKey(e.after, afterTag(e));
 
       // Already have this exact change, from a DIFFERENT record. Records from
       // one page load are cumulative supersets of each other, so the same pair
@@ -115,11 +134,12 @@ Ryker.merge = (function () {
       // meant, and folding must not quietly decide that for them.
       var same = acc.some(function (a) {
         return a.origin !== group && a.step.kind === e.kind &&
-               norm(a.step.before) === from && norm(a.step.after) === to;
+               stateKey(a.step.before, beforeTag(a.step)) === from &&
+               stateKey(a.step.after, afterTag(a.step)) === to;
       });
       if (same) { group.duplicated = (group.duplicated || 0) + 1; return; }
 
-      if (e.kind === 'insert' || !from) {
+      if (e.kind === 'insert' || !fromText) {
         acc.push({ step: e, origin: group });
         return;
       }
@@ -127,12 +147,16 @@ Ryker.merge = (function () {
       // Does this continue something already in the set?
       var chained = null;
       for (var i = acc.length - 1; i >= 0; i--) {
-        if (norm(acc[i].step.after) === from) { chained = acc[i]; break; }
+        if (stateKey(acc[i].step.after, afterTag(acc[i].step)) === from) {
+          chained = acc[i]; break;
+        }
       }
       if (chained) {
         chained.step = {
           kind: chained.step.kind === 'insert' ? 'insert' : e.kind,
           tag: e.tag || chained.step.tag,
+          beforeTag: chained.step.beforeTag || beforeTag(chained.step) || null,
+          afterTag: e.afterTag || afterTag(e) || null,
           before: chained.step.before,
           after: e.after,
           position: e.position || chained.step.position
@@ -145,7 +169,9 @@ Ryker.merge = (function () {
       // First time this text has been touched in the fold. That is normal for
       // the first group, and for a later group it means the edit is against
       // text the earlier groups never changed, which is still fine.
-      var seenBefore = acc.some(function (a) { return norm(a.step.before) === from; });
+      var seenBefore = acc.some(function (a) {
+        return stateKey(a.step.before, beforeTag(a.step)) === from;
+      });
       if (!seenBefore) {
         acc.push({ step: e, origin: group });
         return;
@@ -189,6 +215,14 @@ Ryker.merge = (function () {
     // edits between them. They cannot be folded and saying nothing about them
     // would present a partial result as a complete one.
     var promptOnly = list.filter(function (r) { return !editsOf(r).length; }).length;
+    var notes = [];
+    groups.forEach(function (g) {
+      notesOf(g.winner).forEach(function (note) {
+        var text = String(note && note.text || '').trim();
+        if (!text) return;
+        notes.push({ saveNumber: note.saveNumber || null, text: text });
+      });
+    });
 
     var warnings = [];
     if (promptOnly) {
@@ -249,6 +283,7 @@ Ryker.merge = (function () {
       superseded: superseded,
       duplicated: duplicated,
       promptOnly: promptOnly,
+      notes: notes,
       accounted: accounted,
       refused: refused,
       warnings: warnings.concat(dupes),
@@ -290,11 +325,27 @@ Ryker.merge = (function () {
     out.push('');
     r.warnings.forEach(function (w) { out.push('NOTE: ' + w); });
     if (r.warnings.length) out.push('');
+    if (r.notes && r.notes.length) {
+      out.push('## Context supplied with saves');
+      out.push('');
+      r.notes.forEach(function (note) {
+        out.push('Save' + (note.saveNumber ? ' ' + note.saveNumber : '') + ':');
+        String(note.text).split(/\r?\n/).forEach(function (line) { out.push('> ' + line); });
+        out.push('');
+      });
+    }
     out.push('---');
     out.push('');
     r.steps.forEach(function (s, i) {
-      out.push('## ' + (i + 1) + '. ' + (s.kind === 'insert' ? 'Insert' :
-        s.kind === 'delete' ? 'Delete' : 'Replace') + ' <' + (s.tag || '?').toLowerCase() + '>');
+      var changesTag = s.kind === 'replace' && beforeTag(s) && afterTag(s) &&
+        beforeTag(s) !== afterTag(s);
+      if (changesTag) {
+        out.push('## ' + (i + 1) + '. Change <' + beforeTag(s).toLowerCase() + '> to <' +
+          afterTag(s).toLowerCase() + '>');
+      } else {
+        out.push('## ' + (i + 1) + '. ' + (s.kind === 'insert' ? 'Insert' :
+          s.kind === 'delete' ? 'Delete' : 'Replace') + ' <' + (s.tag || '?').toLowerCase() + '>');
+      }
       if (s.position) out.push('');
       if (s.position) out.push('Position: ' + s.position);
       out.push('');

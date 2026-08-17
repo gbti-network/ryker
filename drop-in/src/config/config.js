@@ -52,10 +52,17 @@ Ryker.config = (function () {
     // document speaking for itself, so it wins: the document id and path differ
     // per report while everything else is common to the set.
     var raw = {};
-    if (window.RYKER_CONFIG) {
+    // A content script runs in an isolated world, so page JavaScript cannot
+    // provide its configuration. The extension worker supplies this object
+    // immediately before it explicitly starts Ryker.
+    if (Ryker.SURFACE === 'extension' && Ryker.extensionConfig) {
+      Object.keys(Ryker.extensionConfig).forEach(function (k) {
+        raw[k] = Ryker.extensionConfig[k];
+      });
+    } else if (window.RYKER_CONFIG) {
       Object.keys(window.RYKER_CONFIG).forEach(function (k) { raw[k] = window.RYKER_CONFIG[k]; });
     }
-    var inline = readInline();
+    var inline = Ryker.SURFACE === 'extension' ? null : readInline();
     if (inline) Object.keys(inline).forEach(function (k) { raw[k] = inline[k]; });
 
     var leaked = FORBIDDEN.filter(function (k) { return raw[k] != null && raw[k] !== ''; });
@@ -65,11 +72,13 @@ Ryker.config = (function () {
       cfg[k] = raw[k] != null ? raw[k] : DEFAULTS[k];
     });
 
-    // The document id must not depend on the filename, per spec section 34.
-    // Falling back to the title is better than falling back to the path,
-    // because a renamed file keeps its title and loses its path.
+    // Authored reports use their stable title rather than a filename. On the
+    // extension surface the URL is the only identity the page actually owns;
+    // titles commonly carry counts and transient application state.
     if (!cfg.RYKER_DOCUMENT_ID) {
-      cfg.RYKER_DOCUMENT_ID = slug(document.title || 'untitled');
+      cfg.RYKER_DOCUMENT_ID = Ryker.SURFACE === 'extension'
+        ? location.href
+        : slug(document.title || 'untitled');
     }
     if (!cfg.RYKER_DOCUMENT_PATH) {
       var last = location.pathname.split('/').pop();

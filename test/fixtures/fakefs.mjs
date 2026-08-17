@@ -20,7 +20,11 @@ export const FAKE_FS = `(function () {
     var self = this;
     return Promise.resolve({
       write: function (contents) { self._data = String(contents); return Promise.resolve(); },
-      close: function () { self._modified += 1000; return Promise.resolve(); }
+      close: function () {
+        return new Promise(function (resolve) {
+          setTimeout(function () { self._modified += 1000; resolve(); }, window.__fakeFsWriteDelay || 0);
+        });
+      }
     });
   };
   FileHandle.prototype.getFile = function () {
@@ -28,7 +32,10 @@ export const FAKE_FS = `(function () {
     return Promise.resolve({
       size: self._data.length,
       lastModified: self._modified,
-      text: function () { return Promise.resolve(self._data); }
+      text: function () { return Promise.resolve(self._data); },
+      arrayBuffer: function () {
+        return Promise.resolve(new TextEncoder().encode(self._data).buffer);
+      }
     });
   };
 
@@ -90,6 +97,7 @@ export const FAKE_FS = `(function () {
   // A test drives the grant by flipping this, so the "someone cancelled the
   // picker" path is reachable too.
   window.__fakeFsCancel = false;
+  window.__fakeFsWriteDelay = 0;
 
   window.showDirectoryPicker = function () {
     if (window.__fakeFsCancel) {

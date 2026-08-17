@@ -21,20 +21,7 @@
 Ryker.styles = (function () {
   'use strict';
 
-  var LIGHT = [
-    '--rk-bg:#ffffff;--rk-bg2:#f5f6f8;--rk-bg3:#eceef2;',
-    '--rk-fg:#16181d;--rk-fg2:#3f4551;--rk-muted:#6b7280;',
-    '--rk-line:#e2e5ea;--rk-line2:#cfd4dc;--rk-field:#ffffff;',
-    '--rk-accent:#4f46e5;--rk-accent-fg:#ffffff;--rk-accent-soft:rgba(79,70,229,.10);',
-    '--rk-warn:#b45309;--rk-onwarn:#ffffff;--rk-warn-soft:rgba(180,83,9,.10);',
-    '--rk-ok:#15803d;--rk-onok:#ffffff;--rk-ok-soft:rgba(21,128,61,.10);',
-    '--rk-danger:#be123c;--rk-danger-soft:rgba(190,18,60,.09);',
-    '--rk-ring:rgba(79,70,229,.35);',
-    '--rk-sh-md:0 1px 2px rgba(16,20,30,.06),0 4px 12px rgba(16,20,30,.08);',
-    '--rk-sh-xl:0 8px 24px rgba(16,20,30,.12),0 24px 56px rgba(16,20,30,.16);',
-    '--rk-font:system-ui,sans-serif;',
-    '--rk-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;'
-  ].join('');
+  var LIGHT = Ryker.theme.cssText;
 
   var documentCss = [
     // No resting outline. A dashed box around every paragraph turned the whole
@@ -60,7 +47,7 @@ Ryker.styles = (function () {
     // Picked blocks are outlined, not filled. A 16 percent wash over several
     // paragraphs made the selected text harder to read than the text around it,
     // which is backwards.
-    '.ryker-pick{background:none;border-radius:3px;',
+    '.ryker-pick,.ryker-pick[contenteditable="true"]:focus{background:none;border-radius:4px;',
     '  box-shadow:inset 0 0 0 2px rgba(79,70,229,.55)}',
     // While a cross-block drag is live, the browser must not also be painting a
     // text selection underneath it.
@@ -87,11 +74,6 @@ Ryker.styles = (function () {
     // colour independently of the page it sits on was a distraction rather than
     // a feature.
     ':host{' + LIGHT + '}',
-
-    ':host{',
-    '  --rk-r-sm:5px;--rk-r-md:7px;--rk-r-lg:10px;--rk-r-xl:14px;',
-    '  --rk-s1:4px;--rk-s2:8px;--rk-s3:12px;--rk-s4:16px;--rk-s5:20px;--rk-s6:24px;',
-    '}',
 
     // Typography lives on the wrapper, not on :host.
     //
@@ -126,31 +108,27 @@ Ryker.styles = (function () {
     // The active state comes last on purpose. It shares specificity with
     // .ghost, so declaring it earlier let a ghost button that was also active
     // render transparent and disappear entirely.
-    'button.rk.on{background:var(--rk-accent);border-color:var(--rk-accent);color:var(--rk-accent-fg);font-weight:600}',
-    'button.rk.on:hover:not(:disabled){background:var(--rk-accent);border-color:var(--rk-accent);',
-    '  color:var(--rk-accent-fg);filter:brightness(1.08)}',
+    'button.rk.on{background:var(--rk-active);border-color:var(--rk-active-line);color:var(--rk-onactive);font-weight:600}',
+    'button.rk.on:hover:not(:disabled){background:var(--rk-bg3);border-color:var(--rk-active-line);',
+    '  color:var(--rk-onactive)}',
 
     ':is(button.rk,.handle,input.rk,textarea.rk):focus-visible{',
     '  outline:2px solid transparent;box-shadow:0 0 0 3px var(--rk-ring);',
     '  border-color:var(--rk-accent)}',
 
     '.count{display:inline-block;min-width:18px;text-align:center;background:var(--rk-bg3);',
-    '  color:var(--rk-fg2);border-radius:999px;padding:1px 6px;margin-left:2px;',
+    '  color:var(--rk-fg2);border-radius:4px;padding:1px 6px;margin-left:2px;',
     '  font-size:11px;font-weight:600;line-height:1.4}',
     '.count.warn{background:var(--rk-warn);color:var(--rk-onwarn)}',
-    'button.rk.on .count{background:rgba(255,255,255,.24);color:var(--rk-accent-fg)}',
+    'button.rk.on .count{background:var(--rk-bg);color:var(--rk-onactive)}',
 
     // ---- collapsed handle -------------------------------------------------
     '.handle{position:fixed;top:0;right:20px;z-index:2147483000;',
     '  background:var(--rk-bg);color:var(--rk-fg);border:1px solid var(--rk-line2);border-top:none;',
-    '  border-radius:0 0 var(--rk-r-lg) var(--rk-r-lg);padding:7px 13px;cursor:pointer;',
-    '  font:inherit;font-size:12px;font-weight:600;letter-spacing:.02em;',
-    '  display:flex;gap:8px;align-items:center;box-shadow:var(--rk-sh-md)}',
+    '  border-radius:0 0 var(--rk-r-lg) var(--rk-r-lg);width:40px;height:40px;padding:8px;cursor:pointer;',
+    '  font:inherit;display:flex;align-items:center;justify-content:center;box-shadow:var(--rk-sh-md)}',
     '.handle:hover{background:var(--rk-bg2)}',
-    '.handle .dot{width:7px;height:7px;border-radius:50%;background:var(--rk-muted);flex:none}',
-    '.handle .dot.on{background:var(--rk-ok)}',
-    '.handle .badge{background:var(--rk-warn);color:var(--rk-onwarn);border-radius:999px;',
-    '  padding:1px 7px;font-size:11px;font-weight:700}',
+    '.handle .brand-mark{width:24px;height:24px;margin:0}',
 
     // ---- toolbar ----------------------------------------------------------
     '.bar{position:fixed;top:0;left:0;right:0;z-index:2147483000;background:var(--rk-bg);',
@@ -158,10 +136,12 @@ Ryker.styles = (function () {
     '  padding:8px 12px;flex-wrap:wrap;box-shadow:var(--rk-sh-md)}',
     '.brand{font-weight:700;letter-spacing:.09em;font-size:10px;text-transform:uppercase;',
     '  color:var(--rk-muted);margin-right:var(--rk-s1)}',
+    '.brand-mark{display:block;width:18px;height:18px;object-fit:contain;flex:none;',
+    '  margin-left:1px;margin-right:-1px}',
     '.sep{width:1px;height:22px;background:var(--rk-line);margin:0 var(--rk-s1)}',
     '.spacer{flex:1}',
     '.where{display:inline-flex;align-items:center;gap:6px;font-size:11px;color:var(--rk-muted);',
-    '  background:var(--rk-bg2);border:1px solid var(--rk-line);border-radius:999px;padding:4px 11px;',
+    '  background:var(--rk-bg2);border:1px solid var(--rk-line);border-radius:4px;padding:4px 11px;',
     '  font:inherit;font-size:11px;cursor:pointer}',
     // Disabled means there is nothing it can do about what it is reporting, so
     // it stops looking like a control and goes back to being a label.
@@ -175,13 +155,20 @@ Ryker.styles = (function () {
     // White on black regardless of the palette, so it reads the same over the
     // toolbar and over report content, and shows with no delay.
     '.rk-tip{position:fixed;z-index:2147483200;background:#0d0f13;color:#fff;',
-    '  border:1px solid rgba(255,255,255,.14);border-radius:6px;padding:5px 9px;',
+    '  border:1px solid rgba(255,255,255,.14);border-radius:4px;padding:5px 9px;',
     '  font-size:11.5px;font-weight:500;line-height:1.35;max-width:280px;',
     '  pointer-events:none;box-shadow:0 4px 16px rgba(0,0,0,.4)}',
 
-    // A button reduced to its number.
-    'button.rk.count-only{padding:5px 8px;min-width:34px;justify-content:center}',
+    // The instruction count remains an accessible button, but its number is
+    // the only visible object. A box around a count made it look like a second
+    // action instead of the state of the instruction pane.
+    'button.rk.count-only{padding:4px;min-width:26px;justify-content:center;',
+    '  border-color:transparent;background:transparent}',
+    'button.rk.count-only:hover:not(:disabled){border-color:transparent;background:var(--rk-bg2)}',
+    'button.rk.count-only.on,button.rk.count-only.on:hover:not(:disabled){',
+    '  border-color:transparent;background:transparent;color:var(--rk-fg)}',
     'button.rk.count-only .count{margin-left:0}',
+    'button.rk.count-only.on .count{background:var(--rk-active);color:var(--rk-onactive)}',
 
     // ---- outline rail ------------------------------------------------------
     '.rail{position:fixed;left:0;top:var(--ryker-offset,0px);bottom:0;width:320px;',
@@ -193,6 +180,12 @@ Ryker.styles = (function () {
     '.rail header h2{margin:0;font-size:12.5px;font-weight:600;letter-spacing:.02em}',
     '.rail .rail-count{font-size:11px;color:var(--rk-muted);font-variant-numeric:tabular-nums}',
     '.rail .spacer{flex:1 1 auto}',
+    '.rail .rail-scope{padding:var(--rk-s2) var(--rk-s4);border-bottom:1px solid var(--rk-line);',
+    '  background:var(--rk-bg)}',
+    '.rail .scope-choices{display:flex;gap:var(--rk-s1)}',
+    '.rail .scope-choice{flex:1 1 0;justify-content:center;padding:5px 8px}',
+    '.rail .scope-label{margin-top:5px;color:var(--rk-muted);font-size:10.5px;',
+    '  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
     '.rail .rail-body{flex:1 1 auto;overflow:auto;padding:var(--rk-s2) 0}',
     '.rail .rail-grip{position:absolute;top:0;bottom:0;right:-4px;width:9px;cursor:col-resize;',
     '  z-index:1;background:transparent}',
@@ -201,7 +194,9 @@ Ryker.styles = (function () {
     '  cursor:pointer;font-size:12.5px;color:var(--rk-fg);white-space:nowrap;overflow:hidden;',
     '  border-left:2px solid transparent}',
     '.rail .rail-row:hover{background:var(--rk-bg2)}',
-    '.rail .rail-row.on{background:var(--rk-accent-soft);border-left-color:var(--rk-accent)}',
+    '.rail .rail-row.on{background:var(--rk-bg3);border-left-color:var(--rk-active-line)}',
+    '.rail .rail-row.navigation-only{color:var(--rk-muted);cursor:pointer}',
+    '.rail .rail-row.navigation-only .rail-ico{opacity:.65}',
     '.rail .rail-tw{flex:0 0 12px;width:12px;text-align:center;color:var(--rk-muted);font-size:9px}',
     '.rail .rail-tw.none{visibility:hidden}',
     '.rail .rail-ico{flex:0 0 14px;width:14px;text-align:center;color:var(--rk-muted);font-size:11px}',
@@ -223,7 +218,7 @@ Ryker.styles = (function () {
     '.formatbar{position:fixed;z-index:2147483060;display:flex;align-items:center;gap:2px;',
     '  background:#16181d;border:1px solid rgba(255,255,255,.12);border-radius:var(--rk-r-md);',
     '  padding:4px;box-shadow:0 6px 22px rgba(0,0,0,.34)}',
-    '.formatbar .fb-btn{background:transparent;border:none;color:#e9ecf2;border-radius:5px;',
+    '.formatbar .fb-btn{background:transparent;border:none;color:#e9ecf2;border-radius:4px;',
     '  min-width:30px;height:28px;padding:0 8px;display:inline-flex;align-items:center;',
     '  justify-content:center;font:inherit;font-size:12.5px;font-weight:600;cursor:pointer;',
     '  transition:background .12s}',
@@ -263,7 +258,7 @@ Ryker.styles = (function () {
     '.menu-ico{display:inline-flex;flex:none;color:var(--rk-muted)}',
     '.menu-item.danger .menu-ico{color:var(--rk-danger)}',
     '.menu-sep{display:block;height:1px;background:var(--rk-line);margin:5px 3px}',
-    '.where .dot{width:7px;height:7px;border-radius:50%;background:var(--rk-muted);flex:none}',
+    '.where .dot{width:7px;height:7px;border-radius:4px;background:var(--rk-muted);flex:none}',
     '.where .dot.ok{background:var(--rk-ok)}.where .dot.warn{background:var(--rk-warn)}',
 
     // ---- instruction pane --------------------------------------

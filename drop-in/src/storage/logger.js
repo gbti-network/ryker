@@ -17,7 +17,7 @@ Ryker.logger = (function () {
   // is made here instead of being put to whoever is editing.
   var LIB = 'ryker';
   var DIR_NAME = 'revisions';
-  var DB = 'ryker', STORE = 'handles', KEY = 'log-dir';
+  var KEY = 'log-dir';
 
   var dir = null;
   var seq = 0;
@@ -28,57 +28,19 @@ Ryker.logger = (function () {
   // dropped, and written the moment the folder arrives. Without this, "always
   // on" would quietly mean "on from the second save onward".
   var pending = [];
+  // Serialises writes and gives the browser a completion boundary. Opening the
+  // Change requests dialog immediately after Save used to list the directory
+  // while createWritable().close() was still pending and report an empty log.
+  var writeTail = Promise.resolve();
 
   function onChange(fn) { listeners.push(fn); }
   function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
 
-  function supported() { return typeof window.showDirectoryPicker === 'function'; }
+  function supported() { return Ryker.fs.supported(); }
   function isOn() { return !!dir; }
   function folderName() { return dir ? dir.name : null; }
   function error() { return lastError; }
   function count() { return seq; }
-
-  // ---- remembering the folder across reloads ------------------------------
-
-  function idb(mode, fn) {
-    return new Promise(function (resolve) {
-      var open;
-      try { open = indexedDB.open(DB, 1); } catch (e) { resolve(null); return; }
-      open.onupgradeneeded = function () {
-        if (!open.result.objectStoreNames.contains(STORE)) open.result.createObjectStore(STORE);
-      };
-      open.onerror = function () { resolve(null); };
-      open.onsuccess = function () {
-        var db = open.result;
-        var tx, req;
-        // Guarded, and onabort handled, because neither was and the failure was
-        // silent and total. put() throws DataCloneError on a handle the browser
-        // will not structured-clone, and can throw if the store is gone. The
-        // exception escaped this handler, the transaction aborted, no onabort
-        // existed to catch it, and the promise never settled. choose() awaits
-        // remember() before it emits, so granting a folder simply hung: no
-        // error, no toolbar change, nothing.
-        //
-        // Resolving null is the right degradation. The folder still works for
-        // this session; it is only forgotten on reload.
-        try {
-          tx = db.transaction(STORE, mode);
-          req = fn(tx.objectStore(STORE));
-        } catch (e) {
-          try { db.close(); } catch (e2) { /* already closing */ }
-          resolve(null);
-          return;
-        }
-        tx.oncomplete = function () { db.close(); resolve(req ? req.result : null); };
-        tx.onerror = function () { db.close(); resolve(null); };
-        tx.onabort = function () { db.close(); resolve(null); };
-      };
-    });
-  }
-
-  function remember(handle) { return idb('readwrite', function (s) { return s.put(handle, KEY); }); }
-  function forget() { return idb('readwrite', function (s) { return s.delete(KEY); }); }
-  function recall() { return idb('readonly', function (s) { return s.get(KEY); }); }
 
   // ---- turning it on ------------------------------------------------------
 
@@ -88,12 +50,11 @@ Ryker.logger = (function () {
       emit();
       return Promise.resolve(false);
     }
-    return window.showDirectoryPicker({ mode: 'readwrite', id: 'ryker-log',
-                                        startIn: 'documents' })
+    return Ryker.fs.grant({ mode: 'readwrite', id: 'ryker-log', startIn: 'documents' })
       .then(function (handle) {
         dir = handle;
         lastError = null;
-        return remember(handle)
+        return Ryker.fs.remember(KEY, handle)
           .then(flush)
           .then(function () { emit(); return true; });
       })
@@ -110,11 +71,12 @@ Ryker.logger = (function () {
   // nobody asked for.
   function resume() {
     if (!supported()) return Promise.resolve(false);
-    return recall().then(function (handle) {
-      if (!handle || !handle.queryPermission) return false;
-      return handle.queryPermission({ mode: 'readwrite' }).then(function (state) {
+    return Ryker.fs.recall(KEY).then(function (handle) {
+      if (!handle) return false;
+      return Ryker.fs.permission(handle, false).then(function (state) {
         if (state !== 'granted') return false;
         dir = handle;
+        Ryker.fs.setHandle(handle);
         return flush().then(function () { emit(); return true; });
       });
     }).catch(function () { return false; });
@@ -138,18 +100,22 @@ Ryker.logger = (function () {
   // folder someone keeps documents in does not fill with machine output. When
   // the granted folder is already the library folder, it is used as-is instead
   // of nesting a second ryker inside itself.
-  function libraryDir() {
-    if (dir.name.toLowerCase() === LIB) return Promise.resolve(dir);
-    return dir.getDirectoryHandle(LIB, { create: true });
+  function documentKey(value) {
+    var raw = String(value || 'untitled');
+    if (/^[A-Za-z0-9._-]{1,80}$/.test(raw)) return raw;
+    var label = raw.replace(/^https?:\/\//i, '').toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 52) || 'document';
+    var h = 2166136261;
+    for (var i = 0; i < raw.length; i++) {
+      h ^= raw.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return label + '-' + (h >>> 0).toString(16).padStart(8, '0');
   }
 
-  function ensureDir() {
-    return libraryDir()
-      .then(function (lib) { return lib.getDirectoryHandle(DIR_NAME, { create: true }); })
-      .then(function (logs) {
-        var id = Ryker.config.load().RYKER_DOCUMENT_ID;
-        return logs.getDirectoryHandle(id, { create: true });
-      });
+  function documentDir() {
+    var prefix = dir && dir.name.toLowerCase() === LIB ? '' : LIB + '/';
+    return prefix + DIR_NAME + '/' + documentKey(Ryker.config.load().RYKER_DOCUMENT_ID);
   }
 
   // The path as it will actually read on disk, for saying out loud.
@@ -160,17 +126,11 @@ Ryker.logger = (function () {
       : dir.name + '/' + LIB + '/' + DIR_NAME;
   }
 
-  function write(handle, name, contents) {
-    return handle.getFileHandle(name, { create: true })
-      .then(function (fh) { return fh.createWritable(); })
-      .then(function (w) { return w.write(contents).then(function () { return w.close(); }); });
-  }
-
   // Called after every save. Failures are recorded and surfaced in the pane
   // rather than thrown: a logging problem must never cost someone their edit.
   // Separated from the write so the shape of the training data can be checked
   // without a filesystem, which is the only part of this worth testing.
-  function buildPayload(promptText) {
+  function buildPayload(promptText, saveNote) {
     var cfg = Ryker.config.load();
     var edits = Ryker.instructions.edits();
     return {
@@ -190,13 +150,22 @@ Ryker.logger = (function () {
       // 1 to 5, reset to 2, reset to 1, then continue at 6.
       baselineId: Ryker.instructions.baselineId(),
       saveNumber: Ryker.instructions.saveCount(),
+      saveNote: String(saveNote || '').trim() || null,
+      saveNotes: Ryker.instructions.saveNotes(),
       editCount: edits.length,
       // The prose prompt, exactly as the pane shows it.
       prompt: promptText,
+      // Machine replay data is deliberately separate from the prompt-facing
+      // edits below. Earlier records omitted block ids and could be reviewed
+      // but not safely restored after refresh; guessing by position risks
+      // applying text to a different element when the source has changed.
+      changes: Ryker.instructions.recoveryChanges(),
       // And the pairs behind it, which is the part worth training on.
       edits: edits.map(function (e) {
         return {
           kind: e.kind, tag: e.tag,
+          beforeTag: e.beforeTag || null,
+          afterTag: e.afterTag || e.tag || null,
           before: e.before, after: e.after,
           position: Ryker.instructions.where(e.id) || null
         };
@@ -204,15 +173,15 @@ Ryker.logger = (function () {
     };
   }
 
-  function record(promptText) {
+  function record(promptText, saveNote) {
     seq += 1;
-    var payload = buildPayload(promptText);
+    var payload = buildPayload(promptText, saveNote);
     if (!dir) {
       pending.push({ name: stamp() + '-save-' + payload.saveNumber + '.json', payload: payload });
       emit();
       return Promise.resolve(false);
     }
-    return put(stamp() + '-save-' + payload.saveNumber + '.json', payload);
+    return queuePut(stamp() + '-save-' + payload.saveNumber + '.json', payload);
   }
 
   // Everything held while the grant was outstanding, oldest first. A failure
@@ -224,7 +193,7 @@ Ryker.logger = (function () {
     var done = 0;
     return queued.reduce(function (chain, item) {
       return chain.then(function () {
-        return put(item.name, item.payload).then(function (ok) {
+        return queuePut(item.name, item.payload).then(function (ok) {
           if (ok) done += 1; else pending.push(item);
         });
       });
@@ -233,17 +202,26 @@ Ryker.logger = (function () {
 
   function pendingCount() { return pending.length; }
 
+  function queuePut(name, payload) {
+    var job = writeTail.then(function () { return put(name, payload); });
+    writeTail = job.catch(function () { return false; });
+    return job;
+  }
+
+  function settled() { return writeTail.then(function () { return true; }); }
+
   function put(name, payload) {
-    return ensureDir()
-      .then(function (docDir) {
-        return write(docDir, name, JSON.stringify(payload, null, 2));
-      })
+    return Ryker.fs.write(dir, documentDir() + '/' + name, JSON.stringify(payload, null, 2))
       .then(function () { lastError = null; emit(); return true; })
       .catch(function (e) {
         lastError = e && e.message ? e.message : String(e);
         // A revoked permission is worth forgetting, so the next attempt offers
         // the picker again rather than failing the same way forever.
-        if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) dir = null;
+        if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) {
+          dir = null;
+          Ryker.fs.setHandle(null);
+          Ryker.fs.forget(KEY);
+        }
         emit();
         return false;
       });
@@ -255,28 +233,27 @@ Ryker.logger = (function () {
   // inside the report without going anywhere near the file system dialog again.
   function list() {
     if (!dir) return Promise.resolve([]);
-    return ensureDir().then(function (docDir) {
-      var out = [];
-      var it = docDir.values();
-      function step() {
-        return it.next().then(function (res) {
-          if (res.done) return null;
-          var entry = res.value;
-          if (entry.kind !== 'file' || !/\.json$/.test(entry.name)) return step();
-          return entry.getFile().then(function (f) {
-            out.push({ name: entry.name, size: f.size, modified: f.lastModified, handle: entry });
-            return step();
-          }).catch(step);
-        });
-      }
-      return step().then(function () {
-        return out.sort(function (a, b) { return b.name.localeCompare(a.name); });
-      });
-    }).catch(function () { return []; });
+    return settled().then(function () { return Ryker.fs.list(dir, documentDir()); }).then(function (out) {
+      lastError = null;
+      return out.filter(function (entry) {
+        return entry.kind === 'file' && /\.json$/.test(entry.name);
+      }).map(function (entry) {
+        entry.path = documentDir() + '/' + entry.name;
+        return entry;
+      }).sort(function (a, b) { return b.name.localeCompare(a.name); });
+    }).catch(function (e) {
+      // A granted folder with no per-document directory is a genuinely empty
+      // log. Every other failure must be visible; treating permission and path
+      // errors as an empty array produced the misleading popup this fixes.
+      if (e && (e.name === 'NotFoundError' || /no such directory/i.test(e.message || ''))) return [];
+      lastError = e && e.message ? e.message : String(e);
+      emit();
+      throw e;
+    });
   }
 
   function read(entry) {
-    return entry.handle.getFile().then(function (f) { return f.text(); });
+    return Ryker.fs.read(dir, entry.path);
   }
 
   // Delete every logged record for this document.
@@ -288,14 +265,12 @@ Ryker.logger = (function () {
   // the log behind is worse than an error.
   function clear() {
     if (!dir) return Promise.resolve(0);
-    return ensureDir().then(function (docDir) {
-      return list().then(function (files) {
-        return files.reduce(function (chain, f) {
-          return chain.then(function (n) {
-            return docDir.removeEntry(f.name).then(function () { return n + 1; });
-          });
-        }, Promise.resolve(0));
-      });
+    return list().then(function (files) {
+      return files.reduce(function (chain, f) {
+        return chain.then(function (n) {
+          return Ryker.fs.remove(dir, f.path).then(function () { return n + 1; });
+        });
+      }, Promise.resolve(0));
     }).then(function (n) {
       seq = 0;
       emit();
@@ -327,9 +302,9 @@ Ryker.logger = (function () {
   return {
     supported: supported, isOn: isOn, choose: choose, resume: resume,
     record: record, buildPayload: buildPayload, describe: describe,
-    flush: flush, pendingCount: pendingCount, where: where, LIB: LIB,
+    flush: flush, settled: settled, pendingCount: pendingCount, where: where, LIB: LIB,
     list: list, read: read, clear: clear, folderUrl: folderUrl,
     folderName: folderName, error: error,
-    count: count, onChange: onChange, DIR_NAME: DIR_NAME
+    count: count, onChange: onChange, DIR_NAME: DIR_NAME, documentKey: documentKey
   };
 })();

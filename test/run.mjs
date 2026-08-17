@@ -20,7 +20,10 @@ import { FAKE_FS } from './fixtures/fakefs.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST = join(HERE, '..', 'drop-in', 'dist');
+const EXTENSION = join(HERE, '..', 'extension');
 const FIXTURE = 'file://' + resolve(join(HERE, 'fixtures', 'report.html'));
+const ARTICLE_FIXTURE = 'file://' + resolve(join(HERE, 'fixtures', 'article.html'));
+const WORKSPACE_FIXTURE = 'file://' + resolve(join(EXTENSION, 'workspace.html'));
 
 // Counted by hand against the fixture's comments, then confirmed by the first
 // run. Asserted alongside the named inclusions and exclusions below, so a
@@ -90,10 +93,82 @@ async function runBuild(sess, file) {
     version: Ryker.VERSION,
     build: Ryker.BUILD,
     hasShadow: !!document.getElementById('ryker-root').shadowRoot,
-    docCss: !!document.getElementById('ryker-document-css')
+    docCss: !!document.getElementById('ryker-document-css'),
+    brand: (function () {
+      var root = document.getElementById('ryker-root').shadowRoot;
+      var mark = root.querySelector('.bar .brand-mark');
+      var word = root.querySelector('.bar .brand');
+      return {
+        present: !!mark,
+        beforeWord: !!(mark && word && mark.nextElementSibling === word),
+        embedded: !!(mark && (mark.getAttribute('src') || '').indexOf('data:image/png;base64,') === 0),
+        width: mark && getComputedStyle(mark).width,
+        height: mark && getComputedStyle(mark).height
+      };
+    })(),
+    collapsed: (function () {
+      var root = document.getElementById('ryker-root').shadowRoot;
+      var handle = root.querySelector('.handle');
+      var mark = handle && handle.querySelector('.brand-mark');
+      return {
+        label: handle && handle.getAttribute('aria-label'),
+        visibleText: handle && handle.textContent.trim(),
+        children: handle && handle.children.length,
+        markWidth: mark && getComputedStyle(mark).width,
+        targetWidth: handle && getComputedStyle(handle).width,
+        targetHeight: handle && getComputedStyle(handle).height
+      };
+    })(),
+    sharedTheme: !!(Ryker.theme && Ryker.styles.LIGHT === Ryker.theme.cssText)
   })`);
 
   assert(info.hasShadow, `boots and mounts a shadow root (${info.build} ${info.version})`);
+  assert(info.brand.present && info.brand.beforeWord && info.brand.embedded &&
+    info.brand.width === '18px' && info.brand.height === '18px',
+  'the approved Ryker mark appears immediately left of the toolbar wordmark',
+  JSON.stringify(info.brand));
+  assert(info.sharedTheme,
+    'the drop-in chrome reads its design tokens from the shared Ryker theme');
+  assert(info.collapsed.label === 'Open Ryker' && info.collapsed.visibleText === '' &&
+    info.collapsed.children === 1 && info.collapsed.markWidth === '24px' &&
+    info.collapsed.targetWidth === '40px' && info.collapsed.targetHeight === '40px',
+  'the collapsed handle is an accessible logo-only control',
+  JSON.stringify(info.collapsed));
+
+  const paintedChrome = await evaluate(sess, `(function () {
+    var sr = document.getElementById('ryker-root').shadowRoot;
+    var bar = sr.querySelector('.bar');
+    var layer = sr.querySelector('.layer');
+    var dialog = Ryker.dialog.open({ title: 'Paint probe', body: '<p>Visible</p>' });
+    var modal = sr.querySelector('.modal');
+    var handle = sr.querySelector('.handle');
+    var where = sr.querySelector('.where');
+    var count = sr.querySelector('.count');
+    var result = {
+      barBackground: getComputedStyle(bar).backgroundColor,
+      layerForeground: getComputedStyle(layer).color,
+      modalBackground: getComputedStyle(modal).backgroundColor,
+      modalWidth: modal.getBoundingClientRect().width,
+      radii: {
+        modal: getComputedStyle(modal).borderTopLeftRadius,
+        handle: getComputedStyle(handle).borderBottomLeftRadius,
+        where: getComputedStyle(where).borderTopLeftRadius,
+        count: getComputedStyle(count).borderTopLeftRadius
+      }
+    };
+    dialog.close();
+    return result;
+  })()`);
+  assert(paintedChrome.barBackground === 'rgb(255, 255, 255)' &&
+    paintedChrome.layerForeground === 'rgb(22, 24, 29)' &&
+    paintedChrome.modalBackground === 'rgb(255, 255, 255)' &&
+    paintedChrome.modalWidth > 300,
+  'shared theme tokens resolve into visible toolbar and dialog paint',
+  JSON.stringify(paintedChrome));
+  assert(Object.keys(paintedChrome.radii).every(function (key) {
+    return paintedChrome.radii[key] === '4px';
+  }), 'all curved Ryker chrome uses the 4px corner radius',
+  JSON.stringify(paintedChrome.radii));
 
   // --- what is editable -----------------------------------------------------
 
@@ -133,6 +208,68 @@ async function runBuild(sess, file) {
     assert(!exported.includes(needle), `clean export carries no ${what}`);
   }
 
+  // An upward cross-block drag leaves focus in the paragraph where the drag
+  // began. The focused editing-host rule is more specific than .ryker-pick, so
+  // the anchor used to stay in the selected set while losing its purple visual
+  // treatment. Backspace then removed a paragraph that did not look selected.
+  const pickedVisuals = await evaluate(sess, `(function () {
+    var prose = Ryker.blocks.sequence().filter(function (node) {
+      return node.matches && node.matches('p');
+    });
+    var other = prose[0], anchor = prose[1];
+    if (!other || !anchor) return { error: 'fixture needs two editable paragraphs' };
+    anchor.focus();
+    Ryker.pick.set([other, anchor]);
+    var result = {
+      anchorFocused: document.activeElement === anchor,
+      anchorPicked: Ryker.pick.has(anchor),
+      otherPicked: Ryker.pick.has(other),
+      anchorShadow: getComputedStyle(anchor).boxShadow,
+      otherShadow: getComputedStyle(other).boxShadow
+    };
+    Ryker.pick.clear();
+    anchor.blur();
+    return result;
+  })()`);
+  assert(!pickedVisuals.error && pickedVisuals.anchorFocused && pickedVisuals.anchorPicked &&
+    pickedVisuals.otherPicked && pickedVisuals.anchorShadow === pickedVisuals.otherShadow,
+  'the focused drag anchor displays the same picked outline as the rest of the range',
+  JSON.stringify(pickedVisuals));
+
+  const hidden = await evaluate(sess, `(function () {
+    if (!Ryker.rail.isOpen()) Ryker.rail.toggle(true);
+    if (!Ryker.pane.isOpen()) Ryker.pane.toggle();
+    Ryker.dialog.alert('Temporary panel', 'This must close with Ryker.');
+    Ryker.boot.expand(false);
+    var root = document.getElementById('ryker-root').shadowRoot;
+    var collapsed = {
+      pane: Ryker.pane.isOpen(), rail: Ryker.rail.isOpen(), dialog: Ryker.dialog.isOpen(),
+      editable: document.querySelectorAll('[contenteditable="true"]').length,
+      pushed: document.body.hasAttribute('data-ryker-pushed'),
+      railOffset: document.body.hasAttribute('data-ryker-rail'),
+      bar: root.querySelector('.bar').style.display,
+      handle: root.querySelector('.handle').style.display
+    };
+    Ryker.boot.expand(true);
+    return {
+      collapsed: collapsed,
+      reopened: {
+        pane: Ryker.pane.isOpen(), rail: Ryker.rail.isOpen(),
+        editable: document.querySelectorAll('[contenteditable="true"]').length,
+        bar: root.querySelector('.bar').style.display
+      }
+    };
+  })()`);
+  assert(!hidden.collapsed.pane && !hidden.collapsed.rail && !hidden.collapsed.dialog &&
+    hidden.collapsed.editable === 0 && !hidden.collapsed.pushed && !hidden.collapsed.railOffset &&
+    hidden.collapsed.bar === 'none' && hidden.collapsed.handle === 'flex',
+  'Hide closes every panel, clears layout offsets and completely disables editing',
+  JSON.stringify(hidden.collapsed));
+  assert(hidden.reopened.pane && hidden.reopened.rail &&
+    hidden.reopened.editable === EXPECTED_EDITABLE && hidden.reopened.bar === 'flex',
+  'reopening Ryker deliberately restores editing and the previously open panels',
+  JSON.stringify(hidden.reopened));
+
   // --- an edit becomes exactly one instruction ------------------------------
 
   // Capability, not name. This was a name test until the decommission renamed
@@ -170,6 +307,371 @@ async function runBuild(sess, file) {
         'the instruction carries the edited text');
     }
   }
+}
+
+async function runBlockTypes(sess, file) {
+  console.log(`\n${file} (block types)`);
+  const code = readFileSync(join(DIST, file), 'utf8');
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && document.getElementById('ryker-root'))`,
+    10000, 'Ryker to boot for block type conversion');
+
+  const converted = await evaluate(sess, `(function () {
+    var target = Ryker.blocks.all().map(function (b) { return b.node; })
+      .filter(function (node) { return node.tagName === 'P'; })[0];
+    if (!target) return { error: 'fixture has no editable paragraph' };
+    var id = Ryker.blocks.blockId(target);
+    var range = document.createRange();
+    range.selectNodeContents(target);
+    var selection = window.getSelection();
+    selection.removeAllRanges(); selection.addRange(range); target.focus();
+    Ryker.formatbar.update();
+
+    var root = document.getElementById('ryker-root').shadowRoot;
+    var type = root.querySelector('.fb-type');
+    if (!type) return { error: 'format toolbar has no block type control' };
+    var initialLabel = type.textContent;
+    type.click();
+    var rows = Array.prototype.slice.call(root.querySelectorAll('.menu-item'));
+    var labels = rows.map(function (row) { return row.textContent.trim(); });
+    var h1 = rows.filter(function (row) { return row.textContent.trim() === 'Heading 1'; })[0];
+    if (!h1) return { error: 'Heading 1 is absent from the block type menu', labels: labels };
+    h1.click();
+
+    var afterConvert = Ryker.blocks.byId(id);
+    var changed = Ryker.editable.changes();
+    var undoWorked = Ryker.history.undo();
+    var afterUndo = Ryker.blocks.byId(id);
+    var redoWorked = Ryker.history.redo();
+    var afterRedo = Ryker.blocks.byId(id);
+    Ryker.boot.save(false, 'Promote this line to the document title.');
+    return {
+      initialLabel: initialLabel, labels: labels,
+      convertedTag: afterConvert && afterConvert.tagName,
+      change: changed[0] || null,
+      undoWorked: undoWorked, undoTag: afterUndo && afterUndo.tagName,
+      redoWorked: redoWorked, redoTag: afterRedo && afterRedo.tagName,
+      pane: Ryker.pane.value()
+    };
+  })()`);
+
+  assert(!converted.error && converted.initialLabel === 'Paragraph' &&
+    ['Paragraph', 'Heading 1', 'Heading 2', 'Heading 3', 'Heading 4', 'Heading 5']
+      .every((label) => converted.labels.includes(label)),
+  'the single-block toolbar offers Paragraph and heading levels H1 through H5',
+  JSON.stringify(converted));
+  assert(converted.convertedTag === 'H1' && converted.change &&
+    converted.change.beforeTag === 'P' && converted.change.afterTag === 'H1' &&
+    converted.change.before === converted.change.after,
+  'a paragraph-to-H1 conversion is recorded as one tag-only edit',
+  JSON.stringify(converted.change));
+  assert(converted.undoWorked && converted.undoTag === 'P' &&
+    converted.redoWorked && converted.redoTag === 'H1',
+  'block type conversion supports undo and redo without losing identity',
+  JSON.stringify(converted));
+  assert(/Change <p> to <h1>/.test(converted.pane) &&
+    /Keep the element's contents and attributes unchanged/.test(converted.pane),
+  'saved instructions describe the element-name change without inventing a text rewrite',
+  converted.pane.slice(0, 700));
+
+  const emptyBoundary = await evaluate(sess, `(function () {
+    var intro = document.querySelector('#intro');
+    var empty = intro && intro.querySelector('p');
+    var next = empty && empty.nextElementSibling;
+    var previous = empty && empty.previousElementSibling;
+    if (!empty || !next || !previous) return { error: 'fixture lacks the heading/paragraph boundary' };
+    Ryker.editable.convert(next, 'H3');
+    next = empty.nextElementSibling;
+    empty.innerHTML = '<br>';
+    empty.dispatchEvent(new Event('input', { bubbles: true }));
+
+    function press(node, edge, key) {
+      var range = document.createRange();
+      range.selectNodeContents(node);
+      range.collapse(edge === 'start');
+      var selection = window.getSelection();
+      selection.removeAllRanges(); selection.addRange(range); node.focus();
+      return !node.dispatchEvent(new KeyboardEvent('keydown', {
+        key: key, bubbles: true, cancelable: true
+      }));
+    }
+
+    var backspacePrevented = press(empty, 'start', 'Backspace');
+    var afterBackspace = {
+      removed: !empty.isConnected,
+      previousTag: previous.tagName,
+      nextTag: next.tagName
+    };
+    var restored = Ryker.history.undo();
+    var restoredBeforeDelete = restored && empty.isConnected;
+    var deletePrevented = press(empty, 'end', 'Delete');
+    return {
+      backspacePrevented: backspacePrevented,
+      afterBackspace: afterBackspace,
+      restored: restoredBeforeDelete,
+      deletePrevented: deletePrevented,
+      removedByDelete: !empty.isConnected,
+      previousStillHeading: previous.isConnected && /^H[1-6]$/.test(previous.tagName),
+      nextStillHeading: next.isConnected && next.tagName === 'H3'
+    };
+  })()`);
+
+  assert(!emptyBoundary.error && emptyBoundary.backspacePrevented &&
+    emptyBoundary.afterBackspace.removed && emptyBoundary.afterBackspace.previousTag === 'H2' &&
+    emptyBoundary.afterBackspace.nextTag === 'H3' && emptyBoundary.restored,
+  'Backspace removes an empty paragraph below a heading without consuming either heading',
+  JSON.stringify(emptyBoundary));
+  assert(emptyBoundary.deletePrevented && emptyBoundary.removedByDelete &&
+    emptyBoundary.previousStillHeading && emptyBoundary.nextStillHeading,
+  'Delete removes an empty paragraph before the next heading without consuming either heading',
+  JSON.stringify(emptyBoundary));
+}
+
+async function runRecovery(sess, file) {
+  console.log(`\n${file} (refresh recovery)`);
+  const code = readFileSync(join(DIST, file), 'utf8');
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, `(function () {
+    Object.keys(localStorage).filter(function (key) {
+      return key.indexOf('ryker:draft:') === 0 || key.indexOf('ryker:recovery-seen:') === 0;
+    }).forEach(function (key) { localStorage.removeItem(key); });
+  })()`);
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && document.getElementById('ryker-root'))`,
+    10000, 'Ryker to boot for recovery');
+
+  const checkpoint = await evaluate(sess, `(function () {
+    var target = Ryker.blocks.all().filter(function (block) {
+      return (block.node.textContent || '').trim() === 'First paragraph of the introduction.';
+    })[0];
+    if (!target) return Promise.resolve({ error: 'recovery target was not found' });
+    target.node.textContent = 'First paragraph restored after refresh.';
+    target.node.dispatchEvent(new Event('input', { bubbles: true }));
+    return Ryker.recover.checkpoint().then(function () {
+      var raw = localStorage.getItem(Ryker.recover.draftKey());
+      var saved = raw && JSON.parse(raw);
+      return { key: Ryker.recover.draftKey(), baselineId: saved && saved.baselineId,
+        changes: saved && saved.changes && saved.changes.length };
+    });
+  })()`);
+  assert(!checkpoint.error && checkpoint.baselineId && checkpoint.changes === 1,
+    'editing checkpoints a replayable authored-to-current draft before Save',
+    JSON.stringify(checkpoint));
+
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, code);
+  await waitInPage(sess, `(function () {
+    var root = document.getElementById('ryker-root');
+    var title = root && root.shadowRoot.querySelector('.modal h2');
+    return title && title.textContent === 'Restore earlier changes?';
+  })()`, 10000, 'the refresh recovery offer');
+  const restored = await evaluate(sess, `(function () {
+    var root = document.getElementById('ryker-root').shadowRoot;
+    var restore = Array.prototype.filter.call(root.querySelectorAll('.modal button'), function (button) {
+      return button.textContent.trim() === 'Restore';
+    })[0];
+    restore.click();
+    return {
+      text: document.querySelector('#intro p').textContent,
+      edits: Ryker.instructions.edits().length,
+      alert: root.querySelector('.modal h2') && root.querySelector('.modal h2').textContent
+    };
+  })()`);
+  assert(restored.text === 'First paragraph restored after refresh.' &&
+    restored.edits === 1 && restored.alert === 'Changes restored',
+  'refresh offers and restores the checkpoint into the document and instructions',
+  JSON.stringify(restored));
+
+  await evaluate(sess, `(function () {
+    Ryker.dialog.closeTop();
+    return Ryker.recover.draft().then(function (draft) {
+      draft.baselineId = 'source-does-not-match';
+      draft.savedAt = new Date(Date.now() + 1000).toISOString();
+      return Ryker.recover.present(draft);
+    });
+  })()`);
+  await waitInPage(sess, `(function () {
+    var root = document.getElementById('ryker-root');
+    var title = root && root.shadowRoot.querySelector('.modal h2');
+    return title && title.textContent === 'Saved changes need review';
+  })()`, 10000, 'the baseline mismatch warning');
+  const mismatch = await evaluate(sess, `({
+    text: document.querySelector('#intro p').textContent,
+    edits: Ryker.instructions.edits().length
+  })`);
+  assert(mismatch.text === 'First paragraph restored after refresh.' && mismatch.edits === 1,
+    'a changed source is warned about and never receives automatic replay',
+    JSON.stringify(mismatch));
+
+  await evaluate(sess, `(function () {
+    Object.keys(localStorage).filter(function (key) {
+      return key.indexOf('ryker:draft:') === 0 || key.indexOf('ryker:recovery-seen:') === 0;
+    }).forEach(function (key) { localStorage.removeItem(key); });
+  })()`);
+}
+
+async function runAutoLists(sess, file) {
+  console.log(`\n${file} (automatic lists)`);
+  const code = readFileSync(join(DIST, file), 'utf8');
+
+  async function openEmptyParagraph() {
+    await navigate(sess, FIXTURE);
+    await evaluate(sess, code);
+    await waitInPage(sess, `!!(window.Ryker && document.getElementById('ryker-root'))`,
+      10000, 'Ryker to boot for automatic lists');
+    await new Promise((resolveWait) => setTimeout(resolveWait, 40));
+    await evaluate(sess, `(function () {
+      while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+      var paragraph = document.querySelector('#intro p');
+      var range = document.createRange();
+      range.selectNodeContents(paragraph); range.collapse(false);
+      var selection = window.getSelection();
+      selection.removeAllRanges(); selection.addRange(range); paragraph.focus();
+    })()`);
+    await sess.send('Input.dispatchKeyEvent', {
+      type: 'rawKeyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13
+    });
+    await sess.send('Input.dispatchKeyEvent', {
+      type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13
+    });
+  }
+
+  await openEmptyParagraph();
+  await sess.send('Input.insertText', { text: '1' });
+  await sess.send('Input.insertText', { text: '.' });
+  const orderedAtMarker = await evaluate(sess, `(function () {
+    var list = document.querySelector('#intro p').nextElementSibling;
+    return { tag: list && list.tagName, active: document.activeElement && document.activeElement.tagName };
+  })()`);
+  assert(orderedAtMarker.tag === 'OL' && orderedAtMarker.active === 'LI',
+  'typing "1." immediately starts an ordered list', JSON.stringify(orderedAtMarker));
+  await sess.send('Input.insertText', { text: ' ' });
+  const ordered = await evaluate(sess, `(function () {
+    var first = document.querySelector('#intro p');
+    var list = first.nextElementSibling;
+    var item = list && list.querySelector('li');
+    var made = {
+      tag: list && list.tagName, item: item && item.tagName,
+      empty: item && !(item.textContent || '').trim(), active: document.activeElement === item
+    };
+    var undo = Ryker.history.undo();
+    var paragraph = first.nextElementSibling;
+    var undone = { ok: undo, tag: paragraph && paragraph.tagName,
+      empty: paragraph && !(paragraph.textContent || '').trim() };
+    var redo = Ryker.history.redo();
+    list = first.nextElementSibling;
+    return { made: made, undone: undone, redone: redo && list && list.tagName };
+  })()`);
+  assert(ordered.made.tag === 'OL' && ordered.made.item === 'LI' &&
+    ordered.made.empty && ordered.made.active,
+  'the customary space after "1." is consumed and keeps the caret in the empty item',
+  JSON.stringify(ordered));
+  assert(ordered.undone.ok && ordered.undone.tag === 'P' && ordered.undone.empty &&
+    ordered.redone === 'OL',
+  'automatic ordered-list conversion supports undo and redo',
+  JSON.stringify(ordered));
+
+  await sess.send('Input.insertText', { text: 'First ordered item' });
+  const orderedInstructions = await evaluate(sess, `(function () {
+    Ryker.boot.save(false, 'Start a numbered procedure.');
+    return Ryker.pane.value();
+  })()`);
+  assert(/Insert a new ordered list \(<ol>\) containing one <li>/.test(orderedInstructions) &&
+    orderedInstructions.includes('<ol><li>First ordered item</li></ol>'),
+  'saved instructions preserve the semantic ordered-list wrapper',
+  orderedInstructions.slice(0, 700));
+
+  await openEmptyParagraph();
+  await sess.send('Input.insertText', { text: '*' });
+  await sess.send('Input.insertText', { text: ' ' });
+  const unordered = await evaluate(sess, `(function () {
+    var first = document.querySelector('#intro p');
+    var list = first.nextElementSibling;
+    var item = list && list.querySelector('li');
+    var made = { tag: list && list.tagName, item: item && item.tagName,
+      empty: item && !(item.textContent || '').trim(), active: document.activeElement === item };
+    Ryker.history.undo();
+    return { made: made, paragraph: first.nextElementSibling && first.nextElementSibling.tagName };
+  })()`);
+  assert(unordered.made.tag === 'UL' && unordered.made.item === 'LI' &&
+    unordered.made.empty && unordered.made.active && unordered.paragraph === 'P',
+  'typing "* " in a new empty paragraph starts an unordered list and can be undone',
+  JSON.stringify(unordered));
+
+  await sess.send('Input.insertText', { text: 'Keep * as ordinary text. ' });
+  const ordinary = await evaluate(sess, `(function () {
+    var node = document.querySelector('#intro p').nextElementSibling;
+    return { tag: node && node.tagName, text: node && node.textContent };
+  })()`);
+  assert(ordinary.tag === 'P' && ordinary.text.replace(/\u00a0/g, ' ') === 'Keep * as ordinary text. ',
+    'list markers inside ordinary paragraph text do not trigger conversion',
+    JSON.stringify(ordinary));
+}
+
+async function runAtomicSvg(sess, file) {
+  console.log(`\n${file} (atomic SVG removal)`);
+  const code = readFileSync(join(DIST, file), 'utf8');
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && document.getElementById('ryker-root'))`,
+    10000, 'Ryker to boot for SVG removal');
+  await new Promise((resolveWait) => setTimeout(resolveWait, 40));
+
+  const target = await evaluate(sess, `(function () {
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    var svg = document.querySelector('#media svg');
+    svg.scrollIntoView({ block: 'center' });
+    var r = svg.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2,
+      editable: svg.hasAttribute('contenteditable') };
+  })()`);
+  await sess.send('Input.dispatchMouseEvent', {
+    type: 'mousePressed', x: target.x, y: target.y, button: 'left', clickCount: 1
+  });
+  await sess.send('Input.dispatchMouseEvent', {
+    type: 'mouseReleased', x: target.x, y: target.y, button: 'left', clickCount: 1
+  });
+  await new Promise((resolveWait) => setTimeout(resolveWait, 30));
+  const selected = await evaluate(sess, `(function () {
+    var svg = document.querySelector('#media svg');
+    var sr = document.getElementById('ryker-root').shadowRoot;
+    return { picked: Ryker.pick.has(svg), classed: svg.classList.contains('ryker-pick'),
+      editable: svg.hasAttribute('contenteditable'),
+      deleteVisible: !!sr.querySelector('.fb-kill') &&
+        sr.querySelector('.fb-kill').style.display !== 'none' };
+  })()`);
+  assert(!target.editable && selected.picked && selected.classed && !selected.editable &&
+    selected.deleteVisible,
+  'clicking an SVG highlights it as one non-text-editable object with a Delete action',
+  JSON.stringify(selected));
+
+  await sess.send('Input.dispatchKeyEvent', {
+    type: 'rawKeyDown', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46
+  });
+  await sess.send('Input.dispatchKeyEvent', {
+    type: 'keyUp', key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46
+  });
+  const removed = await evaluate(sess, `(function () {
+    var gone = !document.querySelector('#media svg');
+    var dirty = Ryker.editable.isDirty();
+    var undo = Ryker.history.undo();
+    var restored = !!document.querySelector('#media svg');
+    var redo = Ryker.history.redo();
+    var removedAgain = !document.querySelector('#media svg');
+    Ryker.boot.save(false, 'Remove the obsolete chart.');
+    return { gone: gone, dirty: dirty, undo: undo, restored: restored,
+      redo: redo, removedAgain: removedAgain, edits: Ryker.instructions.edits(),
+      instructions: Ryker.pane.value() };
+  })()`);
+  assert(removed.gone && removed.dirty && removed.undo && removed.restored &&
+    removed.redo && removed.removedAgain,
+  'Delete removes the whole SVG and supports undo and redo', JSON.stringify(removed));
+  assert(/Delete the whole <svg>/.test(removed.instructions) &&
+    /including all paths, shapes, labels and attributes/.test(removed.instructions) &&
+    /<svg[^>]+aria-label="A tiny chart"/.test(removed.instructions),
+  'saved instructions identify the exact whole SVG removal',
+  JSON.stringify(removed.edits) + '\n' + removed.instructions.slice(0, 900));
 }
 
 
@@ -458,6 +960,128 @@ async function runMerge(sess, file) {
     Date.parse(x.savedAt) - Date.parse(y.savedAt)));
   assert(JSON.stringify(shuffled.steps) === JSON.stringify(inOrder.steps),
     'the fold does not depend on the order records arrive in');
+
+  const withNotes = await evaluate(sess, `(function () {
+    var records = ${JSON.stringify(RECORDS.SESSION_A)};
+    records[records.length - 1].saveNotes = [
+      { saveNumber: 1, text: 'Match the terminology used by the operations team.' },
+      { saveNumber: 3, text: 'The final wording is intentionally less absolute.' }
+    ];
+    var folded = Ryker.merge.fold(records);
+    return { notes: folded.notes, text: Ryker.merge.render(folded) };
+  })()`);
+  assert(withNotes.notes.length === 2 &&
+    withNotes.text.includes('Match the terminology used by the operations team.') &&
+    withNotes.text.includes('The final wording is intentionally less absolute.'),
+  'save-round context survives record folding and reaches the merged artifact',
+  JSON.stringify(withNotes));
+
+  const tagFold = await evaluate(sess, `(function () {
+    var records = [
+      { documentId: 'tag-doc', baselineId: 'tag-a', savedAt: '2026-08-17T10:00:00Z',
+        edits: [{ kind: 'replace', tag: 'H1', beforeTag: 'P', afterTag: 'H1',
+          before: 'Document title', after: 'Document title' }] },
+      { documentId: 'tag-doc', baselineId: 'tag-b', savedAt: '2026-08-17T10:01:00Z',
+        edits: [{ kind: 'replace', tag: 'H2', beforeTag: 'H1', afterTag: 'H2',
+          before: 'Document title', after: 'Document title' }] }
+    ];
+    var folded = Ryker.merge.fold(records);
+    return { steps: folded.steps, text: Ryker.merge.render(folded) };
+  })()`);
+  assert(tagFold.steps.length === 1 && tagFold.steps[0].beforeTag === 'P' &&
+    tagFold.steps[0].afterTag === 'H2' && /Change <p> to <h2>/.test(tagFold.text),
+  'successive heading-level changes compose without becoming text replacements',
+  JSON.stringify(tagFold));
+}
+
+async function runSaveNotes(sess, file) {
+  console.log(`\n${file} (save comments)`);
+  const code = readFileSync(join(DIST, file), 'utf8');
+
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, `localStorage.removeItem('ryker:save-notes')`);
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && document.getElementById('ryker-root'))`,
+    10000, 'Ryker to boot for save-comment checks');
+
+  const prompted = await evaluate(sess, `(function () {
+    Ryker.logger.record = function () { return Promise.resolve(true); };
+    var root = document.getElementById('ryker-root').shadowRoot;
+    var more = root.querySelector('button[aria-label="More actions"]');
+    more.click();
+    var menuLabels = Array.prototype.map.call(root.querySelectorAll('.menu-item'), function (n) {
+      return n.textContent.trim();
+    });
+    Ryker.menu.close();
+
+    var hit = Ryker.blocks.all()[3];
+    hit.node.textContent = 'Save-comment first edit.';
+    Ryker.editable.touch();
+    Array.prototype.filter.call(root.querySelectorAll('.bar button'), function (b) {
+      return b.textContent.trim() === 'Save';
+    })[0].click();
+    return {
+      enabled: Ryker.boot.saveNotesEnabled(),
+      menuLabels: menuLabels,
+      title: root.querySelector('.modal header h2').textContent,
+      textarea: !!root.querySelector('textarea.save-note'),
+      buttons: Array.prototype.map.call(root.querySelectorAll('.modal .foot button'), function (b) {
+        return b.textContent.trim();
+      })
+    };
+  })()`);
+  assert(prompted.enabled && prompted.menuLabels.includes('Disable save comments'),
+    'save comments are enabled by default and can be disabled from the ellipsis menu',
+    JSON.stringify(prompted));
+  assert(prompted.title === 'Add context to this save' && prompted.textarea &&
+    prompted.buttons.includes('Save without comment') && prompted.buttons.includes('Save with comment'),
+  'Save offers an optional context field without making a comment mandatory',
+  JSON.stringify(prompted));
+
+  const saved = await evaluate(sess, `(function () {
+    var root = document.getElementById('ryker-root').shadowRoot;
+    root.querySelector('textarea.save-note').value =
+      'Keep this concise because it appears in the customer-facing summary.';
+    Array.prototype.filter.call(root.querySelectorAll('.modal .foot button'), function (b) {
+      return b.textContent.trim() === 'Save with comment';
+    })[0].click();
+    return {
+      saves: Ryker.instructions.saveCount(),
+      notes: Ryker.instructions.saveNotes(),
+      pane: Ryker.pane.value()
+    };
+  })()`);
+  assert(saved.saves === 1 && saved.notes.length === 1 &&
+    saved.notes[0].saveNumber === 1 &&
+    saved.pane.includes('Keep this concise because it appears in the customer-facing summary.'),
+  'the comment is attached to its save round and included in the instruction artifact',
+  JSON.stringify(saved));
+
+  const disabled = await evaluate(sess, `(function () {
+    var root = document.getElementById('ryker-root').shadowRoot;
+    Ryker.boot.setSaveNotesEnabled(false);
+    var hit = Ryker.blocks.all()[4];
+    hit.node.textContent = 'Save-comment second edit.';
+    Ryker.editable.touch();
+    Array.prototype.filter.call(root.querySelectorAll('.bar button'), function (b) {
+      return b.textContent.trim() === 'Save';
+    })[0].click();
+    var dialog = Ryker.dialog.isOpen();
+    var saves = Ryker.instructions.saveCount();
+    var notes = Ryker.instructions.saveNotes();
+    var more = root.querySelector('button[aria-label="More actions"]');
+    more.click();
+    var labels = Array.prototype.map.call(root.querySelectorAll('.menu-item'), function (n) {
+      return n.textContent.trim();
+    });
+    Ryker.menu.close();
+    Ryker.boot.setSaveNotesEnabled(true);
+    return { dialog: dialog, saves: saves, notes: notes, labels: labels };
+  })()`);
+  assert(!disabled.dialog && disabled.saves === 2 && disabled.notes.length === 1 &&
+    disabled.labels.includes('Enable save comments'),
+  'disabling save comments makes Save immediate without inventing an empty note',
+  JSON.stringify(disabled));
 }
 
 // The change request log, end to end, against an in-memory filesystem.
@@ -472,6 +1096,11 @@ async function runLogging(sess, file) {
 
   await navigate(sess, FIXTURE);
   await evaluate(sess, FAKE_FS);
+  // Extension-mode document ids are URLs. This reproduces the real path that
+  // previously sent ':' and URL slashes into getDirectoryHandle().
+  await evaluate(sess, `window.RYKER_CONFIG = {
+    RYKER_DOCUMENT_ID: 'https://example.test/articles/report.html?preview=1'
+  }`);
   await evaluate(sess, code);
   await waitInPage(sess, `!!(window.Ryker && document.getElementById('ryker-root'))`,
     10000, 'Ryker to boot');
@@ -516,6 +1145,10 @@ async function runLogging(sess, file) {
   assert(afterGrant.paths.every((p) => /^ryker\/revisions\//.test(p)),
     'records land under the fixed relative path, not wherever',
     'paths: ' + JSON.stringify(afterGrant.paths));
+  assert(afterGrant.paths.every((p) =>
+    /^ryker\/revisions\/[A-Za-z0-9._-]+\/[^/]+\.json$/.test(p)),
+  'URL document ids become one filesystem-safe revision directory',
+  'paths: ' + JSON.stringify(afterGrant.paths));
 
   // A second save must not re-prompt.
   const second = await evaluate(sess, `(function () {
@@ -523,7 +1156,7 @@ async function runLogging(sess, file) {
     var hit = Ryker.blocks.all()[4];
     hit.node.textContent = 'Second edit for the log test.';
     Ryker.editable.touch();
-    Ryker.boot.save();
+    Ryker.boot.save(false, 'Keep terminology aligned with the source report.');
     return { dialogOpen: Ryker.dialog.isOpen() };
   })()`);
   assert(second.dialogOpen === false,
@@ -537,7 +1170,10 @@ async function runLogging(sess, file) {
     if (!names.length) return null;
     var rec = JSON.parse(files[names[names.length - 1]]);
     return { baselineId: rec.baselineId || null, edits: (rec.edits || []).length,
-             hasPrompt: !!rec.prompt };
+             changes: (rec.changes || []).length,
+             replayIds: (rec.changes || []).every(function (change) { return !!change.id; }),
+             hasPrompt: !!rec.prompt, saveNote: rec.saveNote || null,
+             saveNotes: rec.saveNotes || [] };
   })()`, 8000, 'a record on the fake disk');
 
   assert(!!written.baselineId,
@@ -546,6 +1182,54 @@ async function runLogging(sess, file) {
   assert(written.hasPrompt && written.edits > 0,
     'the record carries both the prose prompt and the structured pairs',
     JSON.stringify(written));
+  assert(written.changes > 0 && written.replayIds,
+    'the record carries replayable block identities for refresh recovery',
+    JSON.stringify(written));
+  assert(written.saveNote === 'Keep terminology aligned with the source report.' &&
+    written.saveNotes.some((n) => n.text === written.saveNote),
+  'the record carries both this round comment and cumulative save context',
+  JSON.stringify(written));
+
+  // Opening the browser on the same click path as a slow write must wait for
+  // createWritable().close(), rather than briefly and falsely showing no log.
+  const immediateBrowse = await evaluate(sess, `(function () {
+    Ryker.dialog.closeTop();
+    window.__fakeFsWriteDelay = 120;
+    var hit = Ryker.blocks.all()[5];
+    hit.node.textContent = 'Third edit opened while its log record is closing.';
+    Ryker.editable.touch();
+    Ryker.boot.save(false, 'Race-check save.');
+    Ryker.browser.open();
+    return document.getElementById('ryker-root').shadowRoot.textContent;
+  })()`);
+  assert(immediateBrowse.includes('Reading the folder'),
+    'the change-request browser shows a truthful loading state while a save is closing');
+  const browsedAfterWrite = await waitInPage(sess, `(function () {
+    var text = document.getElementById('ryker-root').shadowRoot.textContent;
+    return text.indexOf('Reading the folder') === -1 ? text : null;
+  })()`, 5000, 'the change-request browser to wait for the save write');
+  assert(/change request\(s\) logged for this document/.test(browsedAfterWrite) &&
+    !browsedAfterWrite.includes('No durable change-request records'),
+    'the change-request browser waits for in-flight writes before listing records');
+  await evaluate(sess, `window.__fakeFsWriteDelay = 0; Ryker.dialog.closeTop()`);
+
+  // Phase 2 restores granted-folder packaging through the same fs boundary.
+  // Put an ordinary source file beside the log, then prove the packager sees
+  // that file and does not expose the ryker/ corpus it deliberately skips.
+  await evaluate(sess,
+    `Ryker.fs.write(Ryker.fs.handle(), 'source-note.txt', 'ordinary package content')`);
+  await evaluate(sess, `Ryker.packager.open()`);
+  const packageText = await waitInPage(sess, `(function () {
+    if (!Ryker.dialog.isOpen()) return null;
+    return document.getElementById('ryker-root').shadowRoot.textContent;
+  })()`, 5000, 'the granted-folder package dialog');
+  assert(packageText.includes('source-note.txt'),
+    'the packager lists ordinary files through the shared filesystem',
+    packageText.slice(0, 500));
+  assert(!/save-\d+\.json/.test(packageText),
+    'the packager does not expose change-request records from the granted folder',
+    /save-\d+\.json/.test(packageText) ? packageText.slice(0, 500) : null);
+  await evaluate(sess, `Ryker.dialog.closeTop()`);
 
   // Read them back and fold them, which is the export path.
   const merged = await evaluate(sess,
@@ -567,10 +1251,10 @@ async function runLogging(sess, file) {
   // Clear removes them, and removes only them.
   const cleared = await evaluate(sess,
     `Ryker.logger.clear().then(function (n) {
-       return { removed: n, left: Object.keys(window.__fakeFsDump()).length };
+       return { removed: n, left: Object.keys(window.__fakeFsDump()) };
      })`);
-  assert(cleared.removed >= 1 && cleared.left === 0,
-    'clearing the log removes every record',
+  assert(cleared.removed >= 1 && JSON.stringify(cleared.left) === JSON.stringify(['source-note.txt']),
+    'clearing the log removes every record and leaves unrelated files alone',
     JSON.stringify(cleared));
 
   // A cancelled picker is not an error, and must not leave a stuck state.
@@ -611,6 +1295,36 @@ async function runLogging(sess, file) {
   assert(uncloneable.on === true,
     'the folder still works for this session when it cannot be remembered',
     JSON.stringify(uncloneable));
+
+  // The extension cannot use a content script's page-owned IndexedDB. Its
+  // storage adapter must be injectable without changing the logger or any file
+  // consumer, which is the seam sow-007 depends on.
+  const adapter = await evaluate(sess, `(function () {
+    var bag = {};
+    Ryker.fs.usePersistence({
+      get: function (key) { return Promise.resolve(bag[key] || null); },
+      set: function (key, value) { bag[key] = value; return Promise.resolve(true); },
+      remove: function (key) { delete bag[key]; return Promise.resolve(true); }
+    });
+    return Ryker.fs.remember('extension-probe', 'owned-by-extension')
+      .then(function () { return Ryker.fs.recall('extension-probe'); })
+      .then(function (remembered) {
+        return Ryker.fs.forget('extension-probe').then(function () {
+          return Ryker.fs.recall('extension-probe').then(function (forgotten) {
+            return { remembered: remembered, forgotten: forgotten };
+          });
+        });
+      });
+  })()`);
+  assert(adapter.remembered === 'owned-by-extension' && adapter.forgotten === null,
+    'filesystem handle persistence can be replaced by an extension-owned adapter',
+    JSON.stringify(adapter));
+
+  const traversal = await evaluate(sess,
+    `Ryker.fs.read(Ryker.fs.handle(), '../outside.txt')
+      .then(function () { return false; }, function () { return true; })`);
+  assert(traversal === true,
+    'filesystem paths cannot escape the folder that was granted');
 }
 
 // Moves: 322 lines of order derivation that nothing covered.
@@ -759,6 +1473,333 @@ async function runMove(sess, file) {
   }
 }
 
+// The extension bundle shares every source module with the drop-in but has the
+// opposite activation rule: loading the file must do nothing until a toolbar
+// click explicitly calls start(). This exercises that boundary in real Chrome
+// without granting the test browser standing extension access.
+async function runExtension(sess) {
+  console.log('\nextension/ryker.js (activation)');
+  const code = readFileSync(join(EXTENSION, 'ryker.js'), 'utf8');
+  const manifest = JSON.parse(readFileSync(join(EXTENSION, 'manifest.json'), 'utf8'));
+  const worker = readFileSync(join(EXTENSION, 'service-worker.js'), 'utf8');
+
+  assert(manifest.manifest_version === 3,
+    'the unpacked extension uses Manifest V3');
+  assert(manifest.description ===
+    'Ryker adds inline editing to HTML and Markdown, saving changes directly or exporting prompt-ready machine-readable change requests.' &&
+    manifest.description.length <= 132,
+  'the manifest carries the product description within Chrome\'s 132-character limit',
+  `${manifest.description.length} characters: ${manifest.description}`);
+  assert(['activeTab', 'scripting', 'storage'].every((p) => manifest.permissions.includes(p)),
+    'the manifest declares only the capabilities its activation path uses',
+    JSON.stringify(manifest.permissions));
+  const iconSizes = ['16', '32', '48', '128'];
+  assert(iconSizes.every((size) => manifest.icons[size] === `icons/ryker-${size}.png` &&
+    manifest.action.default_icon[size] === manifest.icons[size] &&
+    existsSync(join(EXTENSION, manifest.icons[size]))),
+  'the extension listing and toolbar action carry every required icon size',
+  JSON.stringify({ icons: manifest.icons, action: manifest.action.default_icon }));
+  assert(/chrome\.action\.onClicked\.addListener/.test(worker),
+    'the service worker activates from the toolbar action');
+  assert(/chrome\.tabs\.update/.test(worker) && /getURL\('workspace\.html'\)/.test(worker) &&
+    ['workspace.html', 'workspace.css', 'workspace.js'].every((name) => existsSync(join(EXTENSION, name))),
+  'protected tabs route to the packaged local-document workspace');
+  assert(/Ryker\.boot\.toggle\(\)/.test(worker) && /indexOf\('closed'\)/.test(worker),
+    'a second toolbar action closes Ryker and clears its ON state');
+  assert(worker.indexOf("func: function () {") < worker.indexOf("files: ['ryker.js']") &&
+    /closed-stale/.test(worker) && /Ryker\.shell\.teardown\(\)/.test(worker) &&
+    /Ryker\.editable\.disable\(\)/.test(worker),
+  'the action retires a stale injected bundle before loading the current one');
+
+  await navigate(sess, FIXTURE);
+  const pristine = await evaluate(sess,
+    `'<!DOCTYPE html>\\n' + document.documentElement.outerHTML`);
+  await evaluate(sess, code);
+
+  const idle = await evaluate(sess, `({
+    surface: Ryker.SURFACE,
+    mounted: !!document.getElementById('ryker-root'),
+    current: '<!DOCTYPE html>\\n' + document.documentElement.outerHTML
+  })`);
+  assert(idle.surface === 'extension',
+    'the generated extension bundle identifies its surface');
+  assert(idle.mounted === false && idle.current === pristine,
+    'loading the extension bundle alone leaves the page character-identical');
+
+  const mounted = await evaluate(sess, `(function () {
+    Ryker.extensionConfig = { RYKER_DOCUMENT_ID: 'extension-fixture' };
+    Ryker.boot.start();
+    return {
+      roots: document.querySelectorAll('#ryker-root').length,
+      id: Ryker.config.load().RYKER_DOCUMENT_ID,
+      build: Ryker.BUILD
+    };
+  })()`);
+  assert(mounted.roots === 1 && mounted.id === 'extension-fixture',
+    'explicit activation mounts one toolbar with extension-owned configuration',
+    JSON.stringify(mounted));
+
+  await evaluate(sess, code);
+  const again = await evaluate(sess, `(function () {
+    Ryker.boot.start();
+    return document.querySelectorAll('#ryker-root').length;
+  })()`);
+  assert(again === 1,
+    'repeated toolbar activation does not mount a second Ryker');
+
+  const toggled = await evaluate(sess, `(function () {
+    var target = document.querySelector('main p');
+    target.textContent += ' Unsaved toggle check.';
+    target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+    var closeResult = Ryker.boot.toggle();
+    var root = document.getElementById('ryker-root');
+    var closed = {
+      result: closeResult,
+      active: Ryker.boot.isOpen(),
+      display: root.style.display,
+      editable: document.querySelectorAll('[contenteditable="true"]').length,
+      pushed: document.body.hasAttribute('data-ryker-pushed'),
+      text: target.textContent
+    };
+    var openResult = Ryker.boot.toggle();
+    return {
+      closed: closed,
+      opened: {
+        result: openResult,
+        active: Ryker.boot.isOpen(),
+        roots: document.querySelectorAll('#ryker-root').length,
+        editable: document.querySelectorAll('[contenteditable="true"]').length,
+        text: target.textContent
+      }
+    };
+  })()`);
+  assert(toggled.closed.result === false && toggled.closed.active === false &&
+    toggled.closed.display === 'none' && toggled.closed.editable === 0 && !toggled.closed.pushed,
+  'the second action hides Ryker, removes editability and restores page layout',
+  JSON.stringify(toggled.closed));
+  assert(toggled.opened.result === true && toggled.opened.active === true &&
+    toggled.opened.roots === 1 && toggled.opened.editable === EXPECTED_EDITABLE,
+  'the next action reopens the same single Ryker session', JSON.stringify(toggled.opened));
+  assert(toggled.closed.text.endsWith('Unsaved toggle check.') &&
+    toggled.opened.text === toggled.closed.text,
+  'closing and reopening preserves unsaved page edits');
+
+  await navigate(sess, ARTICLE_FIXTURE);
+  await evaluate(sess, code);
+  const article = await evaluate(sess, `(function () {
+    Ryker.extensionConfig = { RYKER_DOCUMENT_ID: 'nested-article-fixture' };
+    Ryker.boot.start();
+    var tree = Ryker.outline.tree();
+    var root = document.getElementById('ryker-root').shadowRoot;
+    var active = root.querySelector('.rail-toggle.on');
+    var count = root.querySelector('button.count-only');
+    return {
+      mode: Ryker.outline.mode(),
+      labels: Ryker.outline.rows().map(function (h) { return h.textContent.trim(); }),
+      tree: tree.map(function (n) {
+        return { label: n.label, children: n.children.map(function (c) {
+          return { label: c.label, children: c.children.map(function (g) { return g.label; }) };
+        }) };
+      }),
+      scopeControls: root.querySelectorAll('.rail-scope .scope-choice').length,
+      articlePressed: root.querySelector('.scope-choice').getAttribute('aria-pressed'),
+      activeBackground: active && getComputedStyle(active).backgroundColor,
+      countBackground: getComputedStyle(count).backgroundColor,
+      countBorder: getComputedStyle(count).borderTopColor
+    };
+  })()`);
+  assert(article.mode === 'article' && JSON.stringify(article.labels) === JSON.stringify([
+    'How the migration worked', 'What was running', 'The smaller service', 'Where it stands now'
+  ]), 'article scope finds the nested article and excludes page chrome and hidden duplicate titles',
+  JSON.stringify(article));
+  assert(article.tree.length === 1 && article.tree[0].children.length === 2 &&
+    article.tree[0].children[0].children[0] === 'The smaller service',
+  'article headings retain their h1/h2/h3 hierarchy', JSON.stringify(article.tree));
+  assert(article.scopeControls === 2 && article.articlePressed === 'true',
+    'the outline exposes Article and Full page as a visible scope choice');
+  assert(article.activeBackground !== 'rgb(79, 70, 229)',
+    'active controls use a neutral treatment instead of the former blue');
+  assert(article.countBackground === 'rgba(0, 0, 0, 0)' &&
+    article.countBorder === 'rgba(0, 0, 0, 0)',
+  'the revision count has no visible outer button container', JSON.stringify(article));
+
+  const page = await evaluate(sess, `(function () {
+    Ryker.outline.setMode('page');
+    return {
+      mode: Ryker.outline.mode(),
+      labels: Ryker.outline.rows().map(function (h) { return h.textContent.trim(); }),
+      navigational: Ryker.outline.tree().filter(function (row) { return !row.editable; })
+        .map(function (row) { return row.label; })
+    };
+  })()`);
+  assert(page.mode === 'page' && page.labels.length === 8 &&
+    page.labels.includes('Publisher name') && page.labels.includes('Related stories') &&
+    page.labels.includes('About the publisher') && !page.labels.includes('Hidden responsive article title'),
+  'Full page scope includes every visible page heading without responsive duplicates', JSON.stringify(page));
+  assert(page.navigational.includes('Publisher name'),
+    'headings outside editable content remain safe navigation-only outline rows',
+  JSON.stringify(page.navigational));
+
+  // Drive the actual service-worker listener with a small Chrome API adapter.
+  // Deleting the new toggle method reproduces a tab injected before an unpacked
+  // extension reload: the exact state that left the owner's toolbar, pane and
+  // editable outlines behind after the badge was clicked off.
+  async function clickThroughWorker() {
+    let listener = null;
+    let badge = null;
+    let title = null;
+    let finish;
+    const done = new Promise((resolve) => { finish = resolve; });
+    const chrome = {
+      action: {
+        onClicked: { addListener(fn) { listener = fn; } },
+        setBadgeBackgroundColor() {},
+        setBadgeText(opts) { badge = opts.text; },
+        setTitle(opts) { title = opts.title; finish(); }
+      },
+      storage: { local: { get() { return Promise.resolve({}); } } },
+      scripting: {
+        executeScript(opts) {
+          if (opts.files) return evaluate(sess, code).then(() => []);
+          const source = '(' + opts.func.toString() + ').apply(null,' +
+            JSON.stringify(opts.args || []) + ')';
+          return evaluate(sess, source).then((result) => [{ result }]);
+        }
+      }
+    };
+    Function('chrome', worker)(chrome);
+    listener({ id: 7 });
+    await Promise.race([
+      done,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('worker click timed out')), 3000))
+    ]);
+    return { badge, title };
+  }
+
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, code);
+  await evaluate(sess, `(function () {
+    Ryker.extensionConfig = { RYKER_DOCUMENT_ID: 'stale-extension-fixture' };
+    Ryker.boot.start();
+    delete Ryker.boot.toggle;
+  })()`);
+  const staleClosedBadge = await clickThroughWorker();
+  const staleClosed = await evaluate(sess, `({
+    root: !!document.getElementById('ryker-root'),
+    css: !!document.getElementById('ryker-document-css'),
+    editable: document.querySelectorAll('[contenteditable="true"]').length,
+    pushed: document.body.hasAttribute('data-ryker-pushed'),
+    ryker: !!window.Ryker
+  })`);
+  assert(staleClosedBadge.badge === '' && !staleClosed.root && !staleClosed.css &&
+    staleClosed.editable === 0 && !staleClosed.pushed && !staleClosed.ryker,
+  'an action click fully retires a stale injected Ryker session',
+  JSON.stringify({ badge: staleClosedBadge, page: staleClosed }));
+
+  const upgradedBadge = await clickThroughWorker();
+  const upgraded = await evaluate(sess, `({
+    root: document.querySelectorAll('#ryker-root').length,
+    editable: document.querySelectorAll('[contenteditable="true"]').length,
+    toggle: !!(window.Ryker && Ryker.boot && Ryker.boot.toggle)
+  })`);
+  assert(upgradedBadge.badge === 'ON' && upgraded.root === 1 &&
+    upgraded.editable === EXPECTED_EDITABLE && upgraded.toggle,
+  'the next action loads the current bundle after retiring the stale one',
+  JSON.stringify({ badge: upgradedBadge, page: upgraded }));
+}
+
+async function runWorkspace(sess) {
+  console.log('\nextension/workspace.html (local documents)');
+
+  await navigate(sess, WORKSPACE_FIXTURE);
+  await waitInPage(sess, `!!window.RykerWorkspace`, 10000, 'Ryker workspace to initialise');
+  const landing = await evaluate(sess, `({
+    title: document.querySelector('#workspace-title').textContent,
+    accept: document.querySelector('#workspace-file').getAttribute('accept'),
+    brand: !!document.querySelector('.workspace-brand img'),
+    mounted: !!document.getElementById('ryker-root'),
+    theme: {
+      shared: !!(Ryker.theme && Ryker.styles.LIGHT === Ryker.theme.cssText),
+      rootBg: getComputedStyle(document.documentElement).getPropertyValue('--rk-bg').trim(),
+      barBg: getComputedStyle(document.querySelector('.workspace-bar')).backgroundColor,
+      muted: getComputedStyle(document.querySelector('.workspace-brand')).color
+    }
+  })`);
+  assert(landing.title === 'Open an HTML or Markdown file' &&
+    /\.html/.test(landing.accept) && /\.md/.test(landing.accept) && landing.brand && !landing.mounted,
+  'the workspace opens with Ryker branding and an HTML/Markdown file control',
+  JSON.stringify(landing));
+  assert(landing.theme.shared && landing.theme.rootBg === '#ffffff' &&
+    landing.theme.barBg === 'rgb(255, 255, 255)' && landing.theme.muted === 'rgb(107, 114, 128)',
+  'the extension workspace and Ryker Lite chrome use the same canonical theme tokens',
+  JSON.stringify(landing.theme));
+
+  const workspaceRadius = await evaluate(sess, `(function () {
+    document.body.classList.add('workspace-dragging');
+    var value = getComputedStyle(document.querySelector('.workspace-open')).borderTopLeftRadius;
+    document.body.classList.remove('workspace-dragging');
+    return value;
+  })()`);
+  assert(workspaceRadius === '4px', 'the extension workspace uses the same 4px corner radius',
+  workspaceRadius);
+
+  const markdown = await evaluate(sess, `RykerWorkspace.openText('notes.md',
+    '# Project notes\\n\\nA **prompt-ready** paragraph.\\n\\n- First\\n- Second').then(function (opened) {
+      var root = document.getElementById('ryker-root');
+      return {
+        opened: opened,
+        mounted: !!root,
+        heading: document.querySelector('#workspace-document h1').textContent,
+        strong: document.querySelector('#workspace-document strong').textContent,
+        items: document.querySelectorAll('#workspace-document li').length,
+        loaded: document.body.classList.contains('workspace-loaded'),
+        id: Ryker.config.load().RYKER_DOCUMENT_ID
+      };
+    })`);
+  assert(markdown.mounted && markdown.loaded && markdown.heading === 'Project notes' &&
+    markdown.strong === 'prompt-ready' && markdown.items === 2 &&
+    /^upload:notes\.md:/.test(markdown.id) && markdown.opened.blocks > 0,
+  'opening Markdown renders semantic content under the full Ryker toolbar',
+  JSON.stringify(markdown));
+
+  await navigate(sess, WORKSPACE_FIXTURE);
+  await waitInPage(sess, `!!window.RykerWorkspace`, 10000, 'Ryker workspace to reset');
+  const html = await evaluate(sess, `RykerWorkspace.openText('page.html',
+    '<!doctype html><html><body><script>window.__unsafe = true;<\\/script>' +
+    '<h1 onclick="window.__unsafe=true" style="position:fixed">Safe title</h1>' +
+    '<p>Editable body.</p></body></html>').then(function (opened) {
+      var heading = document.querySelector('#workspace-document h1');
+      return {
+        mounted: !!document.getElementById('ryker-root'),
+        unsafe: !!window.__unsafe,
+        script: !!document.querySelector('#workspace-document script'),
+        onclick: heading && heading.hasAttribute('onclick'),
+        style: heading && heading.hasAttribute('style'),
+        heading: heading && heading.textContent,
+        blocks: opened.blocks
+      };
+    })`);
+  assert(html.mounted && !html.unsafe && !html.script && !html.onclick && !html.style &&
+    html.heading === 'Safe title' && html.blocks > 0,
+  'opening HTML removes active content before enabling inline editing',
+  JSON.stringify(html));
+
+  const worker = readFileSync(join(EXTENSION, 'service-worker.js'), 'utf8');
+  let listener = null;
+  let redirect = null;
+  const chrome = {
+    action: { onClicked: { addListener(fn) { listener = fn; } } },
+    runtime: { getURL(path) { return 'chrome-extension://ryker/' + path; } },
+    tabs: { update(id, options) { redirect = { id, ...options }; } }
+  };
+  Function('chrome', worker)(chrome);
+  listener({ id: 11, url: 'chrome://newtab/' });
+  assert(redirect && redirect.id === 11 &&
+    redirect.url === 'chrome-extension://ryker/workspace.html',
+  'clicking Ryker on New Tab migrates that tab to the local-document workspace',
+  JSON.stringify(redirect));
+}
+
 const bundles = ['ryker.js'].filter((f) => existsSync(join(DIST, f)));
 if (!bundles.length) {
   console.error('No bundle found in drop-in/dist. Run: node drop-in/build/bundle.mjs');
@@ -767,7 +1808,9 @@ if (!bundles.length) {
 
 const sess = await launch();
 try {
-  for (const file of bundles) { await runBuild(sess, file); await runMerge(sess, file); await runMove(sess, file); await runPackager(sess, file); await runLogging(sess, file); await runFailureIsolation(sess, file); }
+  for (const file of bundles) { await runBuild(sess, file); await runBlockTypes(sess, file); await runAutoLists(sess, file); await runAtomicSvg(sess, file); await runRecovery(sess, file); await runMerge(sess, file); await runSaveNotes(sess, file); await runMove(sess, file); await runPackager(sess, file); await runLogging(sess, file); await runFailureIsolation(sess, file); }
+  await runExtension(sess);
+  await runWorkspace(sess);
 } finally {
   await sess.close();
 }

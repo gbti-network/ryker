@@ -14,8 +14,8 @@ jobs:
       - uses: actions/checkout@v4
 
       # Node 22 specifically. The test harness drives Chrome over the DevTools
-      # Protocol using the global WebSocket, which is what lets this repository
-      # have no package.json and no node_modules. On an older Node there is no
+      # Protocol using the global WebSocket, which keeps the test harness free
+      # of runtime dependencies and node_modules. On an older Node there is no
       # global WebSocket and the suite cannot run at all.
       - uses: actions/setup-node@v4
         with:
@@ -42,10 +42,10 @@ jobs:
       # just regenerated it, so any diff here is exactly that.
       - name: Fail if the committed bundle is stale
         run: |
-          if ! git diff --quiet -- drop-in/dist; then
-            echo "drop-in/dist is out of date with drop-in/src."
+          if ! git diff --quiet -- drop-in/dist extension/ryker.js; then
+            echo "A generated Ryker bundle is out of date with drop-in/src."
             echo "Run: node drop-in/build/bundle.mjs, and commit the result."
-            git diff --stat -- drop-in/dist
+            git diff --stat -- drop-in/dist extension/ryker.js
             exit 1
           fi
 
@@ -53,3 +53,9 @@ jobs:
         run: node test/run.mjs
         env:
           RYKER_CHROME: google-chrome
+
+      - name: Test the npm installer CLI
+        run: npm run test:cli
+
+      - name: Inspect the npm package boundary
+        run: npm run package:preview

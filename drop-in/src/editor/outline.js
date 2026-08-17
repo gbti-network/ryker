@@ -7,6 +7,11 @@
 // own scroller. kindOf() reads what a row CONTAINS, so the wrapper still reads
 // as a table and carries the table glyph.
 //
+// On the extension surface the page was not authored for Ryker, so the outline
+// is deliberately heading-first. Article scope finds one likely reading region
+// and Full Page shows every visible heading. The drop-in keeps the report row
+// model below: its authored structure is known and every row is operable.
+//
 // Rows nest by heading rank rather than by DOM nesting, because an h3 does not
 // wrap the paragraphs that follow it. Every heading in both reports is a direct
 // child of its section, which is what makes the single-pass stack below correct;
@@ -16,6 +21,10 @@ Ryker.outline = (function () {
 
   var CHROME = { HEADER: 1, FOOTER: 1, NAV: 1, SCRIPT: 1, STYLE: 1, TEMPLATE: 1 };
   var HEADING = /^H([1-6])$/;
+  var HEADING_SELECTOR = 'h1,h2,h3,h4,h5,h6';
+  var scopeMode = null;
+  var articleRoot = null;
+  var scopeListeners = [];
 
   function root() { return Ryker.blocks.root(); }
 
@@ -24,8 +33,103 @@ Ryker.outline = (function () {
     return m ? parseInt(m[1], 10) : 0;
   }
 
+  function visible(el) {
+    if (!el || !el.isConnected || el.closest('#ryker-root,[hidden],[aria-hidden="true"],template')) return false;
+    var n = el;
+    while (n && n.nodeType === 1) {
+      var s = window.getComputedStyle ? window.getComputedStyle(n) : null;
+      if (s && (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse')) return false;
+      n = n.parentElement;
+    }
+    return !el.getClientRects || el.getClientRects().length > 0;
+  }
+
+  function visibleHeadings(host) {
+    var out = [];
+    if (!host) return out;
+    if (HEADING.test(host.tagName || '') && visible(host)) out.push(host);
+    Array.prototype.forEach.call(host.querySelectorAll(HEADING_SELECTOR), function (h) {
+      if (visible(h)) out.push(h);
+    });
+    return out;
+  }
+
+  function articleScore(el) {
+    var headings = visibleHeadings(el).length;
+    var paragraphs = el.querySelectorAll('p').length;
+    var text = Ryker.dom.textOf(el).length;
+    var links = el.querySelectorAll('a').length;
+    return Math.min(text, 12000) + headings * 700 + paragraphs * 90 - links * 18;
+  }
+
+  // Choose the strongest semantic article, then widen just far enough to take
+  // in its visible h1. Many publishing systems place the title beside rather
+  // than inside <article>; stopping at the first title-bearing ancestor handles
+  // that shape without admitting the page header, recommendations or footer.
+  function detectArticle() {
+    var seen = [], candidates = [];
+    Array.prototype.forEach.call(document.querySelectorAll(
+      'article,[role="article"],[itemprop~="articleBody"]'), function (el) {
+      if (seen.indexOf(el) !== -1 || !visible(el)) return;
+      seen.push(el);
+      if (visibleHeadings(el).length || el.querySelectorAll('p').length > 1) candidates.push(el);
+    });
+    candidates.sort(function (a, b) { return articleScore(b) - articleScore(a); });
+    var chosen = candidates[0] || null;
+    if (!chosen) return null;
+
+    var boundary = document.querySelector('main') || document.body;
+    var p = chosen.parentElement;
+    while (p && p !== boundary && p !== document.body) {
+      var ownsOneArticle = p.querySelectorAll('article,[role="article"]').length <= 1;
+      var hasTitle = visibleHeadings(p).some(function (h) { return h.tagName === 'H1'; });
+      if (ownsOneArticle && hasTitle) { chosen = p; break; }
+      p = p.parentElement;
+    }
+    return chosen;
+  }
+
+  function ensureScope() {
+    if (scopeMode) return;
+    if (Ryker.SURFACE !== 'extension') { scopeMode = 'document'; return; }
+    articleRoot = detectArticle();
+    scopeMode = articleRoot && visibleHeadings(articleRoot).length > 1 ? 'article' : 'page';
+  }
+
+  function mode() { ensureScope(); return scopeMode; }
+
+  function setMode(next) {
+    ensureScope();
+    if (Ryker.SURFACE !== 'extension' || (next !== 'article' && next !== 'page')) return false;
+    if (next === 'article') articleRoot = detectArticle();
+    if (next === 'article' && !articleRoot) return false;
+    if (scopeMode === next) return true;
+    scopeMode = next;
+    scopeListeners.forEach(function (fn) { try { fn(next); } catch (e) {} });
+    return true;
+  }
+
+  function onScopeChange(fn) { scopeListeners.push(fn); }
+
+  function scopeRoot() {
+    ensureScope();
+    if (scopeMode === 'article') return articleRoot || detectArticle() || root();
+    if (scopeMode === 'page') return document.body;
+    return root();
+  }
+
+  function scopeLabel() {
+    var r = scopeRoot();
+    var h = visibleHeadings(r).filter(function (n) { return n.tagName === 'H1'; })[0];
+    var label = h ? Ryker.dom.textOf(h) : (r.getAttribute && (r.getAttribute('aria-label') || r.id));
+    return clip(label || document.title || (mode() === 'article' ? 'Article' : 'Full page'), 44);
+  }
+
   // Every element the outline is willing to show, in document order.
   function rows() {
+    ensureScope();
+    if (Ryker.SURFACE === 'extension') return visibleHeadings(scopeRoot());
+
     var out = [];
     var hosts = [];
     var main = root();
@@ -65,7 +169,7 @@ Ryker.outline = (function () {
     flat.forEach(function (el) {
       var rank = rankOf(el);
       var node = { el: el, rank: rank, kind: kindOf(el), label: label(el),
-                   key: keyOf(el), children: [] };
+                   key: keyOf(el), editable: blocksIn(el).length > 0, children: [] };
       if (rank) {
         while (stack.length && stack[stack.length - 1].rank >= rank) stack.pop();
         (stack.length ? stack[stack.length - 1].children : top).push(node);
@@ -176,6 +280,8 @@ Ryker.outline = (function () {
 
   return {
     rows: rows, tree: tree, unitOf: unitOf, kindOf: kindOf, label: label,
-    keyOf: keyOf, rowsFor: rowsFor, blocksIn: blocksIn, rankOf: rankOf
+    keyOf: keyOf, rowsFor: rowsFor, blocksIn: blocksIn, rankOf: rankOf,
+    mode: mode, setMode: setMode, scopeRoot: scopeRoot, scopeLabel: scopeLabel,
+    onScopeChange: onScopeChange
   };
 })();

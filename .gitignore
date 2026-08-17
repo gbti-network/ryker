@@ -1,3 +1,8 @@
 .data/
 .snapshots/
+.npm-cache/
+/gbti-ryker-*.tgz
 .product/
+/scripts/*
+!/scripts/sync-placement-audits.ps1
+!/scripts/sync-placement-audits.sh

@@ -11,7 +11,8 @@
 Ryker.rail = (function () {
   'use strict';
 
-  var node = null, body = null, countEl = null;
+  var node = null, body = null, countEl = null, scopeLabelEl = null;
+  var scopeButtons = {};
   var open = false, built = false;
   var closed = {};
   var rebuildTimer = 0;
@@ -20,7 +21,7 @@ Ryker.rail = (function () {
 
   function d() { return Ryker.dom; }
   function docId() { return Ryker.config.load().RYKER_DOCUMENT_ID; }
-  function closedKey() { return 'ryker:rail-closed:' + docId(); }
+  function closedKey() { return 'ryker:rail-closed:' + docId() + ':' + Ryker.outline.mode(); }
   function widthKey() { return 'ryker:rail-width'; }
 
   function loadClosed() {
@@ -61,7 +62,7 @@ Ryker.rail = (function () {
     countEl = d().el('span', { class: 'rail-count' });
     body = d().el('div', { class: 'rail-body', role: 'tree', 'aria-label': 'Document outline' });
 
-    node = d().el('aside', { class: 'rail', role: 'complementary', 'aria-label': 'Ryker outline' }, [
+    var parts = [
       d().el('div', { class: 'rail-grip', title: 'Drag to resize', tabindex: '0',
                       role: 'separator', 'aria-label': 'Resize the outline' }),
       d().el('header', {}, [
@@ -69,9 +70,12 @@ Ryker.rail = (function () {
         countEl,
         d().el('span', { class: 'spacer' }),
         Ryker.icons.button('close', 'Hide the outline', function () { toggle(false); })
-      ]),
-      body
-    ]);
+      ])
+    ];
+    if (Ryker.SURFACE === 'extension') parts.push(buildScope());
+    parts.push(body);
+
+    node = d().el('aside', { class: 'rail', role: 'complementary', 'aria-label': 'Ryker outline' }, parts);
     node.style.display = 'none';
     Ryker.shell.add(node);
     initResize();
@@ -79,6 +83,36 @@ Ryker.rail = (function () {
     applyWidth(storedWidth());
     render();
     return node;
+  }
+
+  function buildScope() {
+    scopeButtons.article = d().el('button', { class: 'rk scope-choice', type: 'button', text: 'Article',
+      onclick: function () { changeScope('article'); } });
+    scopeButtons.page = d().el('button', { class: 'rk scope-choice', type: 'button', text: 'Full page',
+      onclick: function () { changeScope('page'); } });
+    scopeLabelEl = d().el('div', { class: 'scope-label' });
+    return d().el('div', { class: 'rail-scope', role: 'group', 'aria-label': 'Outline scope' }, [
+      d().el('div', { class: 'scope-choices' }, [scopeButtons.article, scopeButtons.page]),
+      scopeLabelEl
+    ]);
+  }
+
+  function changeScope(next) {
+    if (!Ryker.outline.setMode(next)) {
+      if (Ryker.pane) Ryker.pane.flash('No article region was found on this page.', 'warn');
+    }
+  }
+
+  function syncScope() {
+    if (!scopeLabelEl) return;
+    var mode = Ryker.outline.mode();
+    Object.keys(scopeButtons).forEach(function (name) {
+      var button = scopeButtons[name];
+      var on = name === mode;
+      button.classList.toggle('on', on);
+      button.setAttribute('aria-pressed', String(on));
+    });
+    scopeLabelEl.textContent = (mode === 'article' ? 'Article: ' : 'Page: ') + Ryker.outline.scopeLabel();
   }
 
   function glyph(kind) {
@@ -89,6 +123,7 @@ Ryker.rail = (function () {
   function render() {
     if (!built) return;
     body.innerHTML = '';
+    syncScope();
     var n = 0;
     Ryker.outline.tree().forEach(function (row) { n += draw(row, 0, body); });
     countEl.textContent = String(n);
@@ -112,12 +147,13 @@ Ryker.rail = (function () {
 
     var el = d().el('div', {
       class: 'rail-row k-' + row.kind + (row.rank ? ' r' + row.rank : ''),
-      role: 'treeitem', tabindex: '-1', draggable: 'true',
+      role: 'treeitem', tabindex: '-1', draggable: row.editable ? 'true' : 'false',
       // A row that can be dragged has to say so somewhere, and the alternative
       // was a line of instructions in the header taking permanent room to
       // explain a gesture most people will try anyway.
-      title: 'Drag to move it. Alt with the arrow keys moves it one place. ' +
-             'Right-click for more.',
+      title: row.editable
+        ? 'Drag to move it. Alt with the arrow keys moves it one place. Right-click for more.'
+        : 'Navigate to this heading. This area is outside Ryker\'s editable content.',
       'aria-level': String(row.rank || (depth + 1)),
       style: 'padding-left:' + (6 + depth * 13) + 'px'
     }, [
@@ -128,12 +164,15 @@ Ryker.rail = (function () {
     el.__row = row;
 
     el.addEventListener('click', function () { el.focus(); activate(row); });
+    if (!row.editable) el.classList.add('navigation-only');
     el.addEventListener('contextmenu', function (e) {
+      if (!row.editable) return;
       e.preventDefault();
       e.stopPropagation();
       menuFor(row, e.clientX, e.clientY);
     });
     el.addEventListener('dragstart', function (e) {
+      if (!row.editable) { e.preventDefault(); return; }
       dragging = row;
       el.classList.add('dragging');
       try {
@@ -151,6 +190,7 @@ Ryker.rail = (function () {
     // into next, and a bare arrow that silently rewrites the document is the
     // wrong default for a list someone is reading.
     el.addEventListener('keydown', function (e) {
+      if (!row.editable) return;
       if (!e.altKey || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
       e.preventDefault();
       e.stopPropagation();
@@ -179,7 +219,8 @@ Ryker.rail = (function () {
   }
 
   function activate(row) {
-    Ryker.pick.set(blocksOf(Ryker.outline.unitOf(row.el)));
+    if (row.editable) Ryker.pick.set(blocksOf(Ryker.outline.unitOf(row.el)));
+    else Ryker.pick.clear();
     try { row.el.scrollIntoView({ block: 'start', behavior: 'instant' }); } catch (e) {
       row.el.scrollIntoView(true);
     }
@@ -242,7 +283,7 @@ Ryker.rail = (function () {
       if (!dragging) return;
       autoScroll(e.clientY);
       var el = e.target && e.target.closest ? e.target.closest('.rail-row') : null;
-      if (!el || !el.__row || el.__row === dragging) return;
+      if (!el || !el.__row || !el.__row.editable || el.__row === dragging) return;
       e.preventDefault();
       try { e.dataTransfer.dropEffect = 'move'; } catch (err) {}
       var box = el.getBoundingClientRect();
@@ -424,6 +465,7 @@ Ryker.rail = (function () {
   function init() {
     Ryker.pick.onChange(sync);
     Ryker.editable.onChange(scheduleRender);
+    Ryker.outline.onScopeChange(function () { loadClosed(); render(); });
   }
 
   return {

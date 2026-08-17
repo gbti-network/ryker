@@ -1,131 +1,204 @@
-// File System Access backend. Writes the report and the journal straight to the
-// folder the report lives in, once a person has granted access to it.
+// The one boundary around browser file access and persisted handles.
 //
-// A page cannot scan its own directory unasked, which is correct and is why
-// section 23 asks for a "Choose report folder" step. showDirectoryPicker was
-// confirmed exposed from file:// with isSecureContext true on 2026-08-13; the
-// grant itself still needs a click.
-Ryker.storage.register('fs', (function () {
+// The logger used to own a second copy of the picker, IndexedDB transaction,
+// directory traversal, read, write, list and remove code. Besides drifting, that
+// made the extension impossible: a content script's IndexedDB belongs to the
+// host page. The persistence adapter below can be replaced by an
+// extension-owned store while every filesystem consumer keeps the same API.
+Ryker.fs = (function () {
   'use strict';
 
-  var dir = null;
-  var granted = false;
+  var DB = 'ryker', STORE = 'handles';
+  var root = null;
 
   function supported() { return typeof window.showDirectoryPicker === 'function'; }
+  function isReady() { return !!root; }
+  function handle() { return root; }
+  function setHandle(next) { root = next || null; return root; }
 
-  function pick() {
+  // ---- persisted handles --------------------------------------------------
+
+  function idb(mode, fn) {
+    return new Promise(function (resolve) {
+      var open;
+      try { open = window.indexedDB.open(DB, 1); } catch (e) { resolve(null); return; }
+      open.onupgradeneeded = function () {
+        if (!open.result.objectStoreNames.contains(STORE)) open.result.createObjectStore(STORE);
+      };
+      open.onerror = function () { resolve(null); };
+      open.onsuccess = function () {
+        var db = open.result;
+        var tx, req;
+        try {
+          tx = db.transaction(STORE, mode);
+          req = fn(tx.objectStore(STORE));
+        } catch (e) {
+          try { db.close(); } catch (e2) { /* already closing */ }
+          resolve(null);
+          return;
+        }
+        tx.oncomplete = function () { db.close(); resolve(req ? req.result : null); };
+        tx.onerror = function () { db.close(); resolve(null); };
+        tx.onabort = function () { db.close(); resolve(null); };
+      };
+    });
+  }
+
+  function defaultPersistence() {
+    return {
+      get: function (key) { return idb('readonly', function (s) { return s.get(key); }); },
+      set: function (key, value) {
+        return idb('readwrite', function (s) { return s.put(value, key); });
+      },
+      remove: function (key) {
+        return idb('readwrite', function (s) { return s.delete(key); });
+      }
+    };
+  }
+
+  var persistence = defaultPersistence();
+
+  // An extension supplies an adapter whose storage belongs to the extension,
+  // not to whichever page its content script happens to be editing.
+  function usePersistence(next) {
+    if (!next || typeof next.get !== 'function' || typeof next.set !== 'function' ||
+        typeof next.remove !== 'function') {
+      throw new Error('A persistence adapter needs get, set and remove methods.');
+    }
+    persistence = next;
+  }
+
+  // Persistence failure is a degradation, not a grant failure. In private
+  // browsing, under policy or at quota, the handle still works for this session.
+  function callPersistence(method, args) {
+    var result;
+    try { result = persistence[method].apply(persistence, args); }
+    catch (e) { return Promise.resolve(null); }
+    return Promise.resolve(result).catch(function () { return null; });
+  }
+
+  function remember(key, value) { return callPersistence('set', [key, value]); }
+  function recall(key) { return callPersistence('get', [key]); }
+  function forget(key) { return callPersistence('remove', [key]); }
+
+  // ---- grant and permission ----------------------------------------------
+
+  function grant(options) {
     if (!supported()) {
       return Promise.reject(new Error(
         'This browser has no directory picker. Use Export to download the edited file instead.'));
     }
-    return window.showDirectoryPicker({ mode: 'readwrite' }).then(function (handle) {
-      dir = handle;
-      granted = true;
-      Ryker.storage.detect();
-      return handle;
+    return window.showDirectoryPicker(options || { mode: 'readwrite' }).then(function (next) {
+      root = next;
+      return next;
     });
   }
 
-  function handle() { return dir; }
+  function permission(target, request) {
+    if (!target || typeof target.queryPermission !== 'function') return Promise.resolve('denied');
+    return target.queryPermission({ mode: 'readwrite' }).then(function (state) {
+      if (state === 'prompt' && request && typeof target.requestPermission === 'function') {
+        return target.requestPermission({ mode: 'readwrite' });
+      }
+      return state;
+    });
+  }
 
-  function getDir(path, create) {
-    var parts = path.split('/').filter(Boolean);
-    var p = Promise.resolve(dir);
-    parts.forEach(function (part) {
-      p = p.then(function (d) { return d.getDirectoryHandle(part, { create: !!create }); });
+  // ---- paths --------------------------------------------------------------
+
+  function parts(path) {
+    var out = String(path || '').split('/').filter(Boolean);
+    if (out.some(function (part) { return part === '.' || part === '..'; })) {
+      throw new Error('File paths must stay inside the granted folder.');
+    }
+    return out;
+  }
+
+  function directory(base, path, create) {
+    var names;
+    try { names = parts(path); } catch (e) { return Promise.reject(e); }
+    var p = Promise.resolve(base || root);
+    names.forEach(function (name) {
+      p = p.then(function (dir) {
+        if (!dir) throw new Error('No folder has been granted.');
+        return dir.getDirectoryHandle(name, { create: !!create });
+      });
     });
     return p;
   }
 
-  function readFile(d, name) {
-    return d.getFileHandle(name).then(function (fh) { return fh.getFile(); })
-      .then(function (f) { return f.text(); });
-  }
-
-  function writeFile(d, name, contents) {
-    return d.getFileHandle(name, { create: true }).then(function (fh) {
-      return fh.createWritable();
-    }).then(function (w) {
-      return w.write(contents).then(function () { return w.close(); });
+  function file(base, path, create) {
+    var names;
+    try { names = parts(path); } catch (e) { return Promise.reject(e); }
+    var name = names.pop();
+    if (!name) return Promise.reject(new Error('A file path is required.'));
+    return directory(base, names.join('/'), create).then(function (dir) {
+      return dir.getFileHandle(name, { create: !!create });
     });
   }
 
-  function pad(n) { return String(n).padStart(4, '0'); }
+  function readFile(base, path) {
+    return file(base, path, false).then(function (fh) { return fh.getFile(); });
+  }
+
+  function read(base, path) {
+    return readFile(base, path).then(function (f) { return f.text(); });
+  }
+
+  function readBytes(base, path) {
+    return readFile(base, path).then(function (f) { return f.arrayBuffer(); })
+      .then(function (buf) { return new Uint8Array(buf); });
+  }
+
+  function write(base, path, contents) {
+    return file(base, path, true).then(function (fh) { return fh.createWritable(); })
+      .then(function (w) {
+        return w.write(contents).then(function () { return w.close(); })
+          .catch(function (e) {
+            if (!w.abort) throw e;
+            return w.abort().catch(function () {}).then(function () { throw e; });
+          });
+      });
+  }
+
+  function list(base, path) {
+    return directory(base, path, false).then(function (dir) {
+      var out = [];
+      var it = dir.values();
+      function step() {
+        return it.next().then(function (res) {
+          if (res.done) return out;
+          var entry = res.value;
+          if (entry.kind !== 'file') {
+            out.push({ name: entry.name, kind: entry.kind, handle: entry });
+            return step();
+          }
+          return entry.getFile().then(function (f) {
+            out.push({ name: entry.name, kind: entry.kind, size: f.size,
+                       modified: f.lastModified, handle: entry });
+            return step();
+          }).catch(step);
+        });
+      }
+      return step();
+    });
+  }
+
+  function remove(base, path) {
+    var names;
+    try { names = parts(path); } catch (e) { return Promise.reject(e); }
+    var name = names.pop();
+    if (!name) return Promise.reject(new Error('A path to remove is required.'));
+    return directory(base, names.join('/'), false).then(function (dir) {
+      return dir.removeEntry(name);
+    });
+  }
 
   return {
-    ownsDocument: true,
-
-    isReady: function () { return granted && !!dir; },
-    canWrite: function () { return granted && !!dir; },
-    supported: supported,
-    pick: pick,
-    handle: handle,
-    readFile: readFile,
-    writeFile: writeFile,
-    getDir: getDir,
-
-    describe: function () {
-      return dir ? 'Folder: ' + dir.name : 'No folder chosen';
-    },
-
-    detail: function () {
-      return dir
-        ? 'Saving into ' + dir.name + '. The report is rewritten in place and each save appends a ' +
-          'new file under .ryker/revisions/.'
-        : 'Choose the folder the report sits in to save changes straight to disk.';
-    },
-
-    load: function () {
-      if (!dir) return Promise.resolve({ records: [] });
-      return getDir('.ryker/revisions', false).then(function (d) {
-        var reads = [];
-        var it = d.values();
-        function step() {
-          return it.next().then(function (res) {
-            if (res.done) return null;
-            var entry = res.value;
-            if (entry.kind === 'file' && /\.json$/.test(entry.name)) {
-              reads.push(readFile(d, entry.name).then(function (t) {
-                try { return JSON.parse(t); } catch (e) { return null; }
-              }));
-            }
-            return step();
-          });
-        }
-        return step().then(function () { return Promise.all(reads); });
-      }).then(function (list) {
-        return { records: (list || []).filter(Boolean) };
-      }).catch(function () {
-        // No .ryker directory yet is the ordinary first-run case, not an error.
-        return { records: [] };
-      });
-    },
-
-    // Only the newly appended records are written. Rewriting the whole log on
-    // every save would defeat the point of an append-only journal.
-    save: function (payload) {
-      if (!dir) return Promise.reject(new Error('No folder chosen yet.'));
-      var cfg = Ryker.config.load();
-      return getDir('.ryker/revisions', true).then(function (d) {
-        var writes = (payload.appended || []).map(function (rec) {
-          return writeFile(d, pad(rec.seq) + '.json', JSON.stringify(rec, null, 2));
-        });
-        return Promise.all(writes);
-      }).then(function () {
-        return getDir('.ryker', true);
-      }).then(function (d) {
-        return writeFile(d, 'document.json', JSON.stringify({
-          documentId: cfg.RYKER_DOCUMENT_ID,
-          documentPath: cfg.RYKER_DOCUMENT_PATH,
-          updatedAt: Ryker.dom.now(),
-          revisions: payload.records.length
-        }, null, 2));
-      }).then(function () {
-        if (!payload.documentHtml) return null;
-        return writeFile(dir, cfg.RYKER_DOCUMENT_PATH, payload.documentHtml);
-      }).then(function () {
-        return { ok: true, where: dir.name };
-      });
-    }
+    supported: supported, isReady: isReady, handle: handle, setHandle: setHandle,
+    grant: grant, pick: grant, permission: permission,
+    usePersistence: usePersistence, remember: remember, recall: recall, forget: forget,
+    directory: directory, read: read, readBytes: readBytes, write: write,
+    list: list, remove: remove
   };
-})());
+})();

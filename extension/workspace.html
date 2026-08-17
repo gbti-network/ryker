@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Open a file in Ryker</title>
+  <link rel="stylesheet" href="workspace.css">
+</head>
+<body>
+  <header class="workspace-bar">
+    <span class="workspace-brand">
+      <img src="icons/ryker-32.png" width="20" height="20" alt="">
+      <span>Ryker</span>
+    </span>
+  </header>
+
+  <main id="workspace-document">
+    <section class="workspace-open" aria-labelledby="workspace-title">
+      <img class="workspace-wing" src="icons/ryker-128.png" width="82" height="82" alt="">
+      <p class="workspace-eyebrow">Local document workspace</p>
+      <h1 id="workspace-title">Open an HTML or Markdown file</h1>
+      <p class="workspace-intro">Edit the document inline, then save a prompt-ready change request or export the edited file.</p>
+      <label class="workspace-button" for="workspace-file">Choose a file</label>
+      <input id="workspace-file" type="file" accept=".html,.htm,.md,.markdown,text/html,text/markdown,text/plain">
+      <p class="workspace-drop">or drop an <strong>.html</strong>, <strong>.htm</strong>, <strong>.md</strong>, or <strong>.markdown</strong> file here</p>
+      <p id="workspace-status" class="workspace-status" role="status" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <script src="ryker.js"></script>
+  <script src="workspace.js"></script>
+</body>
+</html>
