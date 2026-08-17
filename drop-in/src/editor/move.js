@@ -29,12 +29,25 @@ Ryker.move = (function () {
   // outside it is what has to be moved. O(n squared) on purpose: n is the
   // number of contiguous runs, not the number of blocks, and a session with
   // three moves in it produces about four runs.
-  function longestRun(vals) {
+  // The longest increasing subsequence of runs, weighted by how many BLOCKS each
+  // run holds rather than by how many runs are kept.
+  //
+  // Unweighted this counted runs, and the two are not the same answer. Moving
+  // one paragraph from the end of five to the front leaves runs [e] and
+  // [a,b,c,d]: one run either way, so the tie fell to whichever came first and
+  // the report was "move a, b, c and d after e" instead of "move e to the
+  // front". Both produce the same document and only one is readable, and this
+  // module exists to give the smallest honest account rather than any true one.
+  //
+  // Weighting also makes the tie-break meaningful where it used to be arbitrary:
+  // the set left alone is the one covering the most of the document.
+  function longestRun(vals, weights) {
     var n = vals.length, best = [], from = [], top = -1, i, j;
     for (i = 0; i < n; i++) {
-      best[i] = 1; from[i] = -1;
+      var w = weights ? weights[i] : 1;
+      best[i] = w; from[i] = -1;
       for (j = 0; j < i; j++) {
-        if (vals[j] < vals[i] && best[j] + 1 > best[i]) { best[i] = best[j] + 1; from[i] = j; }
+        if (vals[j] < vals[i] && best[j] + w > best[i]) { best[i] = best[j] + w; from[i] = j; }
       }
       if (top === -1 || best[i] > best[top]) top = i;
     }
@@ -69,7 +82,9 @@ Ryker.move = (function () {
     });
     if (runs.length < 2) return [];
 
-    var keep = longestRun(runs.map(function (r) { return r.start; }));
+    var keep = longestRun(
+      runs.map(function (r) { return r.start; }),
+      runs.map(function (r) { return r.ids.length; }));
     var out = [];
     runs.forEach(function (r, i) {
       if (keep[i]) return;

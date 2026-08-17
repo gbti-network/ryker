@@ -613,6 +613,152 @@ async function runLogging(sess, file) {
     JSON.stringify(uncloneable));
 }
 
+// Moves: 322 lines of order derivation that nothing covered.
+//
+// sow-004 claims a CDP harness with 37 move checks and 10 regression checks.
+// That harness exists nowhere, so this was the largest untested surface in the
+// tree. between() is a pure function of two snapshots, which is where nearly all
+// the risk lives, so most of this needs no drag simulation at all.
+async function runMove(sess, file) {
+  console.log(`\n${file} (moves)`);
+  const code = readFileSync(join(DIST, file), 'utf8');
+
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && Ryker.move)`, 10000, 'the move module');
+
+  // A snapshot is an object keyed by block id in document order. between() only
+  // reads key order and presence, so a minimal stand-in exercises it exactly.
+  const derive = async (before, after) => evaluate(sess, `(function () {
+    function snap(ids) {
+      var o = {};
+      ids.forEach(function (id) { o[id] = { html: id, tag: 'P', prev: null }; });
+      return o;
+    }
+    return JSON.parse(JSON.stringify(
+      Ryker.move.between(snap(${JSON.stringify(before)}), snap(${JSON.stringify(after)}))));
+  })()`);
+
+  const abcde = ['~a', '~b', '~c', '~d', '~e'];
+
+  const same = await derive(abcde, abcde);
+  assert(same.length === 0, 'an unchanged order reports no moves',
+    same.length === 0 ? null : JSON.stringify(same));
+
+  // One block to the front. The smallest honest account is that ~e moved, not
+  // that the other four each shifted down by one.
+  const toFront = await derive(abcde, ['~e', '~a', '~b', '~c', '~d']);
+  assert(toFront.length === 1, 'moving one block reports exactly one move',
+    toFront.length === 1 ? null : JSON.stringify(toFront));
+  if (toFront.length === 1) {
+    assert(JSON.stringify(toFront[0].ids) === JSON.stringify(['~e']),
+      'the move names the block that actually moved',
+      'ids: ' + JSON.stringify(toFront[0].ids));
+    assert(toFront[0].prev === null && toFront[0].wasAfter === '~d',
+      'the move records where it landed and where it came from',
+      `prev ${toFront[0].prev}, wasAfter ${toFront[0].wasAfter}`);
+  }
+
+  // A contiguous run travels as one. Without coalescing, a moved section of
+  // twenty paragraphs reads as twenty separate moves, each individually true
+  // and collectively unreadable.
+  const run = await derive(abcde, ['~c', '~d', '~a', '~b', '~e']);
+  assert(run.length === 1, 'a contiguous run moved together is one move, not several',
+    run.length === 1 ? null : `got ${run.length}: ` + JSON.stringify(run.map((m) => m.ids)));
+  if (run.length === 1) {
+    // Which pair moved is genuinely ambiguous here: swapping [c,d] and [a,b] is
+    // two blocks whichever way round it is described. Asserting one of them
+    // would pin an arbitrary choice, so the size is what gets checked.
+    assert(run[0].ids.length === 2,
+      'the run carries every block in it and no more',
+      'ids: ' + JSON.stringify(run[0].ids));
+    assert(run[0].ids.every((id) => abcde.includes(id)),
+      'the run names real blocks');
+  }
+
+  // Minimality, which is the module's stated purpose rather than a nicety.
+  // longestRun() used to maximise the NUMBER of runs kept and ignore how many
+  // blocks each held, so the case above reported four blocks moving when one
+  // would do. Both orders are correct; only one is readable.
+  const totalMoved = (r) => r.reduce((n, m) => n + m.ids.length, 0);
+  assert(totalMoved(toFront) === 1,
+    'the report names the fewest blocks that could account for the change',
+    `${totalMoved(toFront)} block(s) reported as moved where 1 suffices: ` +
+    JSON.stringify(toFront.map((m) => m.ids)));
+
+  // A block deleted from the middle of a run must not split the run and invent
+  // a move nobody made. This is what the compaction step in between() is for.
+  const deleted = await derive(abcde, ['~a', '~c', '~d', '~e']);
+  assert(deleted.length === 0,
+    'deleting a block from the middle does not invent a move',
+    deleted.length === 0 ? null : JSON.stringify(deleted));
+
+  // Blocks created this session are not in the old order and are not moves.
+  const added = await derive(abcde, ['~a', '~b', '~new', '~c', '~d', '~e']);
+  assert(added.length === 0, 'a newly inserted block is not reported as a move',
+    added.length === 0 ? null : JSON.stringify(added));
+
+  // Scale: one block out of ten still reports one move.
+  const ten = Array.from({ length: 10 }, (_, i) => '~' + String.fromCharCode(97 + i));
+  const oneOfTen = await derive(ten, [ten[7]].concat(ten.filter((x) => x !== ten[7])));
+  assert(oneOfTen.length === 1,
+    'one block moved among ten reports one move, not nine shifts',
+    oneOfTen.length === 1 ? null : `got ${oneOfTen.length}`);
+
+  // The invariant the whole module rests on, stated in its own header: no block
+  // id may look like an array index, because that is the one case where an
+  // object reorders its own keys and every derived order would be wrong.
+  const ids = await evaluate(sess,
+    `Ryker.blocks.all().map(function (b) { return b.id; })`);
+  const indexLike = ids.filter((id) => /^\d+$/.test(String(id)));
+  assert(indexLike.length === 0,
+    'no real block id looks like an array index',
+    indexLike.length === 0 ? null
+      : `${JSON.stringify(indexLike)} would make Object.keys() reorder the snapshot ` +
+        'and silently corrupt every move derivation');
+
+  // And the headline claim, on the real DOM rather than on stand-ins: move
+  // something out and back, and Ryker correctly reports nothing.
+  const roundTrip = await evaluate(sess, `(function () {
+    var all = Ryker.blocks.all();
+    var alpha = all.filter(function (b) {
+      return (b.node.textContent || '').trim() === 'List item alpha';
+    })[0];
+    var beta = all.filter(function (b) {
+      return (b.node.textContent || '').trim() === 'List item beta';
+    })[0];
+    if (!alpha || !beta) return { error: 'fixture list items not found' };
+
+    var pristine = Ryker.blocks.snapshot();
+    var home = alpha.node.previousElementSibling;
+
+    var why = Ryker.move.apply([alpha.node], beta.node, 'after');
+    if (why) return { error: 'apply refused: ' + why };
+    var movedCount = Ryker.move.between(pristine, Ryker.blocks.snapshot()).length;
+
+    var back = home
+      ? Ryker.move.apply([alpha.node], home, 'after')
+      : Ryker.move.apply([alpha.node], beta.node, 'before');
+    if (back) return { error: 'move back refused: ' + back };
+    var afterCount = Ryker.move.between(pristine, Ryker.blocks.snapshot()).length;
+
+    return { movedCount: movedCount, afterCount: afterCount };
+  })()`);
+
+  if (roundTrip.error) {
+    bad('a real move is detected, and undoing it reports nothing', roundTrip.error);
+  } else {
+    assert(roundTrip.movedCount === 1,
+      'a real move in the document is detected',
+      `got ${roundTrip.movedCount} moves`);
+    assert(roundTrip.afterCount === 0,
+      'moving something out and back again reports nothing',
+      roundTrip.afterCount === 0 ? null
+        : `${roundTrip.afterCount} phantom move(s): the derivation accumulated instead ` +
+          'of comparing, which is the bug the module was written to avoid');
+  }
+}
+
 const bundles = ['ryker.js'].filter((f) => existsSync(join(DIST, f)));
 if (!bundles.length) {
   console.error('No bundle found in drop-in/dist. Run: node drop-in/build/bundle.mjs');
@@ -621,7 +767,7 @@ if (!bundles.length) {
 
 const sess = await launch();
 try {
-  for (const file of bundles) { await runBuild(sess, file); await runMerge(sess, file); await runPackager(sess, file); await runLogging(sess, file); await runFailureIsolation(sess, file); }
+  for (const file of bundles) { await runBuild(sess, file); await runMerge(sess, file); await runMove(sess, file); await runPackager(sess, file); await runLogging(sess, file); await runFailureIsolation(sess, file); }
 } finally {
   await sess.close();
 }
