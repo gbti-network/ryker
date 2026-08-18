@@ -2638,8 +2638,15 @@ async function runUnits(sess, file) {
       ['Move a <section>', 'It is the one with id="media"',
        'Put it immediately after the 1st <header> inside the document body',
        'as a sibling of it, not inside it']],
-    ['a table', `Ryker.move.apply([document.querySelector('#data table')], document.querySelector('#grid h3'), 'after')`,
+    ['a table out of its own scroller', `Ryker.move.apply([document.querySelector('#data table')], document.querySelector('#grid h3'), 'after')`,
       ['Move a <table>', 'Put it immediately after the 1st <h3> inside the section with id="grid"',
+       'In the file it is currently the first thing inside the 1st <div> inside the section with id="data"']],
+    // What the outline rail actually moves: a report wraps its tables in a
+    // horizontal scroller, and taking the table out of it would break the
+    // scrolling the report depends on.
+    ['a table in the scroller the rail moves',
+      `Ryker.move.apply(Ryker.outline.unitOf(document.querySelector('#data .scroll-x')), document.querySelector('#grid h3'), 'after')`,
+      ['Move a <div>', 'Put it immediately after the 1st <h3> inside the section with id="grid"',
        'In the file it currently sits just after this text: "The table"']],
     ['a heading', `Ryker.move.apply([document.querySelector('#intro h2')], document.querySelector('#intro ul'), 'after')`,
       ['Move a <h2>', 'Put it immediately after the 1st <ul> inside the section with id="intro"',
