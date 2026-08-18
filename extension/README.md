@@ -82,6 +82,10 @@ Disabling the prompt does not remove notes already attached to earlier rounds.
 
 ## Formatting and saved change requests
 
+Put the caret in any table cell, with nothing selected, to open the same
+floating toolbar carrying the row and column controls: insert or delete a row,
+insert or delete a column, or delete the table outright.
+
 Select text within one editable block to open the floating formatting toolbar.
 Its first control changes that block between **Paragraph** and **H1** through
 **H5**. The conversion keeps the content and attributes, supports undo/redo,

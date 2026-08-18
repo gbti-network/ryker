@@ -7,28 +7,29 @@
  *   config/config.js  (116 lines)
  *   security/scan.js  (86 lines)
  *   editor/sanitize.js  (218 lines)
- *   editor/blocks.js  (540 lines)
+ *   editor/blocks.js  (547 lines)
  *   export/zip.js  (193 lines)
  *   export/html.js  (186 lines)
  *   export/packager.js  (277 lines)
  *   ui/theme.js  (61 lines)
  *   ui/styles.js  (405 lines)
  *   ui/shell.js  (241 lines)
- *   ui/icons.js  (67 lines)
+ *   ui/icons.js  (68 lines)
  *   ui/tooltip.js  (82 lines)
  *   ui/dialog.js  (138 lines)
  *   ui/menu.js  (104 lines)
  *   editor/editable.js  (585 lines)
- *   editor/history.js  (213 lines)
- *   editor/formatbar.js  (212 lines)
+ *   editor/history.js  (243 lines)
+ *   editor/formatbar.js  (252 lines)
  *   editor/links.js  (173 lines)
  *   editor/pick.js  (228 lines)
  *   editor/multi.js  (172 lines)
- *   editor/table.js  (97 lines)
+ *   editor/table.js  (345 lines)
  *   editor/outline.js  (289 lines)
  *   editor/move.js  (427 lines)
  *   ui/rail.js  (530 lines)
- *   instructions/instructions.js  (600 lines)
+ *   instructions/steps.js  (375 lines)
+ *   instructions/instructions.js  (501 lines)
  *   instructions/merge.js  (405 lines)
  *   storage/fs.js  (336 lines)
  *   storage/logger.js  (433 lines)
@@ -825,13 +826,15 @@
       var list = tracked();
       list.forEach(function (b, i) {
         var box = boxOf(b.node);
+        var seat = Ryker.table.seatOf(b.node);
         snap[b.id] = {
           html: atomic(b.node) ? atomicHtml(b.node) : b.node.innerHTML,
           tag: b.node.tagName,
           prev: i > 0 ? list[i - 1].id : null,
           box: box ? boxKey(b.node) : null,
           boxTag: box ? box.tagName : null,
-          atomic: atomic(b.node)
+          atomic: atomic(b.node),
+          row: seat ? seat.row : null, col: seat ? seat.col : null
         };
       });
       return snap;
@@ -856,7 +859,8 @@
         if (!Object.prototype.hasOwnProperty.call(before, id)) {
           changes.push({
             id: id, before: null, after: htmlOf(a), kind: 'added',
-            tag: a.tag, prev: a.prev, box: a.box || null, boxTag: a.boxTag || null
+            tag: a.tag, prev: a.prev, box: a.box || null, boxTag: a.boxTag || null,
+            row: a.row || null, col: a.col == null ? null : a.col
           });
         } else if (htmlOf(before[id]) !== htmlOf(a) ||
                    (before[id] && before[id].tag) !== a.tag) {
@@ -864,7 +868,8 @@
                          kind: 'changed', tag: a.tag,
                          beforeTag: before[id] && before[id].tag || null,
                          afterTag: a.tag || null, prev: a.prev || null,
-                         box: a.box || null, boxTag: a.boxTag || null });
+                         box: a.box || null, boxTag: a.boxTag || null,
+                         row: a.row || null, col: a.col == null ? null : a.col });
         }
       });
       Object.keys(before).forEach(function (id) {
@@ -874,7 +879,8 @@
           changes.push({ id: id, before: htmlOf(was), after: null, kind: 'removed',
                          tag: meta.tag || null, atomic: !!meta.atomic,
                          prev: meta.prev || null,
-                         box: meta.box || null, boxTag: meta.boxTag || null });
+                         box: meta.box || null, boxTag: meta.boxTag || null,
+                         row: meta.row || null, col: meta.col == null ? null : meta.col });
         }
       });
       return changes;
@@ -893,6 +899,7 @@
     }
 
     function insertNew(node, c, anchor, context) {
+      if (Ryker.table.place(node, c, anchor, context)) return;
       var boxTag = String(c.boxTag || '').toUpperCase();
       var box = c.box && context.boxes[c.box];
       if (c.box && /^(OL|UL|DL|FIGURE)$/.test(boxTag)) {
@@ -913,7 +920,7 @@
     }
 
     function applyChange(c, context) {
-      context = context || { boxes: boxIndex() };
+      context = context || { boxes: boxIndex(), rows: Ryker.table.rowIndex() };
       var node = byId(c.id);
       var tag = String(c.afterTag || c.tag || '').toUpperCase();
       var validTag = /^(H[1-5]|P|LI|TD|TH|FIGCAPTION|CAPTION|BLOCKQUOTE|DD|DT|SVG)$/.test(tag);
@@ -1028,10 +1035,11 @@
     function applyRecords(records) {
       var applied = 0, missed = 0, moved = 0, orderMissed = 0;
       (records || []).forEach(function (r) {
-        var context = { boxes: boxIndex() };
+        var context = { boxes: boxIndex(), rows: Ryker.table.rowIndex() };
         var boxed = completeBoxDeletes(r.changes || [], context);
+        var rowed = Ryker.table.completeRowDeletes(r.changes || [], context, tracked());
         (r.changes || []).forEach(function (c) {
-          if (boxed[c.id] || applyChange(c, context)) applied += 1; else missed += 1;
+          if (boxed[c.id] || rowed[c.id] || applyChange(c, context)) applied += 1; else missed += 1;
         });
         if (Array.isArray(r.order)) {
           var ordered = applyOrder(r.order);
@@ -2473,6 +2481,7 @@
         '<circle cx="3.2" cy="8" r=".8" fill="currentColor" stroke="none"/>' +
         '<circle cx="3.2" cy="11.5" r=".8" fill="currentColor" stroke="none"/>',
       package: '<path d="M8 2.5 13.5 5.5v5L8 13.5 2.5 10.5v-5z"/><path d="M2.5 5.5 8 8.5l5.5-3"/><path d="M8 8.5v5"/>',
+      grid: '<path d="M2.5 3.5h11v9h-11z"/><path d="M2.5 6.5h11"/><path d="M6.5 3.5v9"/>',
       note: '<path d="M3.5 2.5h9v11h-9z"/><path d="M5.5 5.5h5"/>' +
             '<path d="M5.5 8h5"/><path d="M5.5 10.5h3.5"/>',
       up: '<path d="M8 12.5V3.5"/><path d="M4.5 7 8 3.5 11.5 7"/>',
@@ -3451,6 +3460,7 @@
     var applying = false;
     var baselineNodes = {};
     var baselineBoxes = {};
+    var baselineRows = {};
 
     var pending = null;   // block being typed into
     var timer = null;
@@ -3546,6 +3556,7 @@
     function captureBaseline(snapshot) {
       baselineNodes = {};
       baselineBoxes = {};
+      baselineRows = {};
       Object.keys(snapshot || {}).forEach(function (id) {
         var node = Ryker.blocks.byId(id);
         if (!node) return;
@@ -3555,11 +3566,34 @@
         if (box && !baselineBoxes[boxId]) {
           baselineBoxes[boxId] = { node: box, parent: box.parentNode, next: box.nextSibling };
         }
+        // A row is a container in exactly the way a table is, and Discard has to
+        // put one back for the same reason. Deleting a row detaches the <tr>, so
+        // its cells were restored into an element no longer in the document and
+        // disappeared from the report while Discard reported success.
+        var rowId = snapshot[id] && snapshot[id].row;
+        var row = rowId && node.closest ? node.closest('tr') : null;
+        if (row && !baselineRows[rowId]) {
+          baselineRows[rowId] = { node: row, parent: row.parentNode, next: row.nextSibling };
+        }
       });
     }
 
     function restoreBaseline(snapshot, armed) {
       flushText();
+
+      // Containers come back before anything is measured. A cell added inside a
+      // row and then deleted along with that row is invisible to a snapshot for
+      // as long as the row is detached, so it was never counted as an extra and
+      // rode back into the document when the row returned. Tables before rows,
+      // because a row cannot be restored into a <tbody> that is not in the
+      // document yet.
+      Object.keys(baselineBoxes).reverse().forEach(function (id) {
+        if (!baselineBoxes[id].node.isConnected) restore(baselineBoxes[id]);
+      });
+      Object.keys(baselineRows).reverse().forEach(function (id) {
+        if (!baselineRows[id].node.isConnected) restore(baselineRows[id]);
+      });
+
       var current = Ryker.blocks.snapshot();
       var extras = [];
 
@@ -3579,6 +3613,14 @@
         var parent = node.parentNode;
         if (!parent) return;
         parent.removeChild(node);
+        // An added row's cells are extras; the <tr> holding them is not a block
+        // and nothing else would ever remove it, so Discard left an empty stripe
+        // across the table.
+        if (parent.matches && parent.matches('tr') && !parent.children.length &&
+            parent.parentNode && !baselineRows[Ryker.table.rowKey(parent)]) {
+          parent.parentNode.removeChild(parent);
+          return;
+        }
         if (parent.matches && parent.matches('ul, ol, dl') &&
             !parent.querySelector(Ryker.blocks.SELECTOR) && parent.parentNode) {
           parent.parentNode.removeChild(parent);
@@ -3591,9 +3633,6 @@
       }
 
       extras.forEach(removeExtra);
-      Object.keys(baselineBoxes).reverse().forEach(function (id) {
-        if (!baselineBoxes[id].node.isConnected) restore(baselineBoxes[id]);
-      });
       Object.keys(snapshot).reverse().forEach(function (id) {
         var ref = baselineNodes[id];
         if (!ref) return;
@@ -3653,7 +3692,7 @@
   Ryker.formatbar = (function () {
     'use strict';
 
-    var node = null, typeBtn = null, killBtn = null, linkBtn = null;
+    var node = null, typeBtn = null, killBtn = null, linkBtn = null, gridBtn = null;
     var lastRange = null;
     var formatParts = [];
 
@@ -3707,11 +3746,28 @@
         { label: 'Heading 5', run: function () { retype('H5'); } }
       ]);
 
+      // Rows and columns. A menu rather than six buttons, because the bar sits
+      // over the words being edited and six more controls would cover them.
+      gridBtn = Ryker.icons.button('grid', 'Rows and columns', null, 'fb-btn');
+      gridBtn.addEventListener('mousedown', function (e) { e.preventDefault(); });
+      Ryker.menu.attach(gridBtn, function () {
+        var cell = tableCell();
+        return [
+          { label: 'Insert row above', run: function () { Ryker.table.insertRow(cell, 'above'); } },
+          { label: 'Insert row below', run: function () { Ryker.table.insertRow(cell, 'below'); } },
+          { label: 'Delete row', danger: true, run: function () { Ryker.table.removeRow(cell); } },
+          null,
+          { label: 'Insert column left', run: function () { Ryker.table.insertColumn(cell, 'left'); } },
+          { label: 'Insert column right', run: function () { Ryker.table.insertColumn(cell, 'right'); } },
+          { label: 'Delete column', danger: true, run: function () { Ryker.table.removeColumn(cell); } }
+        ];
+      });
+
       // Destructive, so it is last, separated, and says how much it will take.
       killBtn = act(null, 'Delete', function () {
         if (!Ryker.multi) return;
         if (Ryker.multi.covered().length) Ryker.multi.removeSelection();
-        else Ryker.multi.removeTableAt(currentBlock());
+        else Ryker.multi.removeTableAt(currentBlock() || tableCell());
         hide();
       }, 'trash');
       killBtn.classList.add('fb-kill');
@@ -3728,7 +3784,7 @@
       ];
 
       node = d().el('div', { class: 'formatbar', role: 'toolbar', 'aria-label': 'Formatting' },
-        formatParts.concat([d().el('span', { class: 'fb-sep fb-kill-sep' }), killBtn]));
+        formatParts.concat([gridBtn, d().el('span', { class: 'fb-sep fb-kill-sep' }), killBtn]));
       node.style.display = 'none';
       node.addEventListener('mousedown', function (e) { e.preventDefault(); });
       Ryker.shell.add(node);
@@ -3741,6 +3797,20 @@
       var n = sel.getRangeAt(0).commonAncestorContainer;
       if (n.nodeType === 3) n = n.parentNode;
       return n && n.closest ? n.closest('[contenteditable="true"]') : null;
+    }
+
+    // The cell the caret rests in. Read from the selection rather than from the
+    // block, so it is found with nothing selected: reaching for "insert a row"
+    // means putting the caret in the table, not highlighting a word first.
+    function tableCell() {
+      if (!Ryker.editable.isOn() || !Ryker.table) return null;
+      var sel = window.getSelection();
+      if (!sel || !sel.rangeCount) return null;
+      var n = sel.getRangeAt(0).commonAncestorContainer;
+      if (n.nodeType === 3) n = n.parentNode;
+      if (!n || !n.closest || (Ryker.shell && Ryker.shell.owns(n))) return null;
+      var cell = Ryker.table.cellOf(n);
+      return cell && Ryker.blocks.root().contains(cell) ? cell : null;
     }
 
     function retype(tag) {
@@ -3787,14 +3857,20 @@
       var many = spanning();
       var range = editableSelection();
       var link = (!range && !many.length && Ryker.links) ? Ryker.links.at(null) : null;
-      if (!range && !many.length && !link) { hide(); return; }
+      // A caret parked in a cell with nothing selected is the state someone is in
+      // when they want another row. Requiring a selection first made the row and
+      // column controls reachable only by highlighting a word one did not intend
+      // to change.
+      var cell = (!range && !many.length && !link) ? tableCell() : null;
+      if (!range && !many.length && !link && !cell) { hide(); return; }
       build();
 
       if (range) lastRange = range.cloneRange();
       // getRangeAt(0) throws when rangeCount is 0, which is exactly the state a
       // pick leaves behind, so the picked set supplies its own box instead.
       var rect = range ? range.getBoundingClientRect()
-               : (link ? link.getBoundingClientRect() : Ryker.pick.rect());
+               : (link ? link.getBoundingClientRect()
+                       : (cell ? cell.getBoundingClientRect() : Ryker.pick.rect()));
       if (!rect || (!rect.width && !rect.height)) { hide(); return; }
 
       var block = range ? currentBlock() : null;
@@ -3802,21 +3878,24 @@
       var atomic = many.length === 1 && Ryker.blocks.atomic(many[0]);
       var wide = many.length > 1 || atomic;
 
-      // Three modes. A picked run of blocks gets only Delete, a caret resting in
-      // a link gets only the link control, and ordinary selected text gets the
-      // formatting set.
+      // Four modes. A picked run of blocks gets only Delete, a caret resting in
+      // a link gets only the link control, a caret resting in a cell gets only
+      // the grid controls, and ordinary selected text gets the formatting set.
       formatParts.forEach(function (n) {
-        n.style.display = wide ? 'none' : (link && n !== linkBtn ? 'none' : '');
+        n.style.display = (wide || cell) ? 'none' : (link && n !== linkBtn ? 'none' : '');
       });
+      var grid = cell || (range ? tableCell() : null);
+      gridBtn.style.display = grid ? '' : 'none';
       if (link) Ryker.tooltip.attach(linkBtn, 'Edit this link');
       else Ryker.tooltip.attach(linkBtn, 'Link the selected text');
-      var show = wide || !!table;
+      var show = wide || !!table || !!cell;
       killBtn.style.display = show ? '' : 'none';
       node.querySelector('.fb-kill-sep').style.display = (show && !wide) ? '' : 'none';
       if (show) {
         Ryker.tooltip.attach(killBtn,
           atomic ? 'Delete this whole SVG' :
             (many.length > 1 ? 'Delete the ' + many.length + ' selected blocks' : 'Delete this whole table'));
+        Ryker.tooltip.attach(gridBtn, 'Add or remove a row or column');
       }
 
       if (!wide && !link) {
@@ -4437,13 +4516,18 @@
 
 
   /* ---- editor/table.js ------------------------------------------- */
-  // What identifies a table cell, and how to read the grid it sits in.
+  // Rows and columns: the one piece of structure Ryker edits.
   //
-  // Lives in its own module rather than in blocks.js because it is a fact about
-  // grids, not about blocks. Everywhere else in the editor a table is scenery:
-  // the cells are prose and the structure around them belongs to the report. The
-  // one thing the rest of Ryker cannot work out for itself is what to call a
-  // cell that has no words in it yet, which is what this answers.
+  // Everything else in the editor treats a table as scenery, on the grounds that
+  // a rich-text surface over a report's own markup can break a sort handler that
+  // the reader will then blame on the report. A row and a column are the
+  // exception the owner asked for, and they are safe in a way that arbitrary
+  // structure editing is not: the shape stays rectangular, no attribute the host
+  // script reads is touched, and each operation has one obvious inverse.
+  //
+  // This module also owns the two table facts the rest of Ryker needs and should
+  // not have to know how to compute: what identifies a cell, and where a cell
+  // goes when a recorded change is replayed into a fresh copy of the document.
   Ryker.table = (function () {
     'use strict';
 
@@ -4476,6 +4560,17 @@
 
     function indexOfCell(cell) {
       return cellsOf(cell.parentNode).indexOf(cell);
+    }
+
+    // A merged cell breaks the one assumption every operation here rests on:
+    // that row N column M names exactly one cell. Rather than guess, the whole
+    // feature steps aside and says so, which is the difference between declining
+    // and quietly reshaping someone's table.
+    function spanned(table) {
+      return Array.prototype.some.call(table.querySelectorAll('td, th'), function (c) {
+        return (parseInt(c.getAttribute('colspan'), 10) || 1) > 1 ||
+               (parseInt(c.getAttribute('rowspan'), 10) || 1) > 1;
+      });
     }
 
     // ---- cell identity -------------------------------------------------------
@@ -4528,9 +4623,241 @@
         (line ? ', row reading "' + line.slice(0, 40) + '"' : ', row ' + (rowsOf(grid).indexOf(row) + 1));
     }
 
+    // ---- where a cell goes when a change is replayed -------------------------
+    //
+    // Keyed per node and assigned lazily, exactly like a box key, so it is the
+    // same in every snapshot of one row and means nothing across documents.
+    var rowKeys = new WeakMap();
+    var rowSeq = 0;
+
+    function rowKey(row) {
+      if (!row) return null;
+      var k = rowKeys.get(row);
+      if (!k) { k = 'r' + (++rowSeq); rowKeys.set(row, k); }
+      return k;
+    }
+
+    // What a snapshot records about a cell beyond its content: which row it is
+    // in and which column it is under. Without these an added cell was replayed
+    // by inserting it after the block before it, and the block before the first
+    // cell of a new row is the LAST cell of the row above, so a restored row
+    // arrived spliced onto the end of its predecessor.
+    function seatOf(node) {
+      if (!node || !CELL[node.tagName]) return null;
+      var row = node.closest('tr');
+      if (!row) return null;
+      return { row: rowKey(row), col: indexOfCell(node) };
+    }
+
+    function rowIndex() {
+      var rows = {};
+      Array.prototype.forEach.call(document.querySelectorAll('tr'), function (row) {
+        var k = rowKeys.get(row);
+        if (k) rows[k] = row;
+      });
+      return rows;
+    }
+
+    function place(node, c, anchor, context) {
+      if (!c.row || String(c.boxTag || '').toUpperCase() !== 'TABLE') return false;
+      var grid = c.box && context.boxes[c.box];
+      if (!grid) return false;
+      context.rows = context.rows || rowIndex();
+      var row = context.rows[c.row];
+      if (!row) {
+        row = document.createElement('tr');
+        rowKeys.set(row, c.row);
+        context.rows[c.row] = row;
+        var beside = anchor && anchor.closest ? anchor.closest('tr') : null;
+        if (beside && beside.parentNode && beside.closest('table') === grid) {
+          beside.parentNode.insertBefore(row, beside.nextSibling);
+        } else {
+          (grid.tBodies[0] || grid).appendChild(row);
+        }
+      }
+      var seats = cellsOf(row);
+      row.insertBefore(node, (c.col == null ? null : seats[c.col]) || null);
+      return true;
+    }
+
+    // Removing every cell of a row leaves the <tr> behind as an empty stripe.
+    // Runs after the whole-table pass, so a deleted table is never taken apart
+    // row by row on the way out.
+    function completeRowDeletes(changes, context, tracked) {
+      var groups = {}, handled = {};
+      (changes || []).forEach(function (change) {
+        if (change.kind === 'removed' && change.row) {
+          (groups[change.row] = groups[change.row] || []).push(change.id);
+        }
+      });
+      context.rows = context.rows || rowIndex();
+      Object.keys(groups).forEach(function (key) {
+        var row = context.rows[key];
+        if (!row || !row.parentNode) return;
+        var inside = tracked.filter(function (block) { return row.contains(block.node); })
+          .map(function (block) { return block.id; });
+        if (!inside.length || !inside.every(function (id) { return groups[key].indexOf(id) !== -1; })) return;
+        row.parentNode.removeChild(row);
+        groups[key].forEach(function (id) { handled[id] = true; });
+        delete context.rows[key];
+      });
+      return handled;
+    }
+
+    // ---- the operations ------------------------------------------------------
+
+    function refuse(why) {
+      if (Ryker.dialog) Ryker.dialog.alert('Cannot change this table', why, 'warn');
+      return false;
+    }
+
+    function usable(node) {
+      var cell = cellOf(node);
+      if (!cell) return null;
+      var grid = cell.closest('table');
+      if (Ryker.blocks.excluded(grid) || (grid.closest && grid.closest('[data-ryker-lock]'))) {
+        refuse('This table is marked as not editable, so its rows and columns stay as ' +
+          'the document author left them.');
+        return null;
+      }
+      if (spanned(grid)) {
+        refuse('This table merges cells with colspan or rowspan. Adding or removing a row ' +
+          'or column there would change which cell sits where, so Ryker leaves it alone.');
+        return null;
+      }
+      return cell;
+    }
+
+    function blank(tag) {
+      var cell = document.createElement(tag.toLowerCase());
+      Ryker.blocks.stamp(cell);
+      return cell;
+    }
+
+    function arm(cells) {
+      cells.forEach(function (cell) { if (Ryker.editable) Ryker.editable.rebind(cell); });
+    }
+
+    function caretIn(cell) {
+      try {
+        var r = document.createRange();
+        r.selectNodeContents(cell);
+        r.collapse(true);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(r);
+        cell.focus();
+      } catch (e) {}
+    }
+
+    function commit(label, made, undo, redo) {
+      Ryker.history.record({ label: label, undo: undo, redo: redo });
+      arm(made);
+      if (Ryker.editable) Ryker.editable.touch();
+      if (made.length) caretIn(made[0]);
+      return true;
+    }
+
+    function insertRow(node, side) {
+      var cell = usable(node);
+      if (!cell) return false;
+      var row = cell.parentNode;
+      var made = cellsOf(row).map(function (c) { return blank(c.tagName); });
+      var fresh = document.createElement('tr');
+      made.forEach(function (c) { fresh.appendChild(c); });
+      var at = side === 'above' ? row : row.nextSibling;
+      var host = row.parentNode;
+      host.insertBefore(fresh, at);
+      return commit(side === 'above' ? 'insert row above' : 'insert row below', made,
+        function () { if (fresh.parentNode) fresh.parentNode.removeChild(fresh); },
+        function () { host.insertBefore(fresh, at); arm(made); });
+    }
+
+    function removeRow(node) {
+      var cell = usable(node);
+      if (!cell) return false;
+      var row = cell.parentNode;
+      var grid = cell.closest('table');
+      if (rowsOf(grid).length < 2) {
+        return refuse('This is the table\'s only row. Delete the whole table instead, from ' +
+          'the toolbar that appears over it.');
+      }
+      var locked = cellsOf(row).filter(function (c) { return Ryker.blocks.excluded(c); });
+      if (locked.length) {
+        return refuse('A cell in this row is marked as not editable, so the row stays.');
+      }
+      var host = row.parentNode, at = row.nextSibling;
+      host.removeChild(row);
+      return commit('delete row', [],
+        function () { host.insertBefore(row, at); arm(cellsOf(row)); },
+        function () { if (row.parentNode) row.parentNode.removeChild(row); });
+    }
+
+    function insertColumn(node, side) {
+      var cell = usable(node);
+      if (!cell) return false;
+      var grid = cell.closest('table');
+      var col = indexOfCell(cell) + (side === 'left' ? 0 : 1);
+      var made = [], placed = [];
+      rowsOf(grid).forEach(function (row) {
+        var seats = cellsOf(row);
+        if (!seats.length) return;
+        // A header row keeps header cells, so the new column has a heading to be
+        // filled in rather than a body cell wearing the header's place.
+        var like = seats[Math.min(col, seats.length - 1)];
+        var fresh = blank(like.tagName);
+        made.push(fresh);
+        placed.push({ row: row, node: fresh, before: seats[col] || null });
+        row.insertBefore(fresh, seats[col] || null);
+      });
+      if (!made.length) return false;
+      return commit(side === 'left' ? 'insert column left' : 'insert column right', made,
+        function () {
+          placed.forEach(function (p) { if (p.node.parentNode) p.node.parentNode.removeChild(p.node); });
+        },
+        function () {
+          placed.forEach(function (p) { p.row.insertBefore(p.node, p.before); });
+          arm(made);
+        });
+    }
+
+    function removeColumn(node) {
+      var cell = usable(node);
+      if (!cell) return false;
+      var grid = cell.closest('table');
+      var col = indexOfCell(cell);
+      if (cellsOf(cell.parentNode).length < 2) {
+        return refuse('This is the table\'s only column. Delete the whole table instead, from ' +
+          'the toolbar that appears over it.');
+      }
+      var taken = [];
+      var blocked = false;
+      rowsOf(grid).forEach(function (row) {
+        var seat = cellsOf(row)[col];
+        if (!seat) return;
+        if (Ryker.blocks.excluded(seat)) blocked = true;
+        taken.push({ row: row, node: seat, before: seat.nextSibling });
+      });
+      if (blocked) {
+        return refuse('A cell in this column is marked as not editable, so the column stays.');
+      }
+      taken.forEach(function (t) { t.row.removeChild(t.node); });
+      return commit('delete column', [],
+        function () {
+          taken.forEach(function (t) { t.row.insertBefore(t.node, t.before); arm([t.node]); });
+        },
+        function () {
+          taken.forEach(function (t) { if (t.node.parentNode) t.node.parentNode.removeChild(t.node); });
+        });
+    }
+
     return {
       cellOf: cellOf, tableOf: tableOf, rowsOf: rowsOf, cellsOf: cellsOf,
-      rowText: rowText, seatId: seatId, seatLabel: seatLabel
+      rowText: rowText, seatId: seatId, seatLabel: seatLabel, seatOf: seatOf,
+      rowKey: rowKey, rowIndex: rowIndex, place: place,
+      completeRowDeletes: completeRowDeletes, spanned: spanned,
+      insertRow: insertRow, removeRow: removeRow,
+      insertColumn: insertColumn, removeColumn: removeColumn
     };
   })();
 
@@ -5787,6 +6114,383 @@
   })();
 
 
+  /* ---- instructions/steps.js ------------------------------------- */
+  // One edit, written as one numbered step someone can follow.
+  //
+  // Split out of instructions.js, which was doing two jobs: working out what
+  // changed, and writing English about it. The second job is the one that grows,
+  // because every new kind of edit Ryker can make needs a paragraph here that
+  // says how to apply it, and the module had reached its line cap with no room
+  // for the next one.
+  //
+  // Everything this needs about the surrounding set arrives in ctx rather than
+  // through the namespace, so a step can be written and tested without a live
+  // document: where() resolves a block's position, text() flattens HTML to
+  // prose, pristine() returns a block as authored, and stepOf/editedAt map a
+  // block id to the step number that creates or rewrites it.
+  Ryker.steps = (function () {
+    'use strict';
+
+    function clip(s, n) {
+      n = n || 80;
+      return s.length > n ? s.slice(0, n - 3) + '...' : s;
+    }
+
+    // Where an inserted block goes. An insert chained off another insert refers
+    // to the step that creates it, because the element it follows does not exist
+    // in the file yet, and one chained off a rewrite refers to that step rather
+    // than quoting wording it has already replaced.
+    function afterLine(e, ctx, out) {
+      if (e.prev && ctx.stepOf[e.prev]) {
+        out.push('Position: immediately after the element added in step ' + ctx.stepOf[e.prev] + '.');
+        return;
+      }
+      if (e.prev && ctx.editedAt[e.prev]) {
+        out.push('Position: immediately after the element edited in step ' + ctx.editedAt[e.prev] + '.');
+        return;
+      }
+      if (!e.prev) {
+        out.push('Position: as the first block of the document body.');
+        return;
+      }
+      var pw = ctx.where(e.prev);
+      out.push('Position: immediately after ' + (pw || 'the preceding block') + '.');
+      var ptext = ctx.text(ctx.pristine(e.prev) != null ? ctx.pristine(e.prev) : '');
+      if (ptext) out.push('That element begins: "' + clip(ptext) + '"');
+    }
+
+    function replaceStep(e, n, ctx, out) {
+      var changesTag = e.beforeTag && e.afterTag && e.beforeTag !== e.afterTag;
+      var sameContents = e.before === e.after;
+      var replacementList = e.afterTag === 'LI' && (e.boxTag === 'OL' || e.boxTag === 'UL');
+      if (replacementList) {
+        out.push('## ' + n + '. Change <' + e.beforeTag.toLowerCase() + '> to an ' +
+          (e.boxTag === 'OL' ? 'ordered' : 'unordered') + ' list');
+      } else if (changesTag) {
+        out.push('## ' + n + '. Change <' + e.beforeTag.toLowerCase() + '> to <' +
+          e.afterTag.toLowerCase() + '>' + (sameContents ? '' : ' and replace its contents'));
+      } else {
+        out.push('## ' + n + '. Replace the contents of ' +
+          (e.tag ? '<' + e.tag.toLowerCase() + '>' : 'a block'));
+      }
+      out.push('');
+      var w = ctx.where(e.id);
+      if (w) out.push('Position: ' + w);
+      out.push('');
+      if (changesTag && sameContents) {
+        out.push('Keep the element\'s contents and attributes unchanged. Its current contents are:');
+        out.push('<<<'); out.push(e.before); out.push('>>>');
+        return;
+      }
+      out.push('FROM:');
+      out.push('<<<'); out.push(e.before); out.push('>>>');
+      out.push('');
+      out.push('TO:');
+      out.push('<<<'); out.push(e.after); out.push('>>>');
+      out.push('');
+      out.push('Plain text of the new version, for confirmation:');
+      out.push('  ' + ctx.text(e.after));
+    }
+
+    function insertStep(e, n, ctx, out) {
+      var tag = (e.tag || 'p').toLowerCase();
+      var insertedList = tag === 'li' && (e.boxTag === 'OL' || e.boxTag === 'UL');
+      if (insertedList) {
+        out.push('## ' + n + '. Insert a new ' + (e.boxTag === 'OL' ? 'ordered' : 'unordered') +
+          ' list (<' + e.boxTag.toLowerCase() + '>) containing one <li>');
+      } else {
+        out.push('## ' + n + '. Insert a new <' + tag + '>');
+      }
+      out.push('');
+      afterLine(e, ctx, out);
+      out.push('');
+      out.push('CONTENT:');
+      out.push('<<<');
+      out.push(insertedList ? '<' + e.boxTag.toLowerCase() + '><li>' + e.after + '</li></' +
+        e.boxTag.toLowerCase() + '>' : e.after);
+      out.push('>>>');
+      out.push('');
+      out.push('Plain text, for confirmation:');
+      out.push('  ' + ctx.text(e.after));
+    }
+
+    function deleteBoxStep(e, n, ctx, out) {
+      out.push('## ' + n + '. Delete a whole <table>');
+      out.push('');
+      if (e.position) {
+        out.push('Position: the <table> containing ' + e.position + '.');
+        out.push('');
+      }
+      out.push('Remove the entire <table> element, its rows and its cells. Leave any');
+      out.push('caption, heading or paragraph around it alone unless another step names');
+      out.push('it. The table is the one whose cells read, in order:');
+      out.push('');
+      e.cells.forEach(function (c, k) {
+        out.push('  ' + (k + 1) + '. ' + clip(ctx.text(c), 90));
+      });
+    }
+
+    function deleteAtomicStep(e, n, ctx, out) {
+      out.push('## ' + n + '. Delete the whole <svg>');
+      out.push('');
+      var sw = ctx.where(e.id);
+      if (sw) { out.push('Position: ' + sw); out.push(''); }
+      out.push('Remove the entire SVG element, including all paths, shapes, labels and attributes.');
+      out.push('Leave its surrounding container and adjacent content unchanged. Match this exact element:');
+      out.push('<<<'); out.push(e.before); out.push('>>>');
+    }
+
+    function deleteStep(e, n, ctx, out) {
+      out.push('## ' + n + '. Delete a block');
+      out.push('');
+      var dw = ctx.where(e.id);
+      if (dw) {
+        out.push('Position: ' + dw);
+        out.push('');
+      }
+      out.push('Remove the element whose exact contents are:');
+      out.push('<<<'); out.push(e.before); out.push('>>>');
+      out.push('');
+      out.push('Plain text, for confirmation:');
+      out.push('  ' + ctx.text(e.before));
+    }
+
+    // ---- rows and columns ----------------------------------------------------
+    //
+    // A row and a column are not blocks, so a snapshot sees each of them as a
+    // handful of cells appearing or disappearing at once. Written that way the
+    // instructions were not merely verbose, they were wrong: "insert a <td>
+    // after this one" puts the cell in the row above the one it belongs to, and
+    // three of those rebuild a row nobody asked for. Grouped, the step says the
+    // one thing that has to happen to the source.
+
+    function rowOf(cells) {
+      return cells.map(function (c) { return c.html; });
+    }
+
+    function markup(tag, cells) {
+      return '<tr>' + cells.map(function (c) {
+        return '<' + tag + '>' + c.html + '</' + tag + '>';
+      }).join('') + '</tr>';
+    }
+
+    function addRowStep(e, n, ctx, out) {
+      var tag = e.cellTag === 'TH' ? 'th' : 'td';
+      out.push('## ' + n + '. Insert a new table row');
+      out.push('');
+      if (e.position) out.push('Position: in the <table> containing ' + e.position + '.');
+      if (e.afterRow) out.push('Put it immediately after the row reading: ' + e.afterRow);
+      else out.push('Put it as the first row of its row group.');
+      out.push('');
+      out.push('Insert one <tr> holding ' + e.cells.length + ' <' + tag + '> cell(s), in this order:');
+      out.push('<<<');
+      out.push(markup(tag, e.cells));
+      out.push('>>>');
+      out.push('');
+      out.push('Plain text of the new row, for confirmation:');
+      out.push('  ' + rowOf(e.cells).map(function (h) { return ctx.text(h) || '(blank)'; }).join(' | '));
+    }
+
+    function deleteRowStep(e, n, ctx, out) {
+      out.push('## ' + n + '. Delete a table row');
+      out.push('');
+      if (e.position) out.push('Position: in the <table> containing ' + e.position + '.');
+      out.push('');
+      out.push('Remove one whole <tr> and every cell inside it. Change no other row.');
+      out.push('It is the row whose cells read, in order:');
+      out.push('');
+      e.cells.forEach(function (c, k) {
+        out.push('  ' + (k + 1) + '. ' + (clip(ctx.text(c.html), 90) || '(blank)'));
+      });
+    }
+
+    function addColumnStep(e, n, ctx, out) {
+      out.push('## ' + n + '. Insert a new table column');
+      out.push('');
+      if (e.position) out.push('Position: in the <table> containing ' + e.position + '.');
+      out.push('Insert it as column ' + (e.col + 1) + ', counting from 1 at the left, in');
+      out.push('every row of the table including the header.');
+      out.push('');
+      out.push('Add one cell to each row, in row order, using <th> in a header row and');
+      out.push('<td> elsewhere:');
+      out.push('');
+      e.cells.forEach(function (c, k) {
+        out.push('  ' + (k + 1) + '. <' + (c.tag === 'TH' ? 'th' : 'td') + '>' + c.html +
+          '</' + (c.tag === 'TH' ? 'th' : 'td') + '>');
+      });
+    }
+
+    function deleteColumnStep(e, n, ctx, out) {
+      out.push('## ' + n + '. Delete a table column');
+      out.push('');
+      if (e.position) out.push('Position: in the <table> containing ' + e.position + '.');
+      out.push('Remove column ' + (e.col + 1) + ', counting from 1 at the left, from every');
+      out.push('row of the table including the header. Leave every other column alone.');
+      out.push('');
+      out.push('The cells being removed read, in row order:');
+      out.push('');
+      e.cells.forEach(function (c, k) {
+        out.push('  ' + (k + 1) + '. ' + (clip(ctx.text(c.html), 90) || '(blank)'));
+      });
+    }
+
+    // ---- collapsing cell edits back into the operation that made them --------
+    //
+    // A snapshot only ever sees blocks, so inserting one row of three cells
+    // arrives as three unrelated insertions and deleting one arrives as three
+    // deletions. Written out that way the set is not just long: it is wrong.
+    // "Insert a <td> after this one" puts the cell in the row above the one it
+    // belongs to, and three of those build a row nobody asked for. Here the
+    // cells are put back together into the single operation a person performed,
+    // which is also the single edit the source file needs.
+
+    function rowsIn(snap) {
+      var rows = {};
+      Object.keys(snap || {}).forEach(function (id) {
+        var e = snap[id];
+        if (!e || typeof e !== 'object' || !e.row) return;
+        (rows[e.row] = rows[e.row] || []).push(id);
+      });
+      Object.keys(rows).forEach(function (key) {
+        rows[key].sort(function (a, b) { return (snap[a].col || 0) - (snap[b].col || 0); });
+      });
+      return rows;
+    }
+
+    function cellsFrom(ids, snap, held) {
+      return ids.map(function (id) {
+        var e = snap[id] || {};
+        return { html: held[id] != null ? held[id] : (e.html || ''), tag: e.tag || 'TD', id: id };
+      });
+    }
+
+    function rowLabel(ids, snap, ctx) {
+      return ids.map(function (id) {
+        return ctx.text((snap[id] || {}).html || '') || '(blank)';
+      }).join(' | ');
+    }
+
+    // Rows whose every cell is in the change set, and which the other snapshot
+    // does not know about at all. Both halves matter: a row that merely lost all
+    // its text is not a row that was deleted.
+    function wholeRows(kind, list, from, to) {
+      var seen = {}, found = {};
+      list.forEach(function (e, i) {
+        if (e.kind !== kind || !e.row) return;
+        (seen[e.row] = seen[e.row] || []).push(i);
+      });
+      var fromRows = rowsIn(from), toRows = rowsIn(to);
+      Object.keys(seen).forEach(function (key) {
+        if (toRows[key] || !fromRows[key]) return;
+        if (fromRows[key].length !== seen[key].length) return;
+        found[key] = seen[key];
+      });
+      return found;
+    }
+
+    // Cells at one column index across two or more rows that survive on both
+    // sides. A column operation touches every row; one cell at that index is an
+    // ordinary block edit and stays one.
+    function wholeColumns(kind, list, taken, from, to) {
+      var seen = {}, found = {};
+      list.forEach(function (e, i) {
+        if (e.kind !== kind || e.col == null || !e.row || taken[e.row]) return;
+        (seen[e.col] = seen[e.col] || []).push(i);
+      });
+      var fromRows = rowsIn(from), toRows = rowsIn(to);
+      Object.keys(seen).forEach(function (col) {
+        var rows = seen[col].map(function (i) { return list[i].row; });
+        var spread = rows.filter(function (r, k) { return rows.indexOf(r) === k; });
+        if (spread.length < 2) return;
+        if (!spread.every(function (r) { return fromRows[r] && toRows[r]; })) return;
+        found[col] = seen[col];
+      });
+      return found;
+    }
+
+    function group(list, before, after, ctx) {
+      var beforeRows = rowsIn(before), afterRows = rowsIn(after);
+      var held = {};
+      list.forEach(function (e) { if (e.kind === 'insert') held[e.id] = e.after; });
+
+      var goneRows = wholeRows('delete', list, before, after);
+      var newRows = wholeRows('insert', list, after, before);
+      var goneCols = wholeColumns('delete', list, goneRows, before, after);
+      var newCols = wholeColumns('insert', list, newRows, after, before);
+      if (!Object.keys(goneRows).length && !Object.keys(newRows).length &&
+          !Object.keys(goneCols).length && !Object.keys(newCols).length) return list;
+
+      var out = [], done = {};
+      list.forEach(function (e, i) {
+        var rowKey = e.row;
+        var colKey = e.col == null ? null : String(e.col);
+
+        if (rowKey && goneRows[rowKey] && e.kind === 'delete') {
+          if (done['r' + rowKey]) return;
+          done['r' + rowKey] = true;
+          out.push({ kind: 'deleterow', position: ctx.where(e.id),
+            cells: cellsFrom(beforeRows[rowKey], before, held) });
+          return;
+        }
+        if (rowKey && newRows[rowKey] && e.kind === 'insert') {
+          if (done['a' + rowKey]) return;
+          done['a' + rowKey] = true;
+          var ids = afterRows[rowKey];
+          var above = (after[ids[0]] || {}).prev;
+          var aboveRow = above && after[above] ? after[above].row : null;
+          out.push({ kind: 'addrow',
+            position: above ? ctx.where(above) : ctx.where(e.id),
+            afterRow: aboveRow && afterRows[aboveRow]
+              ? '"' + rowLabel(afterRows[aboveRow], after, ctx) + '"' : null,
+            cellTag: (after[ids[0]] || {}).tag || 'TD',
+            cells: cellsFrom(ids, after, held) });
+          return;
+        }
+        if (colKey !== null && goneCols[colKey] && e.kind === 'delete' && !goneRows[rowKey]) {
+          if (done['dc' + colKey]) return;
+          done['dc' + colKey] = true;
+          out.push({ kind: 'delcol', col: e.col, position: ctx.where(e.id),
+            cells: goneCols[colKey].map(function (j) {
+              return { html: list[j].before, tag: list[j].tag || 'TD' };
+            }) });
+          return;
+        }
+        if (colKey !== null && newCols[colKey] && e.kind === 'insert' && !newRows[rowKey]) {
+          if (done['ac' + colKey]) return;
+          done['ac' + colKey] = true;
+          // Positioned by the cell it follows, never by itself. A new cell has no
+          // place in the file being edited, so "the 3rd <th>" counted a column
+          // that only exists on screen and sent the reader looking for it.
+          out.push({ kind: 'addcol', col: e.col,
+            position: e.prev ? ctx.where(e.prev) : null,
+            cells: newCols[colKey].map(function (j) {
+              return { html: list[j].after, tag: list[j].tag || 'TD' };
+            }) });
+          return;
+        }
+        out.push(e);
+      });
+      return out;
+    }
+
+    function write(e, n, ctx, out) {
+      if (e.kind === 'replace') return replaceStep(e, n, ctx, out);
+      if (e.kind === 'insert') return insertStep(e, n, ctx, out);
+      if (e.kind === 'deletebox') return deleteBoxStep(e, n, ctx, out);
+      if (e.kind === 'addrow') return addRowStep(e, n, ctx, out);
+      if (e.kind === 'deleterow') return deleteRowStep(e, n, ctx, out);
+      if (e.kind === 'addcol') return addColumnStep(e, n, ctx, out);
+      if (e.kind === 'delcol') return deleteColumnStep(e, n, ctx, out);
+      if (e.kind === 'delete' && e.atomic && String(e.tag).toUpperCase() === 'SVG') {
+        return deleteAtomicStep(e, n, ctx, out);
+      }
+      return deleteStep(e, n, ctx, out);
+    }
+
+    return { write: write, group: group, clip: clip };
+  })();
+
+
   /* ---- instructions/instructions.js ------------------------------ */
   // Turns a session's edits into a prompt an AI can act on.
   //
@@ -5895,7 +6599,8 @@
           before: c.before, after: c.after,
           tag: c.tag || null, beforeTag: c.beforeTag || null,
           afterTag: c.afterTag || c.tag || null, prev: c.prev || null,
-          atomic: !!c.atomic, box: c.box || null, boxTag: c.boxTag || null
+          atomic: !!c.atomic, box: c.box || null, boxTag: c.boxTag || null,
+          row: c.row || null, col: c.col == null ? null : c.col
         };
       });
     }
@@ -6168,7 +6873,10 @@
 
     function build() {
       var cfg = Ryker.config.load();
-      var list = groupBoxes(edits());
+      // Whole tables first, then the rows and columns inside the ones that
+      // survived. Reversing the two would take a deleted table apart row by row.
+      var list = Ryker.steps.group(groupBoxes(edits()), pristine, saved,
+        { where: where, text: text });
       var mv = moves();
       var out = [];
 
@@ -6256,118 +6964,15 @@
         out.push('');
       });
 
+      // Every function a step needs to describe the set it belongs to. Passed in
+      // rather than reached for, so instructions/steps.js can be read, changed
+      // and reasoned about without a live document behind it.
+      var ctx = { where: where, text: text, pristine: pristineHtml,
+                  stepOf: stepOf, editedAt: editedAt };
       list.forEach(function (e, i) {
-        var n = base + i + 1;
         out.push('---');
         out.push('');
-
-        if (e.kind === 'replace') {
-          var changesTag = e.beforeTag && e.afterTag && e.beforeTag !== e.afterTag;
-          var sameContents = e.before === e.after;
-          var replacementList = e.afterTag === 'LI' && (e.boxTag === 'OL' || e.boxTag === 'UL');
-          if (replacementList) {
-            out.push('## ' + n + '. Change <' + e.beforeTag.toLowerCase() + '> to an ' +
-              (e.boxTag === 'OL' ? 'ordered' : 'unordered') + ' list');
-          } else if (changesTag) {
-            out.push('## ' + n + '. Change <' + e.beforeTag.toLowerCase() + '> to <' +
-              e.afterTag.toLowerCase() + '>' + (sameContents ? '' : ' and replace its contents'));
-          } else {
-            out.push('## ' + n + '. Replace the contents of ' +
-              (e.tag ? '<' + e.tag.toLowerCase() + '>' : 'a block'));
-          }
-          out.push('');
-          var w = where(e.id);
-          if (w) out.push('Position: ' + w);
-          out.push('');
-          if (changesTag && sameContents) {
-            out.push('Keep the element\'s contents and attributes unchanged. Its current contents are:');
-            out.push('<<<'); out.push(e.before); out.push('>>>');
-          } else {
-            out.push('FROM:');
-            out.push('<<<'); out.push(e.before); out.push('>>>');
-            out.push('');
-            out.push('TO:');
-            out.push('<<<'); out.push(e.after); out.push('>>>');
-            out.push('');
-            out.push('Plain text of the new version, for confirmation:');
-            out.push('  ' + text(e.after));
-          }
-
-        } else if (e.kind === 'insert') {
-          var tag = (e.tag || 'p').toLowerCase();
-          var insertedList = tag === 'li' && (e.boxTag === 'OL' || e.boxTag === 'UL');
-          if (insertedList) {
-            out.push('## ' + n + '. Insert a new ' + (e.boxTag === 'OL' ? 'ordered' : 'unordered') +
-              ' list (<'+ e.boxTag.toLowerCase() + '>) containing one <li>');
-          } else {
-            out.push('## ' + n + '. Insert a new <' + tag + '>');
-          }
-          out.push('');
-          if (e.prev && stepOf[e.prev]) {
-            out.push('Position: immediately after the element added in step ' + stepOf[e.prev] + '.');
-          } else if (e.prev && editedAt[e.prev]) {
-            // Quoting the original text here would point at wording an earlier
-            // step has already replaced.
-            out.push('Position: immediately after the element edited in step ' + editedAt[e.prev] + '.');
-          } else if (e.prev) {
-            var pw = where(e.prev);
-            out.push('Position: immediately after ' + (pw || 'the preceding block') + '.');
-            var ptext = text(pristineHtml(e.prev) != null ? pristineHtml(e.prev) : '');
-            if (ptext) {
-              out.push('That element begins: "' + (ptext.length > 80 ? ptext.slice(0, 77) + '...' : ptext) + '"');
-            }
-          } else {
-            out.push('Position: as the first block of the document body.');
-          }
-          out.push('');
-          out.push('CONTENT:');
-          out.push('<<<');
-          out.push(insertedList ? '<' + e.boxTag.toLowerCase() + '><li>' + e.after + '</li></' +
-            e.boxTag.toLowerCase() + '>' : e.after);
-          out.push('>>>');
-          out.push('');
-          out.push('Plain text, for confirmation:');
-          out.push('  ' + text(e.after));
-
-        } else if (e.kind === 'deletebox') {
-          out.push('## ' + n + '. Delete a whole <table>');
-          out.push('');
-          if (e.position) {
-            out.push('Position: the <table> containing ' + e.position + '.');
-            out.push('');
-          }
-          out.push('Remove the entire <table> element, its rows and its cells. Leave any');
-          out.push('caption, heading or paragraph around it alone unless another step names');
-          out.push('it. The table is the one whose cells read, in order:');
-          out.push('');
-          e.cells.forEach(function (c, k) {
-            var t = text(c);
-            out.push('  ' + (k + 1) + '. ' + (t.length > 90 ? t.slice(0, 87) + '...' : t));
-          });
-
-        } else if (e.kind === 'delete' && e.atomic && String(e.tag).toUpperCase() === 'SVG') {
-          out.push('## ' + n + '. Delete the whole <svg>');
-          out.push('');
-          var sw = where(e.id);
-          if (sw) { out.push('Position: ' + sw); out.push(''); }
-          out.push('Remove the entire SVG element, including all paths, shapes, labels and attributes.');
-          out.push('Leave its surrounding container and adjacent content unchanged. Match this exact element:');
-          out.push('<<<'); out.push(e.before); out.push('>>>');
-
-        } else {
-          out.push('## ' + n + '. Delete a block');
-          out.push('');
-          var dw = where(e.id);
-          if (dw) {
-            out.push('Position: ' + dw);
-            out.push('');
-          }
-          out.push('Remove the element whose exact contents are:');
-          out.push('<<<'); out.push(e.before); out.push('>>>');
-          out.push('');
-          out.push('Plain text, for confirmation:');
-          out.push('  ' + text(e.before));
-        }
+        Ryker.steps.write(e, base + i + 1, ctx, out);
         out.push('');
       });
 

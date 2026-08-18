@@ -7,7 +7,7 @@
 Ryker.formatbar = (function () {
   'use strict';
 
-  var node = null, typeBtn = null, killBtn = null, linkBtn = null;
+  var node = null, typeBtn = null, killBtn = null, linkBtn = null, gridBtn = null;
   var lastRange = null;
   var formatParts = [];
 
@@ -61,11 +61,28 @@ Ryker.formatbar = (function () {
       { label: 'Heading 5', run: function () { retype('H5'); } }
     ]);
 
+    // Rows and columns. A menu rather than six buttons, because the bar sits
+    // over the words being edited and six more controls would cover them.
+    gridBtn = Ryker.icons.button('grid', 'Rows and columns', null, 'fb-btn');
+    gridBtn.addEventListener('mousedown', function (e) { e.preventDefault(); });
+    Ryker.menu.attach(gridBtn, function () {
+      var cell = tableCell();
+      return [
+        { label: 'Insert row above', run: function () { Ryker.table.insertRow(cell, 'above'); } },
+        { label: 'Insert row below', run: function () { Ryker.table.insertRow(cell, 'below'); } },
+        { label: 'Delete row', danger: true, run: function () { Ryker.table.removeRow(cell); } },
+        null,
+        { label: 'Insert column left', run: function () { Ryker.table.insertColumn(cell, 'left'); } },
+        { label: 'Insert column right', run: function () { Ryker.table.insertColumn(cell, 'right'); } },
+        { label: 'Delete column', danger: true, run: function () { Ryker.table.removeColumn(cell); } }
+      ];
+    });
+
     // Destructive, so it is last, separated, and says how much it will take.
     killBtn = act(null, 'Delete', function () {
       if (!Ryker.multi) return;
       if (Ryker.multi.covered().length) Ryker.multi.removeSelection();
-      else Ryker.multi.removeTableAt(currentBlock());
+      else Ryker.multi.removeTableAt(currentBlock() || tableCell());
       hide();
     }, 'trash');
     killBtn.classList.add('fb-kill');
@@ -82,7 +99,7 @@ Ryker.formatbar = (function () {
     ];
 
     node = d().el('div', { class: 'formatbar', role: 'toolbar', 'aria-label': 'Formatting' },
-      formatParts.concat([d().el('span', { class: 'fb-sep fb-kill-sep' }), killBtn]));
+      formatParts.concat([gridBtn, d().el('span', { class: 'fb-sep fb-kill-sep' }), killBtn]));
     node.style.display = 'none';
     node.addEventListener('mousedown', function (e) { e.preventDefault(); });
     Ryker.shell.add(node);
@@ -95,6 +112,20 @@ Ryker.formatbar = (function () {
     var n = sel.getRangeAt(0).commonAncestorContainer;
     if (n.nodeType === 3) n = n.parentNode;
     return n && n.closest ? n.closest('[contenteditable="true"]') : null;
+  }
+
+  // The cell the caret rests in. Read from the selection rather than from the
+  // block, so it is found with nothing selected: reaching for "insert a row"
+  // means putting the caret in the table, not highlighting a word first.
+  function tableCell() {
+    if (!Ryker.editable.isOn() || !Ryker.table) return null;
+    var sel = window.getSelection();
+    if (!sel || !sel.rangeCount) return null;
+    var n = sel.getRangeAt(0).commonAncestorContainer;
+    if (n.nodeType === 3) n = n.parentNode;
+    if (!n || !n.closest || (Ryker.shell && Ryker.shell.owns(n))) return null;
+    var cell = Ryker.table.cellOf(n);
+    return cell && Ryker.blocks.root().contains(cell) ? cell : null;
   }
 
   function retype(tag) {
@@ -141,14 +172,20 @@ Ryker.formatbar = (function () {
     var many = spanning();
     var range = editableSelection();
     var link = (!range && !many.length && Ryker.links) ? Ryker.links.at(null) : null;
-    if (!range && !many.length && !link) { hide(); return; }
+    // A caret parked in a cell with nothing selected is the state someone is in
+    // when they want another row. Requiring a selection first made the row and
+    // column controls reachable only by highlighting a word one did not intend
+    // to change.
+    var cell = (!range && !many.length && !link) ? tableCell() : null;
+    if (!range && !many.length && !link && !cell) { hide(); return; }
     build();
 
     if (range) lastRange = range.cloneRange();
     // getRangeAt(0) throws when rangeCount is 0, which is exactly the state a
     // pick leaves behind, so the picked set supplies its own box instead.
     var rect = range ? range.getBoundingClientRect()
-             : (link ? link.getBoundingClientRect() : Ryker.pick.rect());
+             : (link ? link.getBoundingClientRect()
+                     : (cell ? cell.getBoundingClientRect() : Ryker.pick.rect()));
     if (!rect || (!rect.width && !rect.height)) { hide(); return; }
 
     var block = range ? currentBlock() : null;
@@ -156,21 +193,24 @@ Ryker.formatbar = (function () {
     var atomic = many.length === 1 && Ryker.blocks.atomic(many[0]);
     var wide = many.length > 1 || atomic;
 
-    // Three modes. A picked run of blocks gets only Delete, a caret resting in
-    // a link gets only the link control, and ordinary selected text gets the
-    // formatting set.
+    // Four modes. A picked run of blocks gets only Delete, a caret resting in
+    // a link gets only the link control, a caret resting in a cell gets only
+    // the grid controls, and ordinary selected text gets the formatting set.
     formatParts.forEach(function (n) {
-      n.style.display = wide ? 'none' : (link && n !== linkBtn ? 'none' : '');
+      n.style.display = (wide || cell) ? 'none' : (link && n !== linkBtn ? 'none' : '');
     });
+    var grid = cell || (range ? tableCell() : null);
+    gridBtn.style.display = grid ? '' : 'none';
     if (link) Ryker.tooltip.attach(linkBtn, 'Edit this link');
     else Ryker.tooltip.attach(linkBtn, 'Link the selected text');
-    var show = wide || !!table;
+    var show = wide || !!table || !!cell;
     killBtn.style.display = show ? '' : 'none';
     node.querySelector('.fb-kill-sep').style.display = (show && !wide) ? '' : 'none';
     if (show) {
       Ryker.tooltip.attach(killBtn,
         atomic ? 'Delete this whole SVG' :
           (many.length > 1 ? 'Delete the ' + many.length + ' selected blocks' : 'Delete this whole table'));
+      Ryker.tooltip.attach(gridBtn, 'Add or remove a row or column');
     }
 
     if (!wide && !link) {

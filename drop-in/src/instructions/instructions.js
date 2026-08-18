@@ -105,7 +105,8 @@ Ryker.instructions = (function () {
         before: c.before, after: c.after,
         tag: c.tag || null, beforeTag: c.beforeTag || null,
         afterTag: c.afterTag || c.tag || null, prev: c.prev || null,
-        atomic: !!c.atomic, box: c.box || null, boxTag: c.boxTag || null
+        atomic: !!c.atomic, box: c.box || null, boxTag: c.boxTag || null,
+        row: c.row || null, col: c.col == null ? null : c.col
       };
     });
   }
@@ -378,7 +379,10 @@ Ryker.instructions = (function () {
 
   function build() {
     var cfg = Ryker.config.load();
-    var list = groupBoxes(edits());
+    // Whole tables first, then the rows and columns inside the ones that
+    // survived. Reversing the two would take a deleted table apart row by row.
+    var list = Ryker.steps.group(groupBoxes(edits()), pristine, saved,
+      { where: where, text: text });
     var mv = moves();
     var out = [];
 
@@ -466,118 +470,15 @@ Ryker.instructions = (function () {
       out.push('');
     });
 
+    // Every function a step needs to describe the set it belongs to. Passed in
+    // rather than reached for, so instructions/steps.js can be read, changed
+    // and reasoned about without a live document behind it.
+    var ctx = { where: where, text: text, pristine: pristineHtml,
+                stepOf: stepOf, editedAt: editedAt };
     list.forEach(function (e, i) {
-      var n = base + i + 1;
       out.push('---');
       out.push('');
-
-      if (e.kind === 'replace') {
-        var changesTag = e.beforeTag && e.afterTag && e.beforeTag !== e.afterTag;
-        var sameContents = e.before === e.after;
-        var replacementList = e.afterTag === 'LI' && (e.boxTag === 'OL' || e.boxTag === 'UL');
-        if (replacementList) {
-          out.push('## ' + n + '. Change <' + e.beforeTag.toLowerCase() + '> to an ' +
-            (e.boxTag === 'OL' ? 'ordered' : 'unordered') + ' list');
-        } else if (changesTag) {
-          out.push('## ' + n + '. Change <' + e.beforeTag.toLowerCase() + '> to <' +
-            e.afterTag.toLowerCase() + '>' + (sameContents ? '' : ' and replace its contents'));
-        } else {
-          out.push('## ' + n + '. Replace the contents of ' +
-            (e.tag ? '<' + e.tag.toLowerCase() + '>' : 'a block'));
-        }
-        out.push('');
-        var w = where(e.id);
-        if (w) out.push('Position: ' + w);
-        out.push('');
-        if (changesTag && sameContents) {
-          out.push('Keep the element\'s contents and attributes unchanged. Its current contents are:');
-          out.push('<<<'); out.push(e.before); out.push('>>>');
-        } else {
-          out.push('FROM:');
-          out.push('<<<'); out.push(e.before); out.push('>>>');
-          out.push('');
-          out.push('TO:');
-          out.push('<<<'); out.push(e.after); out.push('>>>');
-          out.push('');
-          out.push('Plain text of the new version, for confirmation:');
-          out.push('  ' + text(e.after));
-        }
-
-      } else if (e.kind === 'insert') {
-        var tag = (e.tag || 'p').toLowerCase();
-        var insertedList = tag === 'li' && (e.boxTag === 'OL' || e.boxTag === 'UL');
-        if (insertedList) {
-          out.push('## ' + n + '. Insert a new ' + (e.boxTag === 'OL' ? 'ordered' : 'unordered') +
-            ' list (<'+ e.boxTag.toLowerCase() + '>) containing one <li>');
-        } else {
-          out.push('## ' + n + '. Insert a new <' + tag + '>');
-        }
-        out.push('');
-        if (e.prev && stepOf[e.prev]) {
-          out.push('Position: immediately after the element added in step ' + stepOf[e.prev] + '.');
-        } else if (e.prev && editedAt[e.prev]) {
-          // Quoting the original text here would point at wording an earlier
-          // step has already replaced.
-          out.push('Position: immediately after the element edited in step ' + editedAt[e.prev] + '.');
-        } else if (e.prev) {
-          var pw = where(e.prev);
-          out.push('Position: immediately after ' + (pw || 'the preceding block') + '.');
-          var ptext = text(pristineHtml(e.prev) != null ? pristineHtml(e.prev) : '');
-          if (ptext) {
-            out.push('That element begins: "' + (ptext.length > 80 ? ptext.slice(0, 77) + '...' : ptext) + '"');
-          }
-        } else {
-          out.push('Position: as the first block of the document body.');
-        }
-        out.push('');
-        out.push('CONTENT:');
-        out.push('<<<');
-        out.push(insertedList ? '<' + e.boxTag.toLowerCase() + '><li>' + e.after + '</li></' +
-          e.boxTag.toLowerCase() + '>' : e.after);
-        out.push('>>>');
-        out.push('');
-        out.push('Plain text, for confirmation:');
-        out.push('  ' + text(e.after));
-
-      } else if (e.kind === 'deletebox') {
-        out.push('## ' + n + '. Delete a whole <table>');
-        out.push('');
-        if (e.position) {
-          out.push('Position: the <table> containing ' + e.position + '.');
-          out.push('');
-        }
-        out.push('Remove the entire <table> element, its rows and its cells. Leave any');
-        out.push('caption, heading or paragraph around it alone unless another step names');
-        out.push('it. The table is the one whose cells read, in order:');
-        out.push('');
-        e.cells.forEach(function (c, k) {
-          var t = text(c);
-          out.push('  ' + (k + 1) + '. ' + (t.length > 90 ? t.slice(0, 87) + '...' : t));
-        });
-
-      } else if (e.kind === 'delete' && e.atomic && String(e.tag).toUpperCase() === 'SVG') {
-        out.push('## ' + n + '. Delete the whole <svg>');
-        out.push('');
-        var sw = where(e.id);
-        if (sw) { out.push('Position: ' + sw); out.push(''); }
-        out.push('Remove the entire SVG element, including all paths, shapes, labels and attributes.');
-        out.push('Leave its surrounding container and adjacent content unchanged. Match this exact element:');
-        out.push('<<<'); out.push(e.before); out.push('>>>');
-
-      } else {
-        out.push('## ' + n + '. Delete a block');
-        out.push('');
-        var dw = where(e.id);
-        if (dw) {
-          out.push('Position: ' + dw);
-          out.push('');
-        }
-        out.push('Remove the element whose exact contents are:');
-        out.push('<<<'); out.push(e.before); out.push('>>>');
-        out.push('');
-        out.push('Plain text, for confirmation:');
-        out.push('  ' + text(e.before));
-      }
+      Ryker.steps.write(e, base + i + 1, ctx, out);
       out.push('');
     });
 

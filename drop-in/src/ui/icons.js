@@ -28,6 +28,7 @@ Ryker.icons = (function () {
       '<circle cx="3.2" cy="8" r=".8" fill="currentColor" stroke="none"/>' +
       '<circle cx="3.2" cy="11.5" r=".8" fill="currentColor" stroke="none"/>',
     package: '<path d="M8 2.5 13.5 5.5v5L8 13.5 2.5 10.5v-5z"/><path d="M2.5 5.5 8 8.5l5.5-3"/><path d="M8 8.5v5"/>',
+    grid: '<path d="M2.5 3.5h11v9h-11z"/><path d="M2.5 6.5h11"/><path d="M6.5 3.5v9"/>',
     note: '<path d="M3.5 2.5h9v11h-9z"/><path d="M5.5 5.5h5"/>' +
           '<path d="M5.5 8h5"/><path d="M5.5 10.5h3.5"/>',
     up: '<path d="M8 12.5V3.5"/><path d="M4.5 7 8 3.5 11.5 7"/>',

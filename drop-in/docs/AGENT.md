@@ -62,6 +62,12 @@ rewording a cell does not change it. Put the attribute on the `<td>` or `<th>`
 itself when that cell's text is the key. To lock a whole table, give the
 `<table>` a `data-ryker-lock`.
 
+**Expect rows and columns to change.** Ryker can insert and delete whole table
+rows and columns, so a report's table is not a fixed shape. Two consequences
+for anything authoring one: do not hard-code a row or column count in the
+report's own script, and avoid `colspan` and `rowspan` where the table is meant
+to be edited, since Ryker declines to reshape a table that merges cells.
+
 **Keep report UI out of editable regions.** If the report has its own controls,
 filters or navigation inside `main`, give them `data-ryker-lock`.
 

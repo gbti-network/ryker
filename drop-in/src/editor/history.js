@@ -20,6 +20,7 @@ Ryker.history = (function () {
   var applying = false;
   var baselineNodes = {};
   var baselineBoxes = {};
+  var baselineRows = {};
 
   var pending = null;   // block being typed into
   var timer = null;
@@ -115,6 +116,7 @@ Ryker.history = (function () {
   function captureBaseline(snapshot) {
     baselineNodes = {};
     baselineBoxes = {};
+    baselineRows = {};
     Object.keys(snapshot || {}).forEach(function (id) {
       var node = Ryker.blocks.byId(id);
       if (!node) return;
@@ -124,11 +126,34 @@ Ryker.history = (function () {
       if (box && !baselineBoxes[boxId]) {
         baselineBoxes[boxId] = { node: box, parent: box.parentNode, next: box.nextSibling };
       }
+      // A row is a container in exactly the way a table is, and Discard has to
+      // put one back for the same reason. Deleting a row detaches the <tr>, so
+      // its cells were restored into an element no longer in the document and
+      // disappeared from the report while Discard reported success.
+      var rowId = snapshot[id] && snapshot[id].row;
+      var row = rowId && node.closest ? node.closest('tr') : null;
+      if (row && !baselineRows[rowId]) {
+        baselineRows[rowId] = { node: row, parent: row.parentNode, next: row.nextSibling };
+      }
     });
   }
 
   function restoreBaseline(snapshot, armed) {
     flushText();
+
+    // Containers come back before anything is measured. A cell added inside a
+    // row and then deleted along with that row is invisible to a snapshot for
+    // as long as the row is detached, so it was never counted as an extra and
+    // rode back into the document when the row returned. Tables before rows,
+    // because a row cannot be restored into a <tbody> that is not in the
+    // document yet.
+    Object.keys(baselineBoxes).reverse().forEach(function (id) {
+      if (!baselineBoxes[id].node.isConnected) restore(baselineBoxes[id]);
+    });
+    Object.keys(baselineRows).reverse().forEach(function (id) {
+      if (!baselineRows[id].node.isConnected) restore(baselineRows[id]);
+    });
+
     var current = Ryker.blocks.snapshot();
     var extras = [];
 
@@ -148,6 +173,14 @@ Ryker.history = (function () {
       var parent = node.parentNode;
       if (!parent) return;
       parent.removeChild(node);
+      // An added row's cells are extras; the <tr> holding them is not a block
+      // and nothing else would ever remove it, so Discard left an empty stripe
+      // across the table.
+      if (parent.matches && parent.matches('tr') && !parent.children.length &&
+          parent.parentNode && !baselineRows[Ryker.table.rowKey(parent)]) {
+        parent.parentNode.removeChild(parent);
+        return;
+      }
       if (parent.matches && parent.matches('ul, ol, dl') &&
           !parent.querySelector(Ryker.blocks.SELECTOR) && parent.parentNode) {
         parent.parentNode.removeChild(parent);
@@ -160,9 +193,6 @@ Ryker.history = (function () {
     }
 
     extras.forEach(removeExtra);
-    Object.keys(baselineBoxes).reverse().forEach(function (id) {
-      if (!baselineBoxes[id].node.isConnected) restore(baselineBoxes[id]);
-    });
     Object.keys(snapshot).reverse().forEach(function (id) {
       var ref = baselineNodes[id];
       if (!ref) return;

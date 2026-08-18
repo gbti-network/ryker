@@ -76,8 +76,8 @@ it is the case Ryker most needs to work in.
 ## What it does
 
 - **Edit mode** turns prose into editable blocks. Paragraphs, list items, table
-  cells, headings, captions. Not the chart, not table structure, not any element
-  the host page's own script reads, not image sources.
+  cells, headings, captions. Not the chart, not any element the host page's own
+  script reads, not image sources.
 - **Inside a table** every cell is prose, including a blank one, which is a hole
   someone opened the document to fill rather than a block with nothing to say.
   A cell is named by the row it sits in and the column it sits under, so filling
@@ -86,6 +86,15 @@ it is the case Ryker most needs to work in.
   cell would add a cell and change what the row means. A `data-sort` or
   `data-effort` on the table, a row group or a row describes how the container
   behaves, not what a cell says, so it locks neither.
+- **Rows and columns** are the one piece of structure Ryker changes. Put the
+  caret in any cell and a small bar appears over the table offering insert row
+  above or below, delete row, insert column left or right, and delete column.
+  Nothing needs to be selected first. Each has one undo, and each reaches the
+  instructions as a single step rather than one per cell, because "insert a
+  `<td>` after this one" would put the cell in the row above the one it belongs
+  to. Two cases are declined out loud rather than guessed at: a table that
+  merges cells with `colspan` or `rowspan`, where row N column M no longer
+  names one cell, and a row or column holding a locked cell.
 - **The outline rail** lists the document's own structure down the left edge:
   every section, heading, table, figure, quote and paragraph, collapsed below
   the second level. Clicking a row selects what it covers, right-clicking offers

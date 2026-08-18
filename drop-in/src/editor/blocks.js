@@ -297,13 +297,15 @@ Ryker.blocks = (function () {
     var list = tracked();
     list.forEach(function (b, i) {
       var box = boxOf(b.node);
+      var seat = Ryker.table.seatOf(b.node);
       snap[b.id] = {
         html: atomic(b.node) ? atomicHtml(b.node) : b.node.innerHTML,
         tag: b.node.tagName,
         prev: i > 0 ? list[i - 1].id : null,
         box: box ? boxKey(b.node) : null,
         boxTag: box ? box.tagName : null,
-        atomic: atomic(b.node)
+        atomic: atomic(b.node),
+        row: seat ? seat.row : null, col: seat ? seat.col : null
       };
     });
     return snap;
@@ -328,7 +330,8 @@ Ryker.blocks = (function () {
       if (!Object.prototype.hasOwnProperty.call(before, id)) {
         changes.push({
           id: id, before: null, after: htmlOf(a), kind: 'added',
-          tag: a.tag, prev: a.prev, box: a.box || null, boxTag: a.boxTag || null
+          tag: a.tag, prev: a.prev, box: a.box || null, boxTag: a.boxTag || null,
+          row: a.row || null, col: a.col == null ? null : a.col
         });
       } else if (htmlOf(before[id]) !== htmlOf(a) ||
                  (before[id] && before[id].tag) !== a.tag) {
@@ -336,7 +339,8 @@ Ryker.blocks = (function () {
                        kind: 'changed', tag: a.tag,
                        beforeTag: before[id] && before[id].tag || null,
                        afterTag: a.tag || null, prev: a.prev || null,
-                       box: a.box || null, boxTag: a.boxTag || null });
+                       box: a.box || null, boxTag: a.boxTag || null,
+                       row: a.row || null, col: a.col == null ? null : a.col });
       }
     });
     Object.keys(before).forEach(function (id) {
@@ -346,7 +350,8 @@ Ryker.blocks = (function () {
         changes.push({ id: id, before: htmlOf(was), after: null, kind: 'removed',
                        tag: meta.tag || null, atomic: !!meta.atomic,
                        prev: meta.prev || null,
-                       box: meta.box || null, boxTag: meta.boxTag || null });
+                       box: meta.box || null, boxTag: meta.boxTag || null,
+                       row: meta.row || null, col: meta.col == null ? null : meta.col });
       }
     });
     return changes;
@@ -365,6 +370,7 @@ Ryker.blocks = (function () {
   }
 
   function insertNew(node, c, anchor, context) {
+    if (Ryker.table.place(node, c, anchor, context)) return;
     var boxTag = String(c.boxTag || '').toUpperCase();
     var box = c.box && context.boxes[c.box];
     if (c.box && /^(OL|UL|DL|FIGURE)$/.test(boxTag)) {
@@ -385,7 +391,7 @@ Ryker.blocks = (function () {
   }
 
   function applyChange(c, context) {
-    context = context || { boxes: boxIndex() };
+    context = context || { boxes: boxIndex(), rows: Ryker.table.rowIndex() };
     var node = byId(c.id);
     var tag = String(c.afterTag || c.tag || '').toUpperCase();
     var validTag = /^(H[1-5]|P|LI|TD|TH|FIGCAPTION|CAPTION|BLOCKQUOTE|DD|DT|SVG)$/.test(tag);
@@ -500,10 +506,11 @@ Ryker.blocks = (function () {
   function applyRecords(records) {
     var applied = 0, missed = 0, moved = 0, orderMissed = 0;
     (records || []).forEach(function (r) {
-      var context = { boxes: boxIndex() };
+      var context = { boxes: boxIndex(), rows: Ryker.table.rowIndex() };
       var boxed = completeBoxDeletes(r.changes || [], context);
+      var rowed = Ryker.table.completeRowDeletes(r.changes || [], context, tracked());
       (r.changes || []).forEach(function (c) {
-        if (boxed[c.id] || applyChange(c, context)) applied += 1; else missed += 1;
+        if (boxed[c.id] || rowed[c.id] || applyChange(c, context)) applied += 1; else missed += 1;
       });
       if (Array.isArray(r.order)) {
         var ordered = applyOrder(r.order);

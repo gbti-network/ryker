@@ -238,6 +238,67 @@ async function runBuild(sess, file) {
   'a blank table cell is editable, named by its place in the grid and recorded as an edit',
   JSON.stringify(blankCell));
 
+  // --- rows and columns -----------------------------------------------------
+  //
+  // Structure, which the rest of the editor deliberately refuses to touch. The
+  // four things that have to hold are that each operation reshapes the grid,
+  // that one undo puts it back, that the recorded changes replay into a fresh
+  // copy of the document and land in the right row, and that each one reads as
+  // a single instruction rather than one per cell.
+  const gridOps = await evaluate(sess, `(function () {
+    var shape = function () {
+      return Array.prototype.map.call(document.querySelectorAll('#grid table tr'), function (r) {
+        return Array.prototype.map.call(r.children, function (c) {
+          return c.tagName + ':' + (c.textContent || '').trim();
+        });
+      });
+    };
+    var start = shape();
+    var cell = document.querySelector('#grid tbody tr:first-child td:first-child');
+    Ryker.table.insertRow(cell, 'below');
+    var rowAdded = shape();
+    var dirty = Ryker.editable.isDirty();
+    Ryker.table.insertColumn(cell, 'right');
+    var colAdded = shape();
+    Ryker.table.removeRow(document.querySelector('#grid tbody tr:last-child td'));
+    var rowGone = shape();
+    Ryker.table.removeColumn(document.querySelector('#grid thead th'));
+    var colGone = shape();
+    Ryker.editable.revertAll();
+    return { start: start, rowAdded: rowAdded, colAdded: colAdded, rowGone: rowGone,
+      colGone: colGone, dirty: dirty, restored: shape(), settled: !Ryker.editable.isDirty() };
+  })()`);
+  assert(gridOps.rowAdded.length === gridOps.start.length + 1 &&
+    gridOps.rowAdded[2].join('') === 'TD:TD:' &&
+    gridOps.colAdded.every((r) => r.length === gridOps.start[0].length + 1) &&
+    gridOps.rowGone.length === gridOps.colAdded.length - 1 &&
+    gridOps.colGone.every((r) => r.length === gridOps.colAdded[0].length - 1) &&
+    gridOps.dirty && gridOps.settled &&
+    JSON.stringify(gridOps.restored) === JSON.stringify(gridOps.start),
+  'rows and columns can be added and removed, and discard restores the authored grid',
+  JSON.stringify(gridOps));
+
+  // A locked cell protects its row and its column, and a table that merges
+  // cells is declined outright rather than reshaped on a guess.
+  const gridRefusals = await evaluate(sess, `(function () {
+    var said = [];
+    var realAlert = Ryker.dialog.alert;
+    Ryker.dialog.alert = function (title, body) { said.push(String(body)); };
+    var lockedRow = Ryker.table.removeRow(document.querySelector('#data td[data-effort]'));
+    var merged = document.querySelector('#grid thead th');
+    merged.setAttribute('colspan', '2');
+    var spanned = Ryker.table.insertRow(merged, 'below');
+    merged.removeAttribute('colspan');
+    Ryker.dialog.alert = realAlert;
+    return { lockedRow: lockedRow, spanned: spanned, said: said,
+      rows: document.querySelectorAll('#grid table tr').length };
+  })()`);
+  assert(gridRefusals.lockedRow === false && gridRefusals.spanned === false &&
+    /not editable/i.test(gridRefusals.said[0] || '') &&
+    /colspan or rowspan/i.test(gridRefusals.said[1] || '') && gridRefusals.rows === 3,
+  'a locked cell and a merged cell both stop a row or column change, with a reason',
+  JSON.stringify(gridRefusals));
+
   // Enter inside a cell is a line break. Splitting one would add a cell and
   // change what the row means, and doing nothing at all read as the cell being
   // the one block that would not take an edit.
