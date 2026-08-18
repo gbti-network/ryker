@@ -27,16 +27,16 @@
  *   editor/table.js  (345 lines)
  *   editor/outline.js  (289 lines)
  *   editor/move.js  (427 lines)
- *   editor/units.js  (328 lines)
+ *   editor/units.js  (346 lines)
  *   ui/rail.js  (530 lines)
  *   instructions/steps.js  (375 lines)
- *   instructions/instructions.js  (501 lines)
+ *   instructions/instructions.js  (503 lines)
  *   instructions/merge.js  (405 lines)
  *   storage/fs.js  (336 lines)
  *   storage/logger.js  (433 lines)
  *   instructions/browser.js  (296 lines)
  *   ui/pane.js  (292 lines)
- *   storage/recover.js  (298 lines)
+ *   storage/recover.js  (319 lines)
  *   bootstrap/boot.js  (575 lines)
  *
  * Classic script by design: module scripts do not load from file:// URLs,
@@ -5644,10 +5644,15 @@
     //
     // A unit is named by the first block inside it, which is the same
     // content-derived identity blocks.js uses and recomputes identically from a
-    // freshly loaded file. The tag comes first because a <ul> and its opening
-    // <li> would otherwise share a name. Depth deliberately does NOT appear: a
-    // unit that moves into a container at another depth has to keep its name, or
-    // the move it just made would read as a deletion and an insertion.
+    // freshly loaded file.
+    //
+    // A container and its opening block would otherwise share a name, so a name
+    // that merely CONTAINS its lead is marked with a ">". Nothing else about the
+    // element goes into the name. Not its depth: a unit that moves into a
+    // container at another depth has to keep its name, or the move it just made
+    // reads as a deletion and an insertion. Not its tag either, for the same
+    // reason one step further out: converting a paragraph to a heading is an
+    // edit to that element, not a different element arriving.
     //
     // Cached per element the first time it is seen, for the same reason blocks.js
     // caches a block id: a name derived from the FIRST block inside a container
@@ -5676,7 +5681,7 @@
       var stamped = el.getAttribute && el.getAttribute('data-ryker-id');
       if (stamped) return '@' + stamped;
       var lead = leadOf(el);
-      if (lead) return el.tagName + ':' + Ryker.blocks.blockId(lead);
+      if (lead) return (lead === el ? '' : '>') + Ryker.blocks.blockId(lead);
       // Nothing inside to be named by: an empty paragraph, a wrapper holding only
       // locked prose. Positional, and marked as such, because a unit with no
       // content of its own has nothing else to offer and is not one anybody moves
@@ -5708,9 +5713,15 @@
             names.set(el, key);
           }
           seen[key] = 1;
+          var lead = leadOf(el);
           list.push({
             el: el, key: key, parent: parentKey, prev: prev, at: i,
-            depth: depth, tag: el.tagName, kind: Ryker.outline.kindOf(el)
+            depth: depth, tag: el.tagName, kind: Ryker.outline.kindOf(el),
+            // The block whose authored markup names this unit in an instruction,
+            // and how many blocks travel with it.
+            lead: lead ? Ryker.blocks.blockId(lead) : null,
+            blocks: el.querySelectorAll(Ryker.blocks.SELECTOR).length ||
+              (lead === el ? 1 : 0)
           });
           prev = key;
           if (!OPAQUE[el.tagName]) visit(el, key, depth + 1, here);
@@ -5727,7 +5738,8 @@
       var out = {};
       walk().forEach(function (u) {
         out[u.key] = { parent: u.parent, prev: u.prev, at: u.at,
-                       depth: u.depth, tag: u.tag, kind: u.kind };
+                       depth: u.depth, tag: u.tag, kind: u.kind,
+                       lead: u.lead, blocks: u.blocks };
       });
       return out;
     }
@@ -5814,7 +5826,13 @@
         .sort(function (a, b) { return after[a].depth - after[b].depth; })
         .map(function (k) {
           return { kind: 'unit', key: k, parent: after[k].parent,
-                   prev: after[k].prev, tag: after[k].tag, unit: after[k].kind };
+                   prev: after[k].prev, tag: after[k].tag, unit: after[k].kind,
+                   lead: after[k].lead, blocks: after[k].blocks,
+                   // Where it sits in the file as authored, which is what an
+                   // instruction has to quote: the reader is looking at the
+                   // source, not at the screen.
+                   was: before[k].prev, wasLead: before[k].prev &&
+                     before[before[k].prev] ? before[before[k].prev].lead : null };
         });
     }
 
@@ -6844,6 +6862,8 @@
 
     var pristine = null; // blockId -> html as the document was authored
     var saved = null;    // blockId -> html as of the last save
+    var pristineTree = null; // unit key -> where it sat, as authored
+    var savedTree = null;    // unit key -> where it sat as of the last save
     var saves = 0;
     var saveNotes = [];
     var baseline = null;
@@ -6866,6 +6886,7 @@
 
     function captureOrigin() {
       pristine = Ryker.blocks.snapshot();
+      pristineTree = Ryker.units.snapshot();
       baseline = null;
       pristinePositions = {};
       Object.keys(pristine).forEach(function (id) {
@@ -6903,7 +6924,7 @@
     function onChange(fn) { listeners.push(fn); }
     function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
 
-    function reset() { saved = null; saves = 0; saveNotes = []; emit(); }
+    function reset() { saved = null; savedTree = null; saves = 0; saveNotes = []; emit(); }
     function originalOf(id) { return pristineHtml(id); }
     function saveCount() { return saves; }
 
@@ -6911,6 +6932,7 @@
     // changes meant the set could describe blocks that no longer existed.
     function record(note) {
       saved = Ryker.blocks.snapshot();
+      savedTree = Ryker.units.snapshot();
       saves += 1;
       note = String(note || '').trim();
       if (note) saveNotes.push({ saveNumber: saves, text: note });
@@ -6956,14 +6978,12 @@
       return Ryker.blocks.diffSnapshots(pristine, Ryker.blocks.snapshot());
     }
 
+    // Unit records, not block runs. A record says which element moved, which
+    // container it is in now and what it follows there, so replaying one puts a
+    // section back as a section rather than scattering its children.
     function recoveryMoves() {
-      if (!pristine) return [];
-      return Ryker.move.between(pristine, Ryker.blocks.snapshot()).map(function (move) {
-        return {
-          kind: 'move', ids: move.ids.slice(),
-          prev: move.prev || null, wasAfter: move.wasAfter || null
-        };
-      });
+      if (!pristineTree) return [];
+      return Ryker.units.diff(pristineTree, Ryker.units.snapshot());
     }
 
     // A table holds no blocks of its own: every cell is one. Deleting a table of
@@ -9307,21 +9327,33 @@
       return get(seenKey()).then(function (value) { return value === fingerprint(found); });
     }
 
+    // A move record says which kind it is, so a draft written before the unit
+    // model still replays through the block-run path that produced it rather
+    // than being handed to a reader that cannot understand it.
+    function replayMoves(records, out) {
+      if (!Array.isArray(records) || !records.length) {
+        return { applied: out.moved || 0, missed: out.orderMissed || 0,
+                 unchanged: 0, skipped: [] };
+      }
+      if (records[0] && records[0].kind === 'unit') return Ryker.units.replay(records);
+      var older = Ryker.move.replay(records);
+      older.skipped = older.skipped || [];
+      return older;
+    }
+
     function apply(found) {
       applying = true;
       var before = Ryker.blocks.snapshot();
       var out, moveOut, changes;
       try {
-        // New records carry explicit moves so parent changes can be replayed.
-        // Flat order remains the compatibility path for records written during
-        // the short-lived order-only format.
+        // Records carry explicit moves so parent changes can be replayed. Flat
+        // order remains the compatibility path for records written during the
+        // short-lived order-only format.
         out = Ryker.blocks.applyRecords([{
           changes: found.changes,
           order: Array.isArray(found.moves) ? null : found.order
         }]);
-        moveOut = Array.isArray(found.moves) && Ryker.move && Ryker.move.replay
-          ? Ryker.move.replay(found.moves)
-          : { applied: out.moved || 0, missed: out.orderMissed || 0, unchanged: 0 };
+        moveOut = replayMoves(found.moves, out);
         changes = Ryker.blocks.diffSnapshots(before, Ryker.blocks.snapshot());
       } finally {
         applying = false;
@@ -9344,11 +9376,20 @@
       if (!Ryker.pane.isOpen()) Ryker.pane.toggle();
       Ryker.boot.sync();
       checkpoint();
+      // Everything that could be restored is, and anything that could not is
+      // named rather than counted. A position that cannot be resolved is left
+      // alone: placing it on a guess is what damages a document, and the saved
+      // change request still has the instruction for it.
+      var lost = out.missed + moveOut.missed;
+      var named = (moveOut.skipped || []).length
+        ? ' Left where they are: ' + moveOut.skipped.join(', ') +
+          '. The saved change request still describes ' +
+          (moveOut.skipped.length > 1 ? 'them' : 'it') + '.'
+        : '';
       Ryker.dialog.alert('Changes restored',
         changes.length + ' block(s) and ' + moveOut.applied + ' move(s) were restored.' +
-        (out.missed + moveOut.missed ? ' ' + (out.missed + moveOut.missed) +
-          ' change(s) could not be placed and were skipped.' : ''),
-        out.missed + moveOut.missed ? 'warn' : 'ok');
+        (lost ? ' ' + lost + ' change(s) could not be placed and were skipped.' : '') +
+        named, lost ? 'warn' : 'ok');
       return true;
     }
 

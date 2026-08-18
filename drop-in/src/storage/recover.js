@@ -196,21 +196,33 @@ Ryker.recover = (function () {
     return get(seenKey()).then(function (value) { return value === fingerprint(found); });
   }
 
+  // A move record says which kind it is, so a draft written before the unit
+  // model still replays through the block-run path that produced it rather
+  // than being handed to a reader that cannot understand it.
+  function replayMoves(records, out) {
+    if (!Array.isArray(records) || !records.length) {
+      return { applied: out.moved || 0, missed: out.orderMissed || 0,
+               unchanged: 0, skipped: [] };
+    }
+    if (records[0] && records[0].kind === 'unit') return Ryker.units.replay(records);
+    var older = Ryker.move.replay(records);
+    older.skipped = older.skipped || [];
+    return older;
+  }
+
   function apply(found) {
     applying = true;
     var before = Ryker.blocks.snapshot();
     var out, moveOut, changes;
     try {
-      // New records carry explicit moves so parent changes can be replayed.
-      // Flat order remains the compatibility path for records written during
-      // the short-lived order-only format.
+      // Records carry explicit moves so parent changes can be replayed. Flat
+      // order remains the compatibility path for records written during the
+      // short-lived order-only format.
       out = Ryker.blocks.applyRecords([{
         changes: found.changes,
         order: Array.isArray(found.moves) ? null : found.order
       }]);
-      moveOut = Array.isArray(found.moves) && Ryker.move && Ryker.move.replay
-        ? Ryker.move.replay(found.moves)
-        : { applied: out.moved || 0, missed: out.orderMissed || 0, unchanged: 0 };
+      moveOut = replayMoves(found.moves, out);
       changes = Ryker.blocks.diffSnapshots(before, Ryker.blocks.snapshot());
     } finally {
       applying = false;
@@ -233,11 +245,20 @@ Ryker.recover = (function () {
     if (!Ryker.pane.isOpen()) Ryker.pane.toggle();
     Ryker.boot.sync();
     checkpoint();
+    // Everything that could be restored is, and anything that could not is
+    // named rather than counted. A position that cannot be resolved is left
+    // alone: placing it on a guess is what damages a document, and the saved
+    // change request still has the instruction for it.
+    var lost = out.missed + moveOut.missed;
+    var named = (moveOut.skipped || []).length
+      ? ' Left where they are: ' + moveOut.skipped.join(', ') +
+        '. The saved change request still describes ' +
+        (moveOut.skipped.length > 1 ? 'them' : 'it') + '.'
+      : '';
     Ryker.dialog.alert('Changes restored',
       changes.length + ' block(s) and ' + moveOut.applied + ' move(s) were restored.' +
-      (out.missed + moveOut.missed ? ' ' + (out.missed + moveOut.missed) +
-        ' change(s) could not be placed and were skipped.' : ''),
-      out.missed + moveOut.missed ? 'warn' : 'ok');
+      (lost ? ' ' + lost + ' change(s) could not be placed and were skipped.' : '') +
+      named, lost ? 'warn' : 'ok');
     return true;
   }
 

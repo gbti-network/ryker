@@ -2569,6 +2569,66 @@ async function runUnits(sess, file) {
     JSON.stringify(discard));
   }
 
+  // Save, refresh, confirm the restore. This is the path the owner asked about
+  // and the one that was doing real damage: a restored section used to arrive
+  // with its children hoisted into the page header, and a restored heading
+  // arrived INSIDE the list it was moved past.
+  for (const [what, mover] of [
+    ['a section', `Ryker.move.apply([document.querySelector('#media')], document.querySelector('#intro'), 'before')`],
+    ['a table', `Ryker.move.apply([document.querySelector('#data table')], document.querySelector('#grid h3'), 'after')`],
+    ['a heading', `Ryker.move.apply([document.querySelector('#intro h2')], document.querySelector('#intro ul'), 'after')`],
+    ['a list', `Ryker.move.apply([document.querySelector('#intro ul')], document.querySelector('#intro h2'), 'before')`],
+    ['a paragraph across sections', `Ryker.move.apply([document.querySelector('#intro p')], document.querySelector('#media dl'), 'after')`]
+  ]) {
+    await navigate(sess, FIXTURE);
+    await evaluate(sess, `(function () {
+      Object.keys(localStorage).filter(function (key) {
+        return key.indexOf('ryker:') === 0;
+      }).forEach(function (key) { localStorage.removeItem(key); });
+    })()`);
+    await evaluate(sess, code);
+    await waitInPage(sess, `!!(window.Ryker && Ryker.units && Ryker.editable.baselineOf())`,
+      10000, 'the unit baseline');
+    const drafted = await evaluate(sess, `(async function () {
+      while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+      var refused = ${mover};
+      var onScreen = ${SHAPE};
+      var write = Ryker.logger.record;
+      Ryker.logger.record = function () { return Promise.resolve(true); };
+      Ryker.boot.save(true);
+      Ryker.logger.record = write;
+      while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+      await Ryker.recover.checkpoint();
+      var draft = await Ryker.recover.draft();
+      return { refused: refused, onScreen: onScreen,
+        kinds: (draft && draft.moves || []).map(function (m) { return m.kind; }) };
+    })()`);
+
+    await navigate(sess, FIXTURE);
+    await evaluate(sess, code);
+    await waitInPage(sess, `!!(window.Ryker && Ryker.units && Ryker.editable.baselineOf())`,
+      10000, 'the unit baseline');
+    const restored = await evaluate(sess, `(async function () {
+      while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+      var authored = ${SHAPE};
+      var draft = await Ryker.recover.draft();
+      var applied = draft ? Ryker.recover.apply(draft) : false;
+      var alert = null;
+      var root = document.getElementById('ryker-root').shadowRoot;
+      var head = root.querySelector('.modal header h2');
+      if (head) alert = head.textContent;
+      while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+      return { found: !!draft, applied: applied, alert: alert,
+        authored: authored, now: ${SHAPE} };
+    })()`);
+
+    assert(!drafted.refused && drafted.kinds.join(',') === 'unit' &&
+      restored.found && restored.applied && restored.alert === 'Changes restored' &&
+      restored.now === drafted.onScreen,
+    `moving ${what}, saving and refreshing restores the position it was left in`,
+    JSON.stringify({ drafted, restored }));
+  }
+
   // A record naming something the document no longer has is a miss, not a
   // guess. Placing it anywhere is how a restore damages a document.
   await navigate(sess, FIXTURE);

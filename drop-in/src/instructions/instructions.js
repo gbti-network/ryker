@@ -8,6 +8,8 @@ Ryker.instructions = (function () {
 
   var pristine = null; // blockId -> html as the document was authored
   var saved = null;    // blockId -> html as of the last save
+  var pristineTree = null; // unit key -> where it sat, as authored
+  var savedTree = null;    // unit key -> where it sat as of the last save
   var saves = 0;
   var saveNotes = [];
   var baseline = null;
@@ -30,6 +32,7 @@ Ryker.instructions = (function () {
 
   function captureOrigin() {
     pristine = Ryker.blocks.snapshot();
+    pristineTree = Ryker.units.snapshot();
     baseline = null;
     pristinePositions = {};
     Object.keys(pristine).forEach(function (id) {
@@ -67,7 +70,7 @@ Ryker.instructions = (function () {
   function onChange(fn) { listeners.push(fn); }
   function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
 
-  function reset() { saved = null; saves = 0; saveNotes = []; emit(); }
+  function reset() { saved = null; savedTree = null; saves = 0; saveNotes = []; emit(); }
   function originalOf(id) { return pristineHtml(id); }
   function saveCount() { return saves; }
 
@@ -75,6 +78,7 @@ Ryker.instructions = (function () {
   // changes meant the set could describe blocks that no longer existed.
   function record(note) {
     saved = Ryker.blocks.snapshot();
+    savedTree = Ryker.units.snapshot();
     saves += 1;
     note = String(note || '').trim();
     if (note) saveNotes.push({ saveNumber: saves, text: note });
@@ -120,14 +124,12 @@ Ryker.instructions = (function () {
     return Ryker.blocks.diffSnapshots(pristine, Ryker.blocks.snapshot());
   }
 
+  // Unit records, not block runs. A record says which element moved, which
+  // container it is in now and what it follows there, so replaying one puts a
+  // section back as a section rather than scattering its children.
   function recoveryMoves() {
-    if (!pristine) return [];
-    return Ryker.move.between(pristine, Ryker.blocks.snapshot()).map(function (move) {
-      return {
-        kind: 'move', ids: move.ids.slice(),
-        prev: move.prev || null, wasAfter: move.wasAfter || null
-      };
-    });
+    if (!pristineTree) return [];
+    return Ryker.units.diff(pristineTree, Ryker.units.snapshot());
   }
 
   // A table holds no blocks of its own: every cell is one. Deleting a table of

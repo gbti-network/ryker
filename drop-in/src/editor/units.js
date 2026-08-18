@@ -47,10 +47,15 @@ Ryker.units = (function () {
   //
   // A unit is named by the first block inside it, which is the same
   // content-derived identity blocks.js uses and recomputes identically from a
-  // freshly loaded file. The tag comes first because a <ul> and its opening
-  // <li> would otherwise share a name. Depth deliberately does NOT appear: a
-  // unit that moves into a container at another depth has to keep its name, or
-  // the move it just made would read as a deletion and an insertion.
+  // freshly loaded file.
+  //
+  // A container and its opening block would otherwise share a name, so a name
+  // that merely CONTAINS its lead is marked with a ">". Nothing else about the
+  // element goes into the name. Not its depth: a unit that moves into a
+  // container at another depth has to keep its name, or the move it just made
+  // reads as a deletion and an insertion. Not its tag either, for the same
+  // reason one step further out: converting a paragraph to a heading is an
+  // edit to that element, not a different element arriving.
   //
   // Cached per element the first time it is seen, for the same reason blocks.js
   // caches a block id: a name derived from the FIRST block inside a container
@@ -79,7 +84,7 @@ Ryker.units = (function () {
     var stamped = el.getAttribute && el.getAttribute('data-ryker-id');
     if (stamped) return '@' + stamped;
     var lead = leadOf(el);
-    if (lead) return el.tagName + ':' + Ryker.blocks.blockId(lead);
+    if (lead) return (lead === el ? '' : '>') + Ryker.blocks.blockId(lead);
     // Nothing inside to be named by: an empty paragraph, a wrapper holding only
     // locked prose. Positional, and marked as such, because a unit with no
     // content of its own has nothing else to offer and is not one anybody moves
@@ -111,9 +116,15 @@ Ryker.units = (function () {
           names.set(el, key);
         }
         seen[key] = 1;
+        var lead = leadOf(el);
         list.push({
           el: el, key: key, parent: parentKey, prev: prev, at: i,
-          depth: depth, tag: el.tagName, kind: Ryker.outline.kindOf(el)
+          depth: depth, tag: el.tagName, kind: Ryker.outline.kindOf(el),
+          // The block whose authored markup names this unit in an instruction,
+          // and how many blocks travel with it.
+          lead: lead ? Ryker.blocks.blockId(lead) : null,
+          blocks: el.querySelectorAll(Ryker.blocks.SELECTOR).length ||
+            (lead === el ? 1 : 0)
         });
         prev = key;
         if (!OPAQUE[el.tagName]) visit(el, key, depth + 1, here);
@@ -130,7 +141,8 @@ Ryker.units = (function () {
     var out = {};
     walk().forEach(function (u) {
       out[u.key] = { parent: u.parent, prev: u.prev, at: u.at,
-                     depth: u.depth, tag: u.tag, kind: u.kind };
+                     depth: u.depth, tag: u.tag, kind: u.kind,
+                     lead: u.lead, blocks: u.blocks };
     });
     return out;
   }
@@ -217,7 +229,13 @@ Ryker.units = (function () {
       .sort(function (a, b) { return after[a].depth - after[b].depth; })
       .map(function (k) {
         return { kind: 'unit', key: k, parent: after[k].parent,
-                 prev: after[k].prev, tag: after[k].tag, unit: after[k].kind };
+                 prev: after[k].prev, tag: after[k].tag, unit: after[k].kind,
+                 lead: after[k].lead, blocks: after[k].blocks,
+                 // Where it sits in the file as authored, which is what an
+                 // instruction has to quote: the reader is looking at the
+                 // source, not at the screen.
+                 was: before[k].prev, wasLead: before[k].prev &&
+                   before[before[k].prev] ? before[before[k].prev].lead : null };
       });
   }
 
