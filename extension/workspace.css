@@ -107,6 +107,34 @@ body.workspace-loaded #workspace-document pre { overflow: auto; padding: var(--r
 body.workspace-loaded #workspace-document code { font-family: var(--rk-mono); }
 body.workspace-loaded #workspace-document blockquote { margin-left: 0; padding-left: 18px; border-left: 3px solid var(--rk-line2); color: var(--rk-fg2); }
 
+/* An opened document arrives without its own stylesheet, because safeDocument()
+   strips every <style> and <link> before the file is mounted. A table with no
+   rules at all renders as run-together text, so its cells cannot be told apart,
+   let alone aimed at. These are the grid lines that make one editable. */
+body.workspace-loaded #workspace-document table {
+  width: 100%;
+  margin: var(--rk-s5) 0;
+  border-collapse: collapse;
+  font-size: 15px;
+}
+body.workspace-loaded #workspace-document caption {
+  padding-bottom: var(--rk-s3);
+  color: var(--rk-fg2);
+  font-size: 14px;
+  text-align: left;
+}
+body.workspace-loaded #workspace-document th,
+body.workspace-loaded #workspace-document td {
+  padding: var(--rk-s3) var(--rk-s4);
+  border: 1px solid var(--rk-line2);
+  text-align: left;
+  vertical-align: top;
+}
+body.workspace-loaded #workspace-document thead th { background: var(--rk-bg2); font-weight: 650; }
+/* A blank cell is a target someone has to be able to click into. Without a
+   width of its own it collapses to its padding and is easy to miss. */
+body.workspace-loaded #workspace-document td:empty { min-width: 64px; }
+
 @media (max-width: 720px) {
   .workspace-open { padding-left: 8px; padding-right: 8px; }
   body.workspace-loaded #workspace-document { width: calc(100% - 28px); padding-top: 64px; }

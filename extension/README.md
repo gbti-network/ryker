@@ -47,9 +47,13 @@ Click Ryker from Chrome's New Tab page to open the extension-owned document
 workspace in that tab. Choose or drag in an `.html`, `.htm`, `.md`, or
 `.markdown` file. HTML is stripped of scripts, event handlers and layout styles
 before it becomes editable. Markdown is rendered into semantic headings,
-paragraphs, lists, block quotes and fenced code. The normal Ryker toolbar then
-replaces the workspace header and the rendered document becomes the editing
-surface.
+paragraphs, lists, tables, block quotes and fenced code. The normal Ryker
+toolbar then replaces the workspace header and the rendered document becomes
+the editing surface.
+
+A Markdown table is squared to the columns its header declares: a short row is
+padded with blank cells and a long one is cut. Blank cells are editable, so a
+gap in the table is filled in the document rather than in the source.
 
 An uploaded document is identified by its filename and a content hash, keeping
 its change requests separate from pages edited by URL.

@@ -123,7 +123,7 @@ Ryker.sanitize = (function () {
     // Unwrap rather than delete, so pasted text survives when its wrapper does
     // not. A paste that silently loses its words is worse than one that loses
     // its formatting.
-    var BLOCK = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DIV|DL|DT|DD|FIELDSET|FIGCAPTION|FIGURE|FOOTER|HEADER|H[1-6]|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TBODY|TD|TFOOT|TH|THEAD|TR|UL)$/;
+    var BLOCK = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|CAPTION|DIV|DL|DT|DD|FIELDSET|FIGCAPTION|FIGURE|FOOTER|HEADER|H[1-6]|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TBODY|TD|TFOOT|TH|THEAD|TR|UL)$/;
     function isBreak(n) { return n && n.nodeType === 1 && n.tagName === 'BR'; }
 
     kill.forEach(function (n) {

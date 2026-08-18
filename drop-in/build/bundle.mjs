@@ -50,6 +50,7 @@ const MODULES = [
   'editor/links.js',
   'editor/pick.js',
   'editor/multi.js',
+  'editor/table.js',
   'editor/outline.js',
   'editor/move.js',
   'ui/rail.js',

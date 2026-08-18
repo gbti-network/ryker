@@ -9,7 +9,7 @@
 Ryker.blocks = (function () {
   'use strict';
 
-  var SELECTOR = 'h1, p, li, td, th, h2, h3, h4, h5, figcaption, blockquote p, dd, dt';
+  var SELECTOR = 'h1, p, li, td, th, h2, h3, h4, h5, figcaption, caption, blockquote p, dd, dt';
   var ATOMIC_SELECTOR = 'svg';
   var PICK_SELECTOR = SELECTOR + ', ' + ATOMIC_SELECTOR;
 
@@ -20,6 +20,24 @@ Ryker.blocks = (function () {
   function ownHeader(head) {
     var main = document.querySelector('main');
     return !!(main && main.contains(head));
+  }
+
+  // A marker attribute locks the element carrying it and everything inside it,
+  // because that element's text may be the key. Table structure is the case
+  // where that reading is wrong. A <table data-sort> or a <tr data-effort> is
+  // declaring how the container behaves, and the key is the attribute itself,
+  // not the prose in each cell beneath it. Reading those as locks took every
+  // cell of a sortable table out of the editable set at a stroke, which is the
+  // single most common shape a report's tables arrive in.
+  var HOST_KEYS = '[data-effort], [data-sort], [data-group], [data-impact]';
+  var GRID = { TABLE: 1, THEAD: 1, TBODY: 1, TFOOT: 1, TR: 1, COLGROUP: 1, COL: 1 };
+
+  function hostLocked(node) {
+    var marked = node.closest ? node.closest(HOST_KEYS) : null;
+    while (marked && GRID[marked.tagName]) {
+      marked = marked.parentElement ? marked.parentElement.closest(HOST_KEYS) : null;
+    }
+    return !!marked;
   }
 
   function excluded(node) {
@@ -41,7 +59,7 @@ Ryker.blocks = (function () {
     if (head && !ownHeader(head)) return true;
     // Elements the host page's own script reads. Their text may be the key the
     // script sorts or filters on.
-    if (node.closest('[data-effort], [data-sort], [data-group], [data-impact]')) return true;
+    if (hostLocked(node)) return true;
     if (node.hasAttribute && (node.hasAttribute('data-ryker-lock') || node.closest('[data-ryker-lock]'))) return true;
     return false;
   }
@@ -72,13 +90,20 @@ Ryker.blocks = (function () {
     return h.toString(36);
   }
 
+  var CELL = { TD: 1, TH: 1 };
+
   function candidates() {
     var out = [];
     Array.prototype.forEach.call(root().querySelectorAll(SELECTOR), function (n) {
       if (excluded(n)) return;
       // A list item holding only nested block content is a container, not prose.
       if (n.querySelector(SELECTOR)) return;
-      if (!Ryker.dom.textOf(n)) return;
+      // An empty block has nothing to derive an identity from, so it is not a
+      // candidate. A table cell is the exception worth making: a blank cell in
+      // a filled-in table is a hole someone opened the document to fill, and
+      // leaving it out made the one edit that table needed the one edit Ryker
+      // would not take. seatOf() gives it an identity the grid already holds.
+      if (!Ryker.dom.textOf(n) && !CELL[n.tagName]) return;
       out.push(n);
     });
     return out;
@@ -159,7 +184,9 @@ Ryker.blocks = (function () {
     // Two identical paragraphs would hash the same, so occurrences are numbered
     // in document order. Only the opening text is used, which keeps the id
     // stable when a long block is edited near its end.
-    var base = hash(node.tagName + '|' + Ryker.dom.textOf(node).slice(0, 160));
+    var text = Ryker.dom.textOf(node);
+    var base = hash(text ? node.tagName + '|' + text.slice(0, 160)
+      : (Ryker.table.seatId(node) || node.tagName + '|'));
     var n = (counts[base] = (counts[base] || 0) + 1);
     var id = '~' + base + (n > 1 ? '.' + n : '');
     idCache.set(node, id);
@@ -361,7 +388,7 @@ Ryker.blocks = (function () {
     context = context || { boxes: boxIndex() };
     var node = byId(c.id);
     var tag = String(c.afterTag || c.tag || '').toUpperCase();
-    var validTag = /^(H[1-5]|P|LI|TD|TH|FIGCAPTION|BLOCKQUOTE|DD|DT|SVG)$/.test(tag);
+    var validTag = /^(H[1-5]|P|LI|TD|TH|FIGCAPTION|CAPTION|BLOCKQUOTE|DD|DT|SVG)$/.test(tag);
 
     if (c.kind === 'removed') {
       if (node && node.parentNode) node.parentNode.removeChild(node);
@@ -493,6 +520,9 @@ Ryker.blocks = (function () {
     var head = node.closest('section');
     var h = head ? head.querySelector('h2, h3') : null;
     var text = Ryker.dom.textOf(node);
+    // A blank cell has no words to name itself with, and a change list showing
+    // an empty row for it says nothing about which hole is being filled.
+    if (!text && CELL[node.tagName]) text = Ryker.table.seatLabel(node) || text;
     var short = text.length > 60 ? text.slice(0, 57) + '...' : text;
     return (h ? Ryker.dom.textOf(h) + ' / ' : '') + short;
   }

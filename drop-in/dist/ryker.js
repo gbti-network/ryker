@@ -7,7 +7,7 @@
  *   config/config.js  (116 lines)
  *   security/scan.js  (86 lines)
  *   editor/sanitize.js  (218 lines)
- *   editor/blocks.js  (510 lines)
+ *   editor/blocks.js  (540 lines)
  *   export/zip.js  (193 lines)
  *   export/html.js  (186 lines)
  *   export/packager.js  (277 lines)
@@ -18,12 +18,13 @@
  *   ui/tooltip.js  (82 lines)
  *   ui/dialog.js  (132 lines)
  *   ui/menu.js  (104 lines)
- *   editor/editable.js  (575 lines)
+ *   editor/editable.js  (585 lines)
  *   editor/history.js  (213 lines)
  *   editor/formatbar.js  (212 lines)
  *   editor/links.js  (173 lines)
  *   editor/pick.js  (228 lines)
  *   editor/multi.js  (172 lines)
+ *   editor/table.js  (97 lines)
  *   editor/outline.js  (289 lines)
  *   editor/move.js  (427 lines)
  *   ui/rail.js  (530 lines)
@@ -430,7 +431,7 @@
       // Unwrap rather than delete, so pasted text survives when its wrapper does
       // not. A paste that silently loses its words is worse than one that loses
       // its formatting.
-      var BLOCK = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DIV|DL|DT|DD|FIELDSET|FIGCAPTION|FIGURE|FOOTER|HEADER|H[1-6]|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TBODY|TD|TFOOT|TH|THEAD|TR|UL)$/;
+      var BLOCK = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|CAPTION|DIV|DL|DT|DD|FIELDSET|FIGCAPTION|FIGURE|FOOTER|HEADER|H[1-6]|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TBODY|TD|TFOOT|TH|THEAD|TR|UL)$/;
       function isBreak(n) { return n && n.nodeType === 1 && n.tagName === 'BR'; }
 
       kill.forEach(function (n) {
@@ -536,7 +537,7 @@
   Ryker.blocks = (function () {
     'use strict';
 
-    var SELECTOR = 'h1, p, li, td, th, h2, h3, h4, h5, figcaption, blockquote p, dd, dt';
+    var SELECTOR = 'h1, p, li, td, th, h2, h3, h4, h5, figcaption, caption, blockquote p, dd, dt';
     var ATOMIC_SELECTOR = 'svg';
     var PICK_SELECTOR = SELECTOR + ', ' + ATOMIC_SELECTOR;
 
@@ -547,6 +548,24 @@
     function ownHeader(head) {
       var main = document.querySelector('main');
       return !!(main && main.contains(head));
+    }
+
+    // A marker attribute locks the element carrying it and everything inside it,
+    // because that element's text may be the key. Table structure is the case
+    // where that reading is wrong. A <table data-sort> or a <tr data-effort> is
+    // declaring how the container behaves, and the key is the attribute itself,
+    // not the prose in each cell beneath it. Reading those as locks took every
+    // cell of a sortable table out of the editable set at a stroke, which is the
+    // single most common shape a report's tables arrive in.
+    var HOST_KEYS = '[data-effort], [data-sort], [data-group], [data-impact]';
+    var GRID = { TABLE: 1, THEAD: 1, TBODY: 1, TFOOT: 1, TR: 1, COLGROUP: 1, COL: 1 };
+
+    function hostLocked(node) {
+      var marked = node.closest ? node.closest(HOST_KEYS) : null;
+      while (marked && GRID[marked.tagName]) {
+        marked = marked.parentElement ? marked.parentElement.closest(HOST_KEYS) : null;
+      }
+      return !!marked;
     }
 
     function excluded(node) {
@@ -568,7 +587,7 @@
       if (head && !ownHeader(head)) return true;
       // Elements the host page's own script reads. Their text may be the key the
       // script sorts or filters on.
-      if (node.closest('[data-effort], [data-sort], [data-group], [data-impact]')) return true;
+      if (hostLocked(node)) return true;
       if (node.hasAttribute && (node.hasAttribute('data-ryker-lock') || node.closest('[data-ryker-lock]'))) return true;
       return false;
     }
@@ -599,13 +618,20 @@
       return h.toString(36);
     }
 
+    var CELL = { TD: 1, TH: 1 };
+
     function candidates() {
       var out = [];
       Array.prototype.forEach.call(root().querySelectorAll(SELECTOR), function (n) {
         if (excluded(n)) return;
         // A list item holding only nested block content is a container, not prose.
         if (n.querySelector(SELECTOR)) return;
-        if (!Ryker.dom.textOf(n)) return;
+        // An empty block has nothing to derive an identity from, so it is not a
+        // candidate. A table cell is the exception worth making: a blank cell in
+        // a filled-in table is a hole someone opened the document to fill, and
+        // leaving it out made the one edit that table needed the one edit Ryker
+        // would not take. seatOf() gives it an identity the grid already holds.
+        if (!Ryker.dom.textOf(n) && !CELL[n.tagName]) return;
         out.push(n);
       });
       return out;
@@ -686,7 +712,9 @@
       // Two identical paragraphs would hash the same, so occurrences are numbered
       // in document order. Only the opening text is used, which keeps the id
       // stable when a long block is edited near its end.
-      var base = hash(node.tagName + '|' + Ryker.dom.textOf(node).slice(0, 160));
+      var text = Ryker.dom.textOf(node);
+      var base = hash(text ? node.tagName + '|' + text.slice(0, 160)
+        : (Ryker.table.seatId(node) || node.tagName + '|'));
       var n = (counts[base] = (counts[base] || 0) + 1);
       var id = '~' + base + (n > 1 ? '.' + n : '');
       idCache.set(node, id);
@@ -888,7 +916,7 @@
       context = context || { boxes: boxIndex() };
       var node = byId(c.id);
       var tag = String(c.afterTag || c.tag || '').toUpperCase();
-      var validTag = /^(H[1-5]|P|LI|TD|TH|FIGCAPTION|BLOCKQUOTE|DD|DT|SVG)$/.test(tag);
+      var validTag = /^(H[1-5]|P|LI|TD|TH|FIGCAPTION|CAPTION|BLOCKQUOTE|DD|DT|SVG)$/.test(tag);
 
       if (c.kind === 'removed') {
         if (node && node.parentNode) node.parentNode.removeChild(node);
@@ -1020,6 +1048,9 @@
       var head = node.closest('section');
       var h = head ? head.querySelector('h2, h3') : null;
       var text = Ryker.dom.textOf(node);
+      // A blank cell has no words to name itself with, and a change list showing
+      // an empty row for it says nothing about which hole is being filled.
+      if (!text && CELL[node.tagName]) text = Ryker.table.seatLabel(node) || text;
       var short = text.length > 60 ? text.slice(0, 57) + '...' : text;
       return (h ? Ryker.dom.textOf(h) + ' / ' : '') + short;
     }
@@ -2815,9 +2846,10 @@
         Ryker.history.captureBaseline(baseline);
       }
       Ryker.blocks.all().forEach(function (b) { arm(b.node, b.id); });
-      // all() deliberately omits empty authored blocks because they have no stable
-      // content identity. A block that Ryker already armed can later become empty,
-      // though, and Hide must not make it permanently inert when Ryker reopens.
+      // Apart from table cells, all() omits empty authored blocks because they
+      // have no stable content identity. A block that Ryker already armed can
+      // later become empty, though, and Hide must not make it permanently inert
+      // when Ryker reopens.
       resumable.forEach(function (node) { arm(node); });
       resumable = [];
       on = true;
@@ -2862,7 +2894,16 @@
             // Shift+Enter is a line break inside the block. Plain Enter splits it
             // into two, which is what someone breaking a paragraph in half means.
             if (e.shiftKey) return;
-            if (n.tagName === 'TD' || n.tagName === 'TH') { e.preventDefault(); return; }
+            // Splitting a cell in two would add a cell and change what the row
+            // means, so Enter inside one is a line break rather than a split.
+            // Swallowing the key outright was the older behaviour, and to anyone
+            // who pressed it the cell read as the one block that would not take
+            // an edit.
+            if (n.tagName === 'TD' || n.tagName === 'TH') {
+              e.preventDefault();
+              try { document.execCommand('insertLineBreak'); } catch (err) {}
+              return;
+            }
             e.preventDefault();
             splitAt(n);
           }
@@ -4361,6 +4402,105 @@
       init: init, covered: covered, removeSelection: removeSelection,
       removeNodes: removeNodes,
       removeTableAt: removeTableAt, tableAt: tableAt, collapse: collapse
+    };
+  })();
+
+
+  /* ---- editor/table.js ------------------------------------------- */
+  // What identifies a table cell, and how to read the grid it sits in.
+  //
+  // Lives in its own module rather than in blocks.js because it is a fact about
+  // grids, not about blocks. Everywhere else in the editor a table is scenery:
+  // the cells are prose and the structure around them belongs to the report. The
+  // one thing the rest of Ryker cannot work out for itself is what to call a
+  // cell that has no words in it yet, which is what this answers.
+  Ryker.table = (function () {
+    'use strict';
+
+    var CELL = { TD: 1, TH: 1 };
+
+    // ---- reading the grid ----------------------------------------------------
+
+    function cellOf(node) {
+      if (!node || !node.closest) return null;
+      var cell = node.closest('td, th');
+      return cell && cell.closest('table') ? cell : null;
+    }
+
+    function tableOf(node) {
+      var cell = cellOf(node);
+      return cell ? cell.closest('table') : null;
+    }
+
+    // Rows of THIS table. querySelectorAll reaches into a nested one, and a table
+    // inside a cell is somebody else's grid.
+    function rowsOf(table) {
+      return Array.prototype.filter.call(table.querySelectorAll('tr'), function (row) {
+        return row.closest('table') === table;
+      });
+    }
+
+    function cellsOf(row) {
+      return Array.prototype.filter.call(row.children, function (n) { return CELL[n.tagName]; });
+    }
+
+    function indexOfCell(cell) {
+      return cellsOf(cell.parentNode).indexOf(cell);
+    }
+
+    // ---- cell identity -------------------------------------------------------
+    //
+    // Lives here rather than in blocks.js because it is a fact about grids. A
+    // cell with words is identified by them, like every other block. A blank one
+    // has none, and numbering the document's blank cells in order is the
+    // positional id blocks.js rejected: filling one renumbers the rest, so the
+    // next reload resolves a saved edit onto the wrong cell. A cell sits in a
+    // grid, so it borrows an identity from the row it is in and the column it is
+    // under. Both recompute identically from a freshly loaded file, and neither
+    // moves when a different cell is filled in.
+
+    // textContent on a row runs its cells together with no space between them, so
+    // ["Beta", "7"] reads as "Beta7" and ["ab", "c"] cannot be told apart from
+    // ["a", "bc"]. Both matter here: this text names a row and is part of a blank
+    // cell's identity.
+    function rowText(row) {
+      return cellsOf(row).map(function (cell) {
+        return Ryker.dom.textOf(cell);
+      }).join(' | ').replace(/(?: \| )+$/, '');
+    }
+
+    function seatId(node) {
+      if (!CELL[node.tagName]) return null;
+      var row = node.closest('tr');
+      var grid = node.closest('table');
+      if (!row || !grid) return null;
+      var col = indexOfCell(node);
+      var line = rowText(row);
+      if (line) return node.tagName + '|row:' + line.slice(0, 160) + '|col:' + col;
+      // A wholly blank row has no text of its own, so the table speaks for it.
+      var at = rowsOf(grid).indexOf(row);
+      return node.tagName + '|grid:' + Ryker.dom.textOf(grid).slice(0, 160) +
+        '|row:' + at + '|col:' + col;
+    }
+
+    // The same seat, written for a person rather than hashed.
+    function seatLabel(node) {
+      if (!CELL[node.tagName]) return null;
+      var row = node.closest('tr');
+      var grid = node.closest('table');
+      if (!row || !grid) return null;
+      var col = indexOfCell(node);
+      var heads = rowsOf(grid)[0];
+      var head = heads && heads !== row ? cellsOf(heads)[col] : null;
+      var line = rowText(row);
+      return 'cell in column ' + (col + 1) +
+        (head && Ryker.dom.textOf(head) ? ' (' + Ryker.dom.textOf(head) + ')' : '') +
+        (line ? ', row reading "' + line.slice(0, 40) + '"' : ', row ' + (rowsOf(grid).indexOf(row) + 1));
+    }
+
+    return {
+      cellOf: cellOf, tableOf: tableOf, rowsOf: rowsOf, cellsOf: cellsOf,
+      rowText: rowText, seatId: seatId, seatLabel: seatLabel
     };
   })();
 

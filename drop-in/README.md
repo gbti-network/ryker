@@ -78,6 +78,14 @@ it is the case Ryker most needs to work in.
 - **Edit mode** turns prose into editable blocks. Paragraphs, list items, table
   cells, headings, captions. Not the chart, not table structure, not any element
   the host page's own script reads, not image sources.
+- **Inside a table** every cell is prose, including a blank one, which is a hole
+  someone opened the document to fill rather than a block with nothing to say.
+  A cell is named by the row it sits in and the column it sits under, so filling
+  one blank does not renumber the others. `<caption>` is the table's own prose
+  and is editable too. Enter inside a cell is a line break, because splitting a
+  cell would add a cell and change what the row means. A `data-sort` or
+  `data-effort` on the table, a row group or a row describes how the container
+  behaves, not what a cell says, so it locks neither.
 - **The outline rail** lists the document's own structure down the left edge:
   every section, heading, table, figure, quote and paragraph, collapsed below
   the second level. Clicking a row selects what it covers, right-clicking offers

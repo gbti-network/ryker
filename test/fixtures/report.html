@@ -18,9 +18,9 @@
   Editable prose is marked EDITABLE in a comment; anything that must stay out
   of the editable set is marked LOCKED with the rule that excludes it.
 
-  Counted expectation: 17 editable blocks. test/run.mjs asserts that number
+  Counted expectation: 25 editable blocks. test/run.mjs asserts that number
   and also asserts each LOCKED item by its text, so a change to excluded()
-  cannot pass by moving the total back to 17 through some other route.
+  cannot pass by moving the total back to 25 through some other route.
 -->
 
 <header>
@@ -75,6 +75,39 @@
           <!-- EDITABLE 13: a sibling of a locked cell is still editable,
                because excluded() walks ancestors rather than siblings -->
           <td>22</td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="grid">
+    <h3>A table the host script drives</h3>            <!-- EDITABLE 18 -->
+    <table data-sort="task">
+      <!-- EDITABLE 19: a caption is the table's own prose, the same way a
+           figcaption is the figure's -->
+      <caption>What the second table holds.</caption>
+      <thead>
+        <tr>
+          <!-- data-sort sits on the <table>. It says how the table behaves,
+               not what any one cell means, so the cells stay editable. Reading
+               it as a lock took every cell of a sortable table out of the
+               editable set, which is the shape most report tables arrive in. -->
+          <th>Task</th>                                <!-- EDITABLE 20 -->
+          <th>Owner</th>                               <!-- EDITABLE 21 -->
+        </tr>
+      </thead>
+      <tbody>
+        <!-- The same reading one level down: the key is the attribute the
+             script reads, and the row's prose is free. -->
+        <tr data-effort="low">
+          <td>Rename the export button</td>            <!-- EDITABLE 22 -->
+          <td>Ana</td>                                 <!-- EDITABLE 23 -->
+        </tr>
+        <tr>
+          <td>Unassigned work</td>                     <!-- EDITABLE 24 -->
+          <!-- EDITABLE 25: a blank cell is a hole someone opened the document
+               to fill, so unlike an empty paragraph it stays in the set -->
+          <td></td>
         </tr>
       </tbody>
     </table>

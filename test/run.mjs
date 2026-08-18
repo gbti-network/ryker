@@ -28,7 +28,7 @@ const WORKSPACE_FIXTURE = 'file://' + resolve(join(EXTENSION, 'workspace.html'))
 // Counted by hand against the fixture's comments, then confirmed by the first
 // run. Asserted alongside the named inclusions and exclusions below, so a
 // change to excluded() cannot pass by restoring the total through another route.
-const EXPECTED_EDITABLE = 17;
+const EXPECTED_EDITABLE = 25;
 
 const MUST_BE_EDITABLE = [
   'Fixture Report',                        // h1 in a header INSIDE main
@@ -37,7 +37,10 @@ const MUST_BE_EDITABLE = [
   '22',                                    // sibling of a data-effort cell
   'The caption underneath the chart.',
   'A quoted paragraph inside a blockquote.',
-  'The definition of term one.'
+  'The definition of term one.',
+  'What the second table holds.',          // a <caption> is the table's prose
+  'Task',                                  // cell of a <table data-sort>
+  'Rename the export button'               // cell of a <tr data-effort>
 ];
 
 const MUST_NOT_BE_EDITABLE = [
@@ -207,6 +210,58 @@ async function runBuild(sess, file) {
   ]) {
     assert(!exported.includes(needle), `clean export carries no ${what}`);
   }
+
+  // A blank cell carries no text to be named by, so it is asserted directly
+  // rather than through MUST_BE_EDITABLE. The three things that have to hold
+  // are that it is armed, that it has an identity the grid supplies rather
+  // than a running number, and that filling it records as an edit to that cell
+  // rather than as an insertion somewhere near it.
+  const blankCell = await evaluate(sess, `(function () {
+    var cell = document.querySelector('#grid tbody tr:last-child td:last-child');
+    if (!cell) return { error: 'fixture has no blank cell' };
+    var id = Ryker.blocks.blockId(cell);
+    var armed = cell.getAttribute('contenteditable') === 'true';
+    cell.textContent = 'Unclaimed';
+    cell.dispatchEvent(new Event('input', { bubbles: true }));
+    var change = Ryker.editable.changes().filter(function (c) { return c.id === id; })[0];
+    Ryker.editable.revertAll();
+    return {
+      armed: armed, resolves: Ryker.blocks.byId(id) === cell,
+      label: Ryker.blocks.label(id), kind: change && change.kind,
+      before: change && change.before, after: change && change.after,
+      settled: !Ryker.editable.isDirty(), text: cell.textContent
+    };
+  })()`);
+  assert(!blankCell.error && blankCell.armed && blankCell.resolves &&
+    blankCell.kind === 'changed' && blankCell.before === '' && blankCell.after === 'Unclaimed' &&
+    /column 2 \(Owner\)/.test(blankCell.label) && blankCell.settled && blankCell.text === '',
+  'a blank table cell is editable, named by its place in the grid and recorded as an edit',
+  JSON.stringify(blankCell));
+
+  // Enter inside a cell is a line break. Splitting one would add a cell and
+  // change what the row means, and doing nothing at all read as the cell being
+  // the one block that would not take an edit.
+  const cellReturn = await evaluate(sess, `(function () {
+    var cell = document.querySelector('#grid tbody tr:first-child td:first-child');
+    if (!cell) return { error: 'fixture has no populated cell' };
+    var cells = document.querySelectorAll('#grid tbody tr:first-child td').length;
+    cell.focus();
+    var range = document.createRange();
+    range.selectNodeContents(cell);
+    range.collapse(false);
+    var selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    cell.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    var broke = cell.querySelectorAll('br').length > 0;
+    var grew = document.querySelectorAll('#grid tbody tr:first-child td').length !== cells;
+    Ryker.editable.revertAll();
+    cell.blur();
+    return { broke: broke, grew: grew, settled: !Ryker.editable.isDirty() };
+  })()`);
+  assert(!cellReturn.error && cellReturn.broke && !cellReturn.grew && cellReturn.settled,
+    'Enter inside a table cell inserts a line break without adding a cell',
+    JSON.stringify(cellReturn));
 
   // An upward cross-block drag leaves focus in the paragraph where the drag
   // began. The focused editing-host rule is more specific than .ryker-pick, so
@@ -2810,12 +2865,21 @@ async function runWorkspace(sess) {
     var emptyError = null;
     try { await RykerWorkspace.openText('empty.html', ''); }
     catch (error) { emptyError = error.message; }
-    var tableError = null;
-    try { await RykerWorkspace.openText('table.md', '| A | B |\\n| --- | --- |\\n| 1 | 2 |'); }
-    catch (error) { tableError = error.message; }
     var nestedError = null;
     try { await RykerWorkspace.openText('nested.md', '- parent\\n  - child'); }
     catch (error) { nestedError = error.message; }
+
+    var grid = document.createElement('div');
+    grid.innerHTML = RykerWorkspace.markdown([
+      'A sentence with a | pipe in it.', '',
+      '| Item | Owner | Effort |',
+      '|:-----|:-----:|-------:|',
+      '| Fix the checkout | Ana | 3 |',
+      '| Rewrite copy |',
+      '| Too | many | cells | here |', '',
+      'After the table.'
+    ].join('\\n'));
+    var body = grid.querySelectorAll('tbody tr');
 
     var inline = document.createElement('div');
     inline.innerHTML = RykerWorkspace.markdown(
@@ -2837,8 +2901,18 @@ async function runWorkspace(sess) {
         document.getElementById('workspace-file').isConnected &&
         !document.body.classList.contains('workspace-loaded'),
       emptyError: emptyError,
-      tableError: tableError,
       nestedError: nestedError,
+      grid: {
+        tables: grid.querySelectorAll('table').length,
+        headers: Array.prototype.map.call(grid.querySelectorAll('thead th'),
+          function (n) { return n.textContent; }),
+        align: Array.prototype.map.call(grid.querySelectorAll('thead th'),
+          function (n) { return n.style.textAlign; }),
+        widths: Array.prototype.map.call(body, function (r) { return r.children.length; }),
+        padded: body[1] && body[1].children[2].textContent,
+        prose: grid.querySelector('p').textContent,
+        trailing: grid.querySelectorAll('p')[1].textContent
+      },
       inlineText: inline.textContent,
       inlineCode: inline.querySelector('code') && inline.querySelector('code').textContent,
       inlineEmphasis: inline.querySelectorAll('em').length,
@@ -2861,10 +2935,18 @@ async function runWorkspace(sess) {
   assert(workspacePreflight.pickerVisible && /no displayable content/i.test(workspacePreflight.emptyError),
     'an empty upload fails visibly without removing its own file picker',
     JSON.stringify(workspacePreflight));
-  assert(/tables/i.test(workspacePreflight.tableError) &&
-    /nested lists/i.test(workspacePreflight.nestedError),
-  'unsupported Markdown structures are rejected before they can be flattened',
-  JSON.stringify(workspacePreflight));
+  assert(/nested lists/i.test(workspacePreflight.nestedError),
+    'unsupported Markdown structures are rejected before they can be flattened',
+    JSON.stringify(workspacePreflight));
+  assert(workspacePreflight.grid.tables === 1 &&
+    JSON.stringify(workspacePreflight.grid.headers) === JSON.stringify(['Item', 'Owner', 'Effort']) &&
+    JSON.stringify(workspacePreflight.grid.align) === JSON.stringify(['left', 'center', 'right']) &&
+    JSON.stringify(workspacePreflight.grid.widths) === JSON.stringify([3, 3, 3]) &&
+    workspacePreflight.grid.padded === '' &&
+    workspacePreflight.grid.prose === 'A sentence with a | pipe in it.' &&
+    workspacePreflight.grid.trailing === 'After the table.',
+  'a Markdown table renders as a real table, squared to its declared columns',
+  JSON.stringify(workspacePreflight.grid));
   assert(workspacePreflight.inlineCode === 'src/__init__.py' &&
     workspacePreflight.inlineEmphasis === 0 && workspacePreflight.inlineBold === 'bold' &&
     workspacePreflight.inlineText.includes('f(*args, **kwargs)'),

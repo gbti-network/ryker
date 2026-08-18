@@ -41,9 +41,39 @@
     });
   }
 
+  // A GFM table is a header row, a rule made of dashes, then body rows. The
+  // rule is what tells a row of pipes apart from a sentence containing one, so
+  // it is matched on its own: pipes, dashes, colons and space, with at least
+  // one pipe and one dash. A horizontal rule carries no pipe and cannot collide.
+  function isTableRule(line) {
+    return /\|/.test(line) && /-/.test(line) && /^[\s|:-]*$/.test(line);
+  }
+
+  function splitRow(line) {
+    var trimmed = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+    var cells = [], cell = '';
+    for (var i = 0; i < trimmed.length; i++) {
+      var ch = trimmed.charAt(i);
+      if (ch === '\\' && trimmed.charAt(i + 1) === '|') { cell += '|'; i += 1; continue; }
+      if (ch === '|') { cells.push(cell.trim()); cell = ''; continue; }
+      cell += ch;
+    }
+    cells.push(cell.trim());
+    return cells;
+  }
+
+  function alignOf(spec) {
+    var left = spec.charAt(0) === ':';
+    var right = spec.charAt(spec.length - 1) === ':';
+    if (left && right) return 'center';
+    if (right) return 'right';
+    return left ? 'left' : '';
+  }
+
   function markdown(text) {
     var lines = String(text).replace(/\r\n?/g, '\n').split('\n');
     var out = [], paragraph = [], list = null, quote = [], code = [], fenced = false;
+    var table = null, skip = 0;
 
     function flushParagraph() {
       if (!paragraph.length) return;
@@ -62,15 +92,49 @@
       out.push('<blockquote><p>' + inlineMarkdown(quote.join(' ')) + '</p></blockquote>');
       quote = [];
     }
+    // The header row fixes the column count. A short row is padded with empty
+    // cells rather than left ragged, which is what GFM renders and what Ryker
+    // then lets someone fill in; a long one is cut to the columns declared.
+    function flushTable() {
+      if (!table) return;
+      var cell = function (tag, value, i) {
+        var align = table.align[i];
+        return '<' + tag + (align ? ' style="text-align:' + align + '"' : '') + '>' +
+          inlineMarkdown(value || '') + '</' + tag + '>';
+      };
+      var html = '<table><thead><tr>' + table.head.map(function (value, i) {
+        return cell('th', value, i);
+      }).join('') + '</tr></thead>';
+      if (table.rows.length) {
+        html += '<tbody>' + table.rows.map(function (row) {
+          var cells = '';
+          for (var i = 0; i < table.head.length; i++) cells += cell('td', row[i], i);
+          return '<tr>' + cells + '</tr>';
+        }).join('') + '</tbody>';
+      }
+      out.push(html + '</table>');
+      table = null;
+    }
 
-    lines.forEach(function (line) {
+    lines.forEach(function (line, index) {
+      if (skip) { skip -= 1; return; }
       if (/^\s*```/.test(line)) {
-        flushParagraph(); flushList(); flushQuote();
+        flushParagraph(); flushList(); flushQuote(); flushTable();
         if (fenced) { out.push('<pre><code>' + escapeHtml(code.join('\n')) + '</code></pre>'); code = []; }
         fenced = !fenced;
         return;
       }
       if (fenced) { code.push(line); return; }
+      if (table) {
+        if (line.trim() && /\|/.test(line)) { table.rows.push(splitRow(line)); return; }
+        flushTable();
+      }
+      if (/\|/.test(line) && line.trim() && isTableRule(lines[index + 1] || '')) {
+        flushParagraph(); flushList(); flushQuote();
+        table = { head: splitRow(line), align: splitRow(lines[index + 1]).map(alignOf), rows: [] };
+        skip = 1;
+        return;
+      }
       var heading = line.match(/^\s*(#{1,6})\s+(.+?)\s*#*\s*$/);
       if (heading) {
         flushParagraph(); flushList(); flushQuote();
@@ -95,7 +159,7 @@
       flushList(); flushQuote(); paragraph.push(line.trim());
     });
     if (fenced) out.push('<pre><code>' + escapeHtml(code.join('\n')) + '</code></pre>');
-    flushParagraph(); flushList(); flushQuote();
+    flushParagraph(); flushList(); flushQuote(); flushTable();
     return out.join('\n');
   }
 
@@ -103,8 +167,6 @@
     var lines = String(text).replace(/\r\n?/g, '\n').split('\n');
     for (var i = 0; i < lines.length; i++) {
       if (/^\s{2,}(?:[-*+] |\d+[.)] )/.test(lines[i])) return 'nested lists';
-      if (i + 1 < lines.length && /\|/.test(lines[i]) &&
-          /^\s*\|?\s*:?-{3,}/.test(lines[i + 1])) return 'tables';
     }
     return null;
   }

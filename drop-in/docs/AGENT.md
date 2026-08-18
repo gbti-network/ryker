@@ -54,6 +54,14 @@ or `data-impact`, and any block containing another block. For anything else, add
 <p data-ryker-lock>Generated on 2026-08-13. Do not edit.</p>
 ```
 
+Those four attributes are read differently on table structure. On `table`,
+`thead`, `tbody`, `tfoot`, `tr`, `colgroup` or `col` they say how the container
+behaves rather than what any one cell means, so the cells beneath them stay
+editable: the sort or filter key is the attribute your script reads, and
+rewording a cell does not change it. Put the attribute on the `<td>` or `<th>`
+itself when that cell's text is the key. To lock a whole table, give the
+`<table>` a `data-ryker-lock`.
+
 **Keep report UI out of editable regions.** If the report has its own controls,
 filters or navigation inside `main`, give them `data-ryker-lock`.
 

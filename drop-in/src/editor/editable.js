@@ -32,9 +32,10 @@ Ryker.editable = (function () {
       Ryker.history.captureBaseline(baseline);
     }
     Ryker.blocks.all().forEach(function (b) { arm(b.node, b.id); });
-    // all() deliberately omits empty authored blocks because they have no stable
-    // content identity. A block that Ryker already armed can later become empty,
-    // though, and Hide must not make it permanently inert when Ryker reopens.
+    // Apart from table cells, all() omits empty authored blocks because they
+    // have no stable content identity. A block that Ryker already armed can
+    // later become empty, though, and Hide must not make it permanently inert
+    // when Ryker reopens.
     resumable.forEach(function (node) { arm(node); });
     resumable = [];
     on = true;
@@ -79,7 +80,16 @@ Ryker.editable = (function () {
           // Shift+Enter is a line break inside the block. Plain Enter splits it
           // into two, which is what someone breaking a paragraph in half means.
           if (e.shiftKey) return;
-          if (n.tagName === 'TD' || n.tagName === 'TH') { e.preventDefault(); return; }
+          // Splitting a cell in two would add a cell and change what the row
+          // means, so Enter inside one is a line break rather than a split.
+          // Swallowing the key outright was the older behaviour, and to anyone
+          // who pressed it the cell read as the one block that would not take
+          // an edit.
+          if (n.tagName === 'TD' || n.tagName === 'TH') {
+            e.preventDefault();
+            try { document.execCommand('insertLineBreak'); } catch (err) {}
+            return;
+          }
           e.preventDefault();
           splitAt(n);
         }
