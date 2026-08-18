@@ -18,6 +18,7 @@ Ryker.boot = (function () {
   var started = false, active = false;
   var reopenPane = true, reopenRail = false;
   var saveNotesPreference = null;
+  var syncQueued = false;
   // Whether the folder grant has been offered in this session. One prompt, on
   // the first save that needs it; see the comment in save() for why not more.
   var askedForGrant = false;
@@ -71,7 +72,10 @@ Ryker.boot = (function () {
     Ryker.menu.attach(els.more, buildMenu);
 
     els.note = d().el('button', { class: 'where', type: 'button',
-      onclick: function () { if (!Ryker.logger.isOn()) startLogging(); } }, [
+      onclick: function () {
+        if (Ryker.logger.isOn()) Ryker.browser.open();
+        else startLogging();
+      } }, [
       d().el('span', { class: 'dot' }),
       d().el('span', { class: 'lbl', text: 'Nothing is saved anywhere' })
     ]);
@@ -127,24 +131,27 @@ Ryker.boot = (function () {
 
   function saveNotesEnabled() {
     if (saveNotesPreference !== null) return saveNotesPreference;
-    if (Ryker.SURFACE === 'extension' && Ryker.extensionConfig &&
-        typeof Ryker.extensionConfig.RYKER_SAVE_NOTES === 'boolean') {
-      return Ryker.extensionConfig.RYKER_SAVE_NOTES;
+    if (Ryker.SURFACE === 'extension') {
+      var preferences = Ryker.extensionPreferences || {};
+      return typeof preferences.saveNotes === 'boolean' ? preferences.saveNotes : true;
     }
     try { return localStorage.getItem('ryker:save-notes') !== 'off'; } catch (e) { return true; }
   }
 
   function setSaveNotesEnabled(on) {
     saveNotesPreference = !!on;
-    try { localStorage.setItem('ryker:save-notes', on ? 'on' : 'off'); } catch (e) {}
     if (Ryker.SURFACE === 'extension') {
-      Ryker.extensionConfig = Ryker.extensionConfig || {};
-      Ryker.extensionConfig.RYKER_SAVE_NOTES = !!on;
-      try {
-        if (chrome && chrome.storage && chrome.storage.local) {
-          chrome.storage.local.set({ rykerConfig: Ryker.extensionConfig });
-        }
-      } catch (e) {}
+      Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+      Ryker.extensionPreferences.saveNotes = !!on;
+      if (Ryker.extensionStorage) {
+        Ryker.extensionStorage.set('preference:save-notes', !!on).catch(function (error) {
+          if (Ryker.log) Ryker.log('preference storage: ' + error.message);
+          if (Ryker.pane) Ryker.pane.flash('Save-comment preference could not be stored: ' +
+            error.message, 'warn');
+        });
+      }
+    } else {
+      try { localStorage.setItem('ryker:save-notes', on ? 'on' : 'off'); } catch (e) {}
     }
     if (Ryker.pane) Ryker.pane.flash('Save comments ' + (on ? 'enabled.' : 'disabled.'));
     return saveNotesPreference;
@@ -164,31 +171,39 @@ Ryker.boot = (function () {
   // exportHtml.journalJson() went with the revision journal.
   function exportMenu() {
     var base = Ryker.exportHtml.baseName();
+    var attach = !Ryker.exportHtml.canAttach || Ryker.exportHtml.canAttach();
+    var body = '<p><b>Clean HTML</b> is the report on its own, with Ryker taken out. This is what ' +
+      'you send to someone who should read it rather than edit it.</p>';
+    if (attach) {
+      body += '<p><b>With Ryker</b> keeps the editor attached, so whoever opens it can carry on ' +
+        'editing and leave with their own instruction set.</p>';
+    } else {
+      body += '<p>This extension workspace can export clean HTML only. Install the Ryker drop-in ' +
+        'in the source file when you need a portable editable copy.</p>';
+    }
+    var buttons = [{ label: 'Cancel' }];
+    if (attach) {
+      buttons.push({
+        label: 'With Ryker',
+        action: function () {
+          var o = Ryker.exportHtml.scanned('ryker');
+          if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
+          Ryker.exportHtml.download(o.html, base + '-ryker.html');
+        }
+      });
+    }
+    buttons.push({
+      label: 'Clean HTML', primary: true,
+      action: function () {
+        var o = Ryker.exportHtml.scanned('clean');
+        if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
+        Ryker.exportHtml.download(o.html, base + '.html');
+      }
+    });
     Ryker.dialog.open({
       title: 'Export',
-      body: '<p><b>Clean HTML</b> is the report on its own, with Ryker taken out. This is what ' +
-        'you send to someone who should read it rather than edit it.</p>' +
-        '<p><b>With Ryker</b> keeps the editor attached, so whoever opens it can carry on ' +
-        'editing and leave with their own instruction set.</p>',
-      buttons: [
-        { label: 'Cancel' },
-        {
-          label: 'With Ryker',
-          action: function () {
-            var o = Ryker.exportHtml.scanned('ryker');
-            if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
-            Ryker.exportHtml.download(o.html, base + '-ryker.html');
-          }
-        },
-        {
-          label: 'Clean HTML', primary: true,
-          action: function () {
-            var o = Ryker.exportHtml.scanned('clean');
-            if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
-            Ryker.exportHtml.download(o.html, base + '.html');
-          }
-        }
-      ]
+      body: body,
+      buttons: buttons
     });
   }
 
@@ -221,19 +236,6 @@ Ryker.boot = (function () {
           } }
       ]
     });
-  }
-
-  // Polls rather than subscribes, because a dialog can be closed by Escape, by
-  // the backdrop or by any of its own buttons, and one timer is cheaper than
-  // teaching every one of those paths to notify.
-  function askWhenClear() {
-    var tries = 0;
-    (function wait() {
-      if (Ryker.logger.isOn()) return;
-      if (!Ryker.dialog.isOpen()) { startLogging(); return; }
-      if (++tries > 240) return;
-      setTimeout(wait, 500);
-    })();
   }
 
   function expand(open) {
@@ -387,14 +389,14 @@ Ryker.boot = (function () {
 
     var held = Ryker.logger.pendingCount();
     els.note.querySelector('.lbl').textContent = Ryker.logger.isOn()
-      ? 'Writing to ' + Ryker.logger.where()
+      ? 'Saved changes'
       : (held
           ? held + ' save(s) held in this tab only'
           : (edits ? edits + ' edit(s) held in this tab only' : 'Nothing is saved anywhere'));
-    els.note.disabled = Ryker.logger.isOn() || !Ryker.logger.supported();
+    els.note.disabled = !Ryker.logger.isOn() && !Ryker.logger.supported();
     els.note.querySelector('.dot').className = 'dot ' + (edits ? 'warn' : '');
     Ryker.tooltip.attach(els.note, Ryker.logger.isOn()
-      ? 'Every save also writes a copy to ' + Ryker.logger.where() + '.'
+      ? 'Every save writes a copy here. Click to browse them.'
       : 'Nothing has been written to disk yet. Click to choose the folder, ' +
         'and every save held in this tab is written straight away.');
     els.note.querySelector('.dot').classList.toggle('ok', Ryker.logger.isOn());
@@ -403,6 +405,23 @@ Ryker.boot = (function () {
       edits + ' edit(s) recorded. Show or hide the instructions.');
 
     layout();
+  }
+
+  // Typing can emit several changes before the browser paints. The status and
+  // layout are visual work, so one refresh per frame is both current enough for
+  // the eye and prevents a full document snapshot/style walk per character.
+  function scheduleSync() {
+    // The first dirty transition enables Save immediately. Further keystrokes
+    // arrive while it is already enabled and can share the next paint.
+    if (els.save && els.save.disabled) { sync(); return; }
+    if (syncQueued) return;
+    syncQueued = true;
+    var run = function () {
+      syncQueued = false;
+      sync();
+    };
+    if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+    else setTimeout(run, 0);
   }
 
   function start() {
@@ -438,7 +457,7 @@ Ryker.boot = (function () {
     guard('tooltip', function () { Ryker.tooltip.init(); });
 
     guard('wire', function () {
-      Ryker.editable.onChange(sync);
+      Ryker.editable.onChange(scheduleSync);
       Ryker.instructions.onChange(function () { Ryker.pane.refresh(); sync(); });
       Ryker.recover.init();
     });

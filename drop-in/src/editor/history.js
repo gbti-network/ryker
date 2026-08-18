@@ -18,6 +18,8 @@ Ryker.history = (function () {
   var future = [];
   var listeners = [];
   var applying = false;
+  var baselineNodes = {};
+  var baselineBoxes = {};
 
   var pending = null;   // block being typed into
   var timer = null;
@@ -107,6 +109,74 @@ Ryker.history = (function () {
   function depth() { return past.length; }
   function isApplying() { return applying; }
 
+  // Discard restores the actual authored nodes rather than reconstructing them
+  // from text. These references retain attributes, namespaces, host listeners
+  // and removable containers without cloning the whole report per edit.
+  function captureBaseline(snapshot) {
+    baselineNodes = {};
+    baselineBoxes = {};
+    Object.keys(snapshot || {}).forEach(function (id) {
+      var node = Ryker.blocks.byId(id);
+      if (!node) return;
+      baselineNodes[id] = { node: node, parent: node.parentNode, next: node.nextSibling };
+      var boxId = snapshot[id] && snapshot[id].box;
+      var box = boxId && node.closest ? node.closest('table, figure, ul, ol, dl') : null;
+      if (box && !baselineBoxes[boxId]) {
+        baselineBoxes[boxId] = { node: box, parent: box.parentNode, next: box.nextSibling };
+      }
+    });
+  }
+
+  function restoreBaseline(snapshot, armed) {
+    flushText();
+    var current = Ryker.blocks.snapshot();
+    var extras = [];
+
+    Object.keys(current).forEach(function (id) {
+      if (!Object.prototype.hasOwnProperty.call(snapshot, id)) {
+        var node = Ryker.blocks.byId(id);
+        if (node) extras.push(node);
+      }
+    });
+    (armed || []).forEach(function (node) {
+      var id = Ryker.blocks.blockId(node);
+      if (node.isConnected && !Object.prototype.hasOwnProperty.call(snapshot, id) &&
+          extras.indexOf(node) === -1) extras.push(node);
+    });
+
+    function removeExtra(node) {
+      var parent = node.parentNode;
+      if (!parent) return;
+      parent.removeChild(node);
+      if (parent.matches && parent.matches('ul, ol, dl') &&
+          !parent.querySelector(Ryker.blocks.SELECTOR) && parent.parentNode) {
+        parent.parentNode.removeChild(parent);
+      }
+    }
+    function restore(ref) {
+      if (!ref || !ref.parent) return;
+      var at = ref.next && ref.next.parentNode === ref.parent ? ref.next : null;
+      ref.parent.insertBefore(ref.node, at);
+    }
+
+    extras.forEach(removeExtra);
+    Object.keys(baselineBoxes).reverse().forEach(function (id) {
+      if (!baselineBoxes[id].node.isConnected) restore(baselineBoxes[id]);
+    });
+    Object.keys(snapshot).reverse().forEach(function (id) {
+      var ref = baselineNodes[id];
+      if (!ref) return;
+      var currentNode = Ryker.blocks.byId(id);
+      if (currentNode && currentNode !== ref.node) removeExtra(currentNode);
+      if (!snapshot[id].atomic) ref.node.innerHTML = Ryker.blocks.htmlOf(snapshot[id]);
+      restore(ref);
+      ref.node.classList.remove('ryker-dirty', 'ryker-pick');
+      if (!snapshot[id].atomic) Ryker.editable.rebind(ref.node);
+    });
+    if (Ryker.pick) Ryker.pick.clear();
+    clear();
+  }
+
   // Ctrl+Z and Ctrl+Shift+Z, plus Ctrl+Y. Taken over completely rather than
   // shared with the browser: a stack that sometimes handles an action and
   // sometimes defers is worse than one that always does, because nobody can
@@ -117,11 +187,15 @@ Ryker.history = (function () {
       var k = (e.key || '').toLowerCase();
       if (k !== 'z' && k !== 'y') return;
       if (!Ryker.editable.isOn()) return;
-      // The instruction pane is an ordinary textarea and keeps its own undo.
+      // Form fields and independent editable controls keep their own native undo.
+      // Ryker takes over only inside one of the document blocks it armed; doing
+      // otherwise makes Ctrl+Z in a link/save dialog mutate the page behind it.
       var path = e.composedPath ? e.composedPath() : [];
       for (var i = 0; i < path.length; i++) {
         var n = path[i];
-        if (n && n.tagName === 'TEXTAREA') return;
+        if (!n || !n.tagName) continue;
+        if (n.tagName === 'TEXTAREA' || n.tagName === 'INPUT' || n.tagName === 'SELECT') return;
+        if (n.isContentEditable && !(n.closest && n.closest('.ryker-editing'))) return;
       }
       e.preventDefault();
       e.stopPropagation();
@@ -132,6 +206,7 @@ Ryker.history = (function () {
   return {
     record: record, text: text, flush: flushText, undo: undo, redo: redo,
     clear: clear, canUndo: canUndo, canRedo: canRedo, depth: depth,
-    isApplying: isApplying, bind: bind, onChange: onChange
+    isApplying: isApplying, bind: bind, onChange: onChange,
+    captureBaseline: captureBaseline, restoreBaseline: restoreBaseline
   };
 })();

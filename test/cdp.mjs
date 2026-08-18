@@ -12,11 +12,21 @@
 // the test built its selection in script. Synthetic environments are not
 // evidence.
 import { spawn } from 'node:child_process';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const CHROME = process.env.RYKER_CHROME || '/usr/bin/google-chrome';
+function chromePath() {
+  if (process.env.RYKER_CHROME) return process.env.RYKER_CHROME;
+  const candidates = process.platform === 'win32' ? [
+    join(process.env.ProgramFiles || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    join(process.env['ProgramFiles(x86)'] || '', 'Google', 'Chrome', 'Application', 'chrome.exe'),
+    join(process.env.LOCALAPPDATA || '', 'Google', 'Chrome', 'Application', 'chrome.exe')
+  ] : ['/usr/bin/google-chrome', '/usr/bin/google-chrome-stable', '/usr/bin/chromium'];
+  return candidates.find((candidate) => candidate && existsSync(candidate)) || candidates[0];
+}
+
+const CHROME = chromePath();
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

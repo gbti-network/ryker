@@ -57,5 +57,8 @@ jobs:
       - name: Test the npm installer CLI
         run: npm run test:cli
 
+      - name: Run the package release gate
+        run: npm run package:check
+
       - name: Inspect the npm package boundary
         run: npm run package:preview

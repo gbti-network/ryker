@@ -10,6 +10,8 @@
 Ryker.packager = (function () {
   'use strict';
 
+  var MAX_FOLDER_ENTRIES = 5000;
+
   function d() { return Ryker.dom; }
 
   function inlinedAssets() {
@@ -37,59 +39,61 @@ Ryker.packager = (function () {
     var list = cfg.RYKER_PACKAGE_MANIFEST;
     if (!Array.isArray(list)) return [];
     return list.map(function (f) {
-      return { name: f.name || f, source: 'manifest', bytes: f.bytes || null, path: f.name || f };
-    });
+      if (!f) return null;
+      var item = typeof f === 'string' ? { name: f } : f;
+      var path = item.path || item.href || item.name;
+      if (!path) return null;
+      return {
+        name: item.name || path,
+        source: 'manifest',
+        bytes: typeof item.bytes === 'number' ? item.bytes : null,
+        href: item.href || path,
+        data: item.data == null ? null : item.data
+      };
+    }).filter(Boolean);
   }
 
   function folderAssets(dirHandle) {
-    var out = [];
-    function walk(prefix) {
-      return Ryker.fs.list(dirHandle, prefix).then(function (entries) {
-        return entries.reduce(function (chain, e) {
-          return chain.then(function () {
-          var name = prefix + e.name;
-          // Skip dotfiles, and skip the change-request log wherever it lives.
-          //
-          // This said `e.name === '.ryker'`, which was the RETIRED build's path
-          // and is redundant with the dot test on the same line anyway. The
-          // surviving logger writes to `ryker/` with no dot (logger.js LIB), so
-          // the log was not being skipped at all. It is dormant only because
-          // fsBackend() returns null and no folder can currently be listed;
-          // sow-006 Phase 2 turns listing back on, and the first "Package
-          // report" against a granted folder would have put every logged prompt
-          // into the ZIP, where the credential scan then reads all of them.
-          //
-          // Read from the logger rather than repeated here, so the two cannot
-          // drift apart again the way they just did.
-          var lib = (Ryker.logger && Ryker.logger.LIB) || 'ryker';
-          if (e.name === lib || e.name.charAt(0) === '.') return null;
-          if (e.kind === 'directory') {
-            return walk(name + '/');
-          }
-          out.push({ name: name, source: 'folder', bytes: e.size,
-                     root: dirHandle, path: name });
-          return null;
-          });
-        }, Promise.resolve());
-      });
+    var lib = (Ryker.logger && Ryker.logger.LIB) || 'ryker';
+    var logPrefix = dirHandle && String(dirHandle.name || '').toLowerCase() === lib
+      ? 'revisions'
+      : lib + '/revisions';
+
+    function isLogPath(name) {
+      var normalized = String(name).replace(/\/$/, '').toLowerCase();
+      return normalized === logPrefix || normalized.indexOf(logPrefix + '/') === 0;
     }
-    return walk('').then(function () { return out; });
+    return Ryker.fs.walk(dirHandle, '', {
+      maxEntries: MAX_FOLDER_ENTRIES,
+      // Skip dot trees and only the revision corpus. The rest of `ryker/` can
+      // include the distributable bundle that a with-Ryker report needs.
+      skip: function (entry, name) {
+        return entry.name.charAt(0) === '.' || isLogPath(name);
+      }
+    }).then(function (entries) {
+      return entries.map(function (entry) {
+        return { name: entry.name, source: 'folder', bytes: entry.size,
+          root: dirHandle, path: entry.name };
+      });
+    });
   }
 
-  // The storage adapter went with the full build, so there is no folder backend
-  // left to ask and every caller below takes its no-folder path. This is one
-  // function rather than a guard at each call site on purpose: sow-006 Phase 2
-  // converges storage/fs.js with the handle persistence in logger.js into a
-  // single file-system module, and returning that here is the whole of putting
-  // folder access back.
+  // One seam keeps the dialog independent of the concrete folder adapter.
   function fsBackend() {
     return Ryker.fs;
+  }
+
+  function showError(title, error) {
+    if (error && error.name === 'AbortError') return;
+    Ryker.dialog.alert(title,
+      Ryker.dom.escapeHtml((error && error.message) || String(error)), 'bad');
   }
 
   function open() {
     var fs = fsBackend();
     if (fs && fs.isReady()) {
-      folderAssets(fs.handle()).then(function (files) { dialog(files, true); });
+      folderAssets(fs.handle()).then(function (files) { dialog(files, true); })
+        .catch(function (error) { showError('Could not read the report folder', error); });
       return;
     }
     var files = manifestAssets().concat(inlinedAssets());
@@ -98,6 +102,7 @@ Ryker.packager = (function () {
 
   function dialog(files, fromFolder) {
     var base = Ryker.exportHtml.baseName();
+    var attachedBundle = bundlePath();
     var rows = [];
     var list = d().el('div', { class: 'filelist' });
 
@@ -113,10 +118,14 @@ Ryker.packager = (function () {
       rows.push({ cb: cb, payload: payload });
     }
 
-    row(base + '.html', true, 'the report', { kind: 'report' });
+    row(base + '.html', true, 'clean report', { kind: 'report', mode: 'clean' });
+    if (attachedBundle) {
+      row(base + '-ryker.html', false, 'report with Ryker attached',
+        { kind: 'report', mode: 'ryker', bundle: attachedBundle });
+    }
 
     files.forEach(function (f) {
-      row(f.name, true, f.bytes ? kb(f.bytes) : f.source, { kind: 'asset', file: f });
+      row(f.name, !fromFolder, f.bytes ? kb(f.bytes) : f.source, { kind: 'asset', file: f });
     });
 
     var chooseBtn = null;
@@ -125,23 +134,15 @@ Ryker.packager = (function () {
       chooseBtn = { label: 'Choose report folder', keepOpen: true, action: function (api) {
         fs.pick().then(function (h) {
           api.close();
-          folderAssets(h).then(function (fl) { dialog(fl, true); });
-        }).catch(function () {});
+          return folderAssets(h).then(function (fl) { dialog(fl, true); });
+        }).catch(function (error) { showError('Could not read the report folder', error); });
         return false;
       } };
     }
 
-    // Built after chooseBtn, and keyed to it rather than to fromFolder, because
-    // it is the only text in this dialog and it was telling people to use a
-    // control that is filtered out of the button list. fsBackend() has returned
-    // null since the decommission, so chooseBtn is never constructed, so the
-    // sentence "Choose the report folder to see the rest" named a button that
-    // was not on screen and could not be made to appear. Now the sentence and
-    // the button arrive together or not at all, which also means sow-006
-    // Phase 2 restores both by changing fsBackend() alone.
     var note = fromFolder
       ? '<div class="note ok">Listing the folder you granted access to, so anything added since ' +
-        'the report was built appears here too.</div>'
+        'the report was built appears here too. Folder files start unchecked.</div>'
       : '<div class="note">This lists what the document already carries' +
         (files.some(function (f) { return f.source === 'manifest'; })
           ? ' plus anything named in the build manifest' : '') + '.' +
@@ -168,25 +169,71 @@ Ryker.packager = (function () {
   function htmlNode(s) { var n = document.createElement('div'); n.innerHTML = s; return n; }
   function kb(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
 
+  function bundlePath() {
+    var script = document.querySelector('script[data-ryker][src]');
+    if (!script) return null;
+    var path = String(script.getAttribute('src') || '').split(/[?#]/)[0].replace(/\\/g, '/');
+    try { path = decodeURIComponent(path); } catch (error) {}
+    return path.replace(/^\.\//, '').replace(/^\//, '') || null;
+  }
+
+  function samePath(a, b) {
+    return String(a || '').replace(/\\/g, '/').replace(/^\.\//, '') ===
+      String(b || '').replace(/\\/g, '/').replace(/^\.\//, '');
+  }
+
+  function assetJob(f) {
+    if (f.data != null) return Promise.resolve({ name: f.name, data: f.data });
+    if (f.root && f.path) {
+      return Ryker.fs.readBytes(f.root, f.path)
+        .then(function (bytes) { return { name: f.name, data: bytes }; });
+    }
+    if (f.href) {
+      return fetch(f.href).then(function (response) {
+        if (!response.ok && !/^data:/i.test(f.href)) {
+          throw new Error('Could not read ' + f.name + ' (' + response.status + ').');
+        }
+        return response.arrayBuffer();
+      }).then(function (buf) { return { name: f.name, data: new Uint8Array(buf) }; });
+    }
+    return Promise.reject(new Error('No readable source was supplied for ' + f.name + '.'));
+  }
+
+  function asBytes(data) {
+    if (data instanceof Uint8Array) return data;
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    return new TextEncoder().encode(String(data));
+  }
+
   function build(rows, base, api) {
     var chosen = rows.filter(function (r) { return r.cb.checked; });
+    var withRyker = chosen.filter(function (r) {
+      return r.payload.kind === 'report' && r.payload.mode === 'ryker';
+    })[0];
+    if (withRyker) {
+      var bundleRow = rows.filter(function (r) {
+        return r.payload.kind === 'asset' && samePath(r.payload.file.name, withRyker.payload.bundle);
+      })[0];
+      if (!bundleRow) {
+        api.close();
+        showError('Could not build the package', new Error(
+          'The with-Ryker copy needs ' + withRyker.payload.bundle +
+          '. Choose the report folder so Ryker can include that bundle.'));
+        return;
+      }
+      if (chosen.indexOf(bundleRow) < 0) chosen.push(bundleRow);
+    }
     var jobs = chosen.map(function (r) {
       var p = r.payload;
       if (p.kind === 'report') {
-        var out = Ryker.exportHtml.scanned('ryker');
+        var out = Ryker.exportHtml.scanned(p.mode);
         if (out.hits.length) return Promise.reject({ leak: out.hits });
-        return Promise.resolve({ name: base + '.html', data: out.html });
+        return Promise.resolve({
+          name: p.mode === 'clean' ? base + '.html' : base + '-ryker.html',
+          data: out.html
+        });
       }
-      var f = p.file;
-      if (f.root && f.path) {
-        return Ryker.fs.readBytes(f.root, f.path)
-          .then(function (bytes) { return { name: f.name, data: bytes }; });
-      }
-      if (f.href) {
-        return fetch(f.href).then(function (r) { return r.arrayBuffer(); })
-          .then(function (buf) { return { name: f.name, data: new Uint8Array(buf) }; });
-      }
-      return Promise.resolve(null);
+      return assetJob(p.file);
     });
 
     Promise.all(jobs).then(function (entries) {
@@ -198,7 +245,10 @@ Ryker.packager = (function () {
       files.forEach(function (f) {
         var found = typeof f.data === 'string'
           ? Ryker.scan.text(f.data, f.name)
-          : Ryker.scan.bytes(f.data, f.name);
+          : Ryker.scan.bytes(asBytes(f.data), f.name);
+        if (found.truncated) {
+          throw new Error('The credential scan could not inspect all of ' + f.name + '.');
+        }
         hits = hits.concat(found);
       });
       if (hits.length) { Ryker.dialog.leak(hits); api.close(); return; }
@@ -206,7 +256,7 @@ Ryker.packager = (function () {
       var withManifest = files.concat([{
         name: 'ryker-package.json',
         data: Ryker.exportHtml.manifest(files.map(function (f) {
-          var bytes = typeof f.data === 'string' ? new TextEncoder().encode(f.data) : f.data;
+          var bytes = asBytes(f.data);
           return { name: f.name, bytes: bytes.length, crc32: Ryker.zip.crc32(bytes) };
         }))
       }]);
@@ -218,8 +268,7 @@ Ryker.packager = (function () {
     }).catch(function (err) {
       api.close();
       if (err && err.leak) { Ryker.dialog.leak(err.leak); return; }
-      Ryker.dialog.alert('Could not build the package',
-        Ryker.dom.escapeHtml((err && err.message) || String(err)), 'bad');
+      showError('Could not build the package', err);
     });
   }
 

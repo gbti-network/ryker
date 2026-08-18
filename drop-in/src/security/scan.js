@@ -24,7 +24,7 @@ Ryker.scan = (function () {
     { name: 'Google API key', re: /\bAIza[A-Za-z0-9_-]{35}\b/ },
     { name: 'Service account credential', re: /"type"\s*:\s*"service_account"/ },
     { name: 'AWS access key id', re: /\bAKIA[0-9A-Z]{16}\b/ },
-    { name: 'Generic bearer token assignment', re: /\b(client_secret|refresh_token|private_key)\s*[:=]\s*["'][^"']{16,}["']/ }
+    { name: 'Generic bearer token assignment', re: /["']?\b(client_secret|refresh_token|private_key)\b["']?\s*[:=]\s*["'][^"'\r\n]{16,4096}["']/ }
   ];
 
   // Returns [] when clean. Each hit names the pattern and gives a short
@@ -52,11 +52,33 @@ Ryker.scan = (function () {
 
   // Binary members of a package are checked as latin1 so a key pasted into a
   // CSV or a text file inside the ZIP is still caught. Images will not match.
+  //
+  // Scan in bounded chunks rather than silently stopping after 2 MiB. The
+  // overlap is larger than the longest bounded pattern above, so a credential
+  // split across two chunks is still seen. Duplicate hits from the overlap are
+  // collapsed before returning.
   function bytes(u8, label) {
-    var s = '';
-    var limit = Math.min(u8.length, 2 * 1024 * 1024);
-    for (var i = 0; i < limit; i++) s += String.fromCharCode(u8[i]);
-    return text(s, label);
+    var chunkSize = 256 * 1024;
+    var overlap = 8192;
+    var tail = '';
+    var hits = [];
+    var seen = {};
+    for (var offset = 0; offset < u8.length; offset += chunkSize) {
+      var end = Math.min(offset + chunkSize, u8.length);
+      var content = tail;
+      for (var i = offset; i < end; i++) content += String.fromCharCode(u8[i]);
+      text(content, label).forEach(function (hit) {
+        var key = hit.artifact + '\n' + hit.pattern + '\n' + hit.excerpt;
+        if (!seen[key]) { seen[key] = true; hits.push(hit); }
+      });
+      tail = content.slice(-overlap);
+    }
+    // Properties keep the array API compatible while making it impossible for
+    // a caller to mistake a future partial scan for a clean one.
+    hits.truncated = false;
+    hits.scannedBytes = u8.length;
+    hits.totalBytes = u8.length;
+    return hits;
   }
 
   return { text: text, bytes: bytes, patterns: PATTERNS };

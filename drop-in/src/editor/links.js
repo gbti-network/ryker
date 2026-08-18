@@ -24,7 +24,7 @@ Ryker.links = (function () {
     }
     if (node.nodeType === 3) node = node.parentNode;
     if (!node || !node.closest) return null;
-    if (node.closest('#ryker-root')) return null;
+    if (Ryker.shell && Ryker.shell.owns(node)) return null;
     var a = node.closest('a');
     if (!a) return null;
     return a.closest('[contenteditable="true"]') ? a : null;

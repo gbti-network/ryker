@@ -2,7 +2,7 @@
 //
 // Written rather than vendored. DOMPurify exists to sanitise HTML arriving from
 // arbitrary untrusted sources; Ryker's input is a contenteditable surface in a
-// page it controls, and the allowlist below is a dozen tags. Vendoring 2,700
+// page it controls, and the allowlist below is a small explicit set. Vendoring 2,700
 // lines that would need splitting across five files to meet the 600 line cap,
 // then maintaining it against upstream fixes no longer being received, is worse
 // than 200 lines that are understood.
@@ -13,12 +13,21 @@ Ryker.sanitize = (function () {
   'use strict';
 
   var ALLOWED = {
-    A: ['href', 'title', 'target', 'download'],
-    B: [], STRONG: [], I: [], EM: [], U: [], S: [],
-    CODE: [], SUP: [], SUB: [], BR: [], SPAN: [], MARK: []
+    A: ['href', 'target', 'download', 'rel'],
+    IMG: ['src', 'alt', 'width', 'height', 'loading', 'decoding'],
+    B: [], STRONG: [], I: [], EM: [], U: [], S: [], DEL: ['cite', 'datetime'],
+    INS: ['cite', 'datetime'], SMALL: [], ABBR: [], TIME: ['datetime'],
+    CODE: [], KBD: [], SAMP: [], VAR: [], CITE: [], Q: ['cite'],
+    SUP: [], SUB: [], BR: [], SPAN: [], MARK: []
   };
 
-  var URL_OK = /^(https?:|mailto:|tel:|#|\/|\.\/|\.\.\/)/i;
+  // Shared safe attributes preserve authored identity, language and accessible
+  // names without carrying executable or layout-bearing markup into the page.
+  var GLOBAL_ATTRS = ['id', 'class', 'lang', 'dir', 'title', 'role'];
+  var URL_ATTRS = {
+    href: 'link', cite: 'link', src: 'image', poster: 'image', background: 'image',
+    action: 'action', formaction: 'action', 'xlink:href': 'image'
+  };
 
   // A data: URI whose payload cannot execute. The self-contained reports embed
   // every dataset and image this way, so refusing data: outright destroyed them:
@@ -28,14 +37,50 @@ Ryker.sanitize = (function () {
 
   function safeDataUri(v) { return SAFE_DATA.test(String(v || '').trim()); }
 
-  function badUrl(v) {
+  function safeUrl(v, kind) {
     var s = String(v || '').trim().replace(/[\u0000-\u001F\u007F]/g, '');
-    if (!s) return true;
-    if (safeDataUri(s)) return false;
-    // javascript:, vbscript: and any other data: payload are the executable
-    // shapes, and blob: and file: point outside the document entirely.
-    if (/^(javascript|vbscript|data|blob|file):/i.test(s)) return true;
-    return !URL_OK.test(s);
+    if (!s) return false;
+    if (/^data:/i.test(s)) {
+      return kind === 'image'
+        ? /^data:image\/(png|jpe?g|gif|webp|avif)\s*[;,]/i.test(s)
+        : (kind !== 'action' && safeDataUri(s));
+    }
+
+    // A URL with no scheme is relative, including bare sibling paths such as
+    // appendix.html and data/results.csv. Those are the ordinary authored form
+    // in a portable report and must not be mistaken for an unsafe protocol.
+    var scheme = s.match(/^([a-z][a-z0-9+.-]*):/i);
+    if (!scheme) return true;
+    scheme = scheme[1].toLowerCase();
+    if (kind === 'image' || kind === 'action') return scheme === 'http' || scheme === 'https';
+    return scheme === 'http' || scheme === 'https' || scheme === 'mailto' || scheme === 'tel';
+  }
+
+  function badUrl(v) { return !safeUrl(v, 'link'); }
+
+  // This is a safety screen, not a document-wide allowlist. A caller decides
+  // which attributes make sense for its tag, then uses this to reject event,
+  // layout and dangerous URL forms consistently across Ryker surfaces.
+  function safeAttribute(tag, name, value) {
+    name = String(name || '').toLowerCase();
+    if (!name || name.indexOf('on') === 0 || name === 'style' || name === 'srcdoc' ||
+        name === 'ping' || name === 'srcset') return false;
+    var kind = URL_ATTRS[name];
+    return kind ? safeUrl(value, kind) : true;
+  }
+
+  // Mutates one element using a caller-supplied tag allowlist plus the shared
+  // safe attributes above. The workspace can reuse this with its own per-tag
+  // schema instead of growing a second URL policy.
+  function attributes(node, allowed) {
+    for (var i = node.attributes.length - 1; i >= 0; i--) {
+      var attr = node.attributes[i];
+      var name = attr.name.toLowerCase();
+      var named = allowed.indexOf(name) !== -1 || GLOBAL_ATTRS.indexOf(name) !== -1 ||
+        /^aria-[a-z0-9_.:-]+$/i.test(name);
+      if (!named || !safeAttribute(node.tagName, name, attr.value)) node.removeAttribute(attr.name);
+    }
+    return node;
   }
 
   // Only a link that leaves the page needs rel. Adding it to an in-page
@@ -64,17 +109,7 @@ Ryker.sanitize = (function () {
     while ((node = walk.nextNode())) {
       var tag = node.tagName;
       if (!Object.prototype.hasOwnProperty.call(ALLOWED, tag)) { kill.push(node); continue; }
-      var allowed = ALLOWED[tag];
-      for (var i = node.attributes.length - 1; i >= 0; i--) {
-        var attr = node.attributes[i];
-        var name = attr.name.toLowerCase();
-        // Every on* handler goes, whether or not the tag is allowed.
-        if (name.indexOf('on') === 0 || allowed.indexOf(name) === -1) {
-          node.removeAttribute(attr.name);
-          continue;
-        }
-        if (name === 'href' && badUrl(attr.value)) node.removeAttribute(attr.name);
-      }
+      attributes(node, ALLOWED[tag]);
       if (tag === 'A' && (leavesPage(node.getAttribute('href')) ||
           node.getAttribute('target') === '_blank')) {
         node.setAttribute('rel', 'noopener noreferrer');
@@ -84,13 +119,13 @@ Ryker.sanitize = (function () {
       if (tag === 'A' && node.hasAttribute('download') && !node.getAttribute('href')) {
         node.removeAttribute('download');
       }
-      // A span that has lost every attribute carries nothing. Pasting from a
-      // browser wraps everything in them, and left alone they pile up.
-      if ((tag === 'SPAN' || tag === 'MARK') && !node.attributes.length) kill.push(node);
     }
     // Unwrap rather than delete, so pasted text survives when its wrapper does
     // not. A paste that silently loses its words is worse than one that loses
     // its formatting.
+    var BLOCK = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DIV|DL|DT|DD|FIELDSET|FIGCAPTION|FIGURE|FOOTER|HEADER|H[1-6]|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TBODY|TD|TFOOT|TH|THEAD|TR|UL)$/;
+    function isBreak(n) { return n && n.nodeType === 1 && n.tagName === 'BR'; }
+
     kill.forEach(function (n) {
       if (!n.parentNode) return;
       if (n.tagName === 'SCRIPT' || n.tagName === 'STYLE' || n.tagName === 'IFRAME' ||
@@ -100,8 +135,16 @@ Ryker.sanitize = (function () {
         n.parentNode.removeChild(n);
         return;
       }
-      while (n.firstChild) n.parentNode.insertBefore(n.firstChild, n);
-      n.parentNode.removeChild(n);
+      var parent = n.parentNode;
+      var separate = BLOCK.test(n.tagName);
+      var before = n.previousSibling;
+      var after = n.nextSibling;
+      if (separate && before && !isBreak(before)) parent.insertBefore(document.createElement('br'), n);
+      while (n.firstChild) parent.insertBefore(n.firstChild, n);
+      if (separate && after && !isBreak(n.previousSibling) && !isBreak(after)) {
+        parent.insertBefore(document.createElement('br'), n);
+      }
+      parent.removeChild(n);
     });
     return frag;
   }
@@ -150,8 +193,8 @@ Ryker.sanitize = (function () {
     return Ryker.dom.escapeHtml(t).replace(/\r?\n/g, '<br>');
   }
 
-  // Called after an edit lands, to catch anything that arrived by a route the
-  // paste handler did not see, such as a drag and drop.
+  // Called after an explicit markup command such as link creation or inline
+  // formatting. Ordinary focus/blur must never rewrite an authored block.
   function element(node) {
     var tpl = document.createElement('template');
     tpl.innerHTML = node.innerHTML;
@@ -169,5 +212,6 @@ Ryker.sanitize = (function () {
   }
 
   return { html: html, fragment: fragment, element: element,
-           fromClipboard: fromClipboard, badUrl: badUrl, safeDataUri: safeDataUri };
+           fromClipboard: fromClipboard, badUrl: badUrl, safeUrl: safeUrl,
+           safeAttribute: safeAttribute, attributes: attributes, safeDataUri: safeDataUri };
 })();

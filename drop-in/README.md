@@ -8,7 +8,7 @@ Ryker is not the report. Ryker travels with the report. Add one script tag and
 the document becomes editable in place, while staying a valid HTML file that
 anyone can open years later with Ryker gone.
 
-Version 0.1.0. Built against the Phase 1 specification in
+Version 0.1.1. Built against the Phase 1 specification in
 `../.data/sow/0_queue/sow-004-assets/phase-1-spec.md`.
 
 ## What you leave with
@@ -89,7 +89,7 @@ it is the case Ryker most needs to work in.
   authored in against the order it is in now. Move something out and back and
   Ryker correctly reports nothing.
 - **A formatting row** floats over the selection while editing: Paragraph and
-  H1–H5 block types, bold, italic, strikethrough, link and clear formatting.
+  H1 to H5 block types, bold, italic, strikethrough, link and clear formatting.
   Block-type changes support undo/redo and are emitted as element-name changes,
   not as fictional text rewrites.
 - **Export** produces the report with Ryker removed, the report with Ryker
@@ -119,7 +119,8 @@ node build/bundle.mjs
 Concatenation, on purpose. Each source file assigns onto the `Ryker` namespace
 rather than importing, so there is no build dependency, nothing to vendor, and
 output anyone can read. The drop-in and extension artifacts are generated from
-the same 31-module load order; `dist/ryker.js` is roughly 289 KB.
+the same canonical module order. The build prints the module count, source-line
+count and output size for both artifacts so those values cannot go stale here.
 
 The build refuses to emit when a source file breaks a rule:
 
@@ -157,10 +158,10 @@ restoring the count through some other route.
 
 The repository's `drop-in/` directory is the source of truth for the deployed
 copy under Codeable Placement Audits. From Windows, build and sync it through
-WSL with:
+WSL with the repository-only script:
 
 ```powershell
-npm run sync
+wsl.exe -d Ubuntu -- bash ./scripts/sync-placement-audits.sh
 ```
 
 The underlying PowerShell alternative is:

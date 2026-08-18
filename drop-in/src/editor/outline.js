@@ -34,7 +34,8 @@ Ryker.outline = (function () {
   }
 
   function visible(el) {
-    if (!el || !el.isConnected || el.closest('#ryker-root,[hidden],[aria-hidden="true"],template')) return false;
+    if (!el || !el.isConnected || (Ryker.shell && Ryker.shell.owns(el)) ||
+        el.closest('[hidden],[aria-hidden="true"],template')) return false;
     var n = el;
     while (n && n.nodeType === 1) {
       var s = window.getComputedStyle ? window.getComputedStyle(n) : null;

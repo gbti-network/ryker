@@ -62,6 +62,10 @@ Ryker.pane = (function () {
 
   function storedWidth() {
     var v;
+    if (Ryker.SURFACE === 'extension') {
+      v = parseInt((Ryker.extensionPreferences || {}).paneWidth, 10);
+      return isNaN(v) ? 430 : v;
+    }
     try { v = parseInt(localStorage.getItem(WIDTH_KEY), 10); } catch (e) { v = NaN; }
     return isNaN(v) ? 430 : v;
   }
@@ -71,7 +75,17 @@ Ryker.pane = (function () {
   function applyWidth(px, persist) {
     var w = Math.max(MIN_W, Math.min(maxWidth(), Math.round(px)));
     node.style.width = w + 'px';
-    if (persist) { try { localStorage.setItem(WIDTH_KEY, String(w)); } catch (e) {} }
+    if (persist && Ryker.SURFACE === 'extension') {
+      Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+      Ryker.extensionPreferences.paneWidth = w;
+      if (Ryker.extensionStorage) {
+        Ryker.extensionStorage.set('preference:pane-width', w).catch(function (error) {
+          flash('Pane width could not be stored: ' + error.message, 'warn');
+        });
+      }
+    } else if (persist) {
+      try { localStorage.setItem(WIDTH_KEY, String(w)); } catch (e) {}
+    }
     return w;
   }
 

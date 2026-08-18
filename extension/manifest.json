@@ -2,11 +2,10 @@
   "manifest_version": 3,
   "name": "Ryker",
   "version": "0.1.1",
-  "description": "Ryker adds inline editing to HTML and Markdown, saving changes directly or exporting prompt-ready machine-readable change requests.",
+  "description": "Ryker adds inline editing to HTML and Markdown and exports prompt-ready, machine-readable change requests.",
   "permissions": [
     "activeTab",
-    "scripting",
-    "storage"
+    "scripting"
   ],
   "background": {
     "service_worker": "service-worker.js"

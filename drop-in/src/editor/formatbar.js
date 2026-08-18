@@ -120,7 +120,7 @@ Ryker.formatbar = (function () {
     var n = sel.getRangeAt(0).commonAncestorContainer;
     if (n.nodeType === 3) n = n.parentNode;
     if (!n || !n.closest) return null;
-    if (n.closest('#ryker-root')) return null;
+    if (Ryker.shell && Ryker.shell.owns(n)) return null;
     if (!n.closest('[contenteditable="true"]')) return null;
     return sel.getRangeAt(0);
   }

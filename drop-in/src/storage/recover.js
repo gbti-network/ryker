@@ -5,23 +5,52 @@ Ryker.recover = (function () {
   var timer = null;
   var applying = false;
   var offered = false;
+  var lastStorageError = null;
 
   function documentKey() {
     return Ryker.logger.documentKey(Ryker.config.load().RYKER_DOCUMENT_ID);
   }
 
-  function draftKey() { return 'ryker:draft:' + documentKey(); }
-  function seenKey() { return 'ryker:recovery-seen:' + documentKey(); }
+  function baseDraftKey() { return 'ryker:draft:' + documentKey(); }
+  function baseSeenKey() { return 'ryker:recovery-seen:' + documentKey(); }
+  function sessionSuffix() {
+    var id = Ryker.instructions.sessionId && Ryker.instructions.sessionId();
+    return id ? ':' + String(id).replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 96) : '';
+  }
+  // The worker scopes extension recovery by sender.tab.id. The drop-in uses a
+  // tab-scoped sessionStorage token so two tabs sharing one file origin cannot
+  // overwrite or consume each other's draft.
+  function draftKey() {
+    return baseDraftKey() + (Ryker.SURFACE === 'extension' ? '' : sessionSuffix());
+  }
+  function seenKey() {
+    return baseSeenKey() + (Ryker.SURFACE === 'extension' ? '' : sessionSuffix());
+  }
   function legacyKey() { return 'ryker:' + Ryker.config.load().RYKER_DOCUMENT_ID + ':journal'; }
 
   function extensionStore() {
-    return Ryker.SURFACE === 'extension' && typeof chrome !== 'undefined' &&
-      chrome.storage && chrome.storage.local;
+    return Ryker.SURFACE === 'extension' && Ryker.extensionStorage;
+  }
+
+  function extensionKey(key) { return 'recovery:' + key; }
+
+  function storageFailure(action, error) {
+    var message = error && error.message ? error.message : String(error);
+    var signature = action + ':' + message;
+    if (signature === lastStorageError) return;
+    lastStorageError = signature;
+    if (Ryker.log) Ryker.log('recovery storage ' + action + ': ' + message);
+    if (Ryker.pane && Ryker.pane.flash) {
+      Ryker.pane.flash('Recovery could not be ' + action + ' in local Ryker storage: ' + message, 'warn');
+    }
   }
 
   function get(key) {
     if (extensionStore()) {
-      return chrome.storage.local.get(key).then(function (out) { return out && out[key] || null; });
+      return Ryker.extensionStorage.get(extensionKey(key)).then(function (out) {
+        lastStorageError = null;
+        return out == null ? null : out;
+      }).catch(function (error) { storageFailure('read', error); return null; });
     }
     try { return Promise.resolve(localStorage.getItem(key)); }
     catch (e) { return Promise.resolve(null); }
@@ -29,15 +58,22 @@ Ryker.recover = (function () {
 
   function set(key, value) {
     if (extensionStore()) {
-      var item = {}; item[key] = value;
-      return chrome.storage.local.set(item).then(function () { return true; });
+      return Ryker.extensionStorage.set(extensionKey(key), value).then(function () {
+        lastStorageError = null;
+        return true;
+      }).catch(function (error) { storageFailure('saved', error); return false; });
     }
     try { localStorage.setItem(key, value); return Promise.resolve(true); }
     catch (e) { return Promise.resolve(false); }
   }
 
   function remove(key) {
-    if (extensionStore()) return chrome.storage.local.remove(key).then(function () { return true; });
+    if (extensionStore()) {
+      return Ryker.extensionStorage.remove(extensionKey(key)).then(function () {
+        lastStorageError = null;
+        return true;
+      }).catch(function (error) { storageFailure('removed', error); return false; });
+    }
     try { localStorage.removeItem(key); return Promise.resolve(true); }
     catch (e) { return Promise.resolve(false); }
   }
@@ -49,18 +85,28 @@ Ryker.recover = (function () {
   }
 
   function fingerprint(found) {
-    return found.kind + '@' + found.baselineId + '@' + found.savedAt + '@' + found.changes.length;
+    if (!found) return 'none';
+    var count = Array.isArray(found.changes) ? found.changes.length : 0;
+    var moves = Array.isArray(found.moves) ? found.moves.length : 0;
+    return found.kind + '@' + found.baselineId + '@' + found.savedAt + '@' + count + '@' + moves;
   }
 
   function checkpoint() {
     if (applying) return Promise.resolve(false);
     var changes = Ryker.instructions.recoveryChanges();
-    if (!changes.length) return remove(draftKey());
+    var snapshot = Ryker.blocks.snapshot();
+    // Changes and moves must share the authored baseline. editable.baselineOf()
+    // is rebased after Save, which would otherwise drop a saved move whenever
+    // a later unsaved text edit caused the draft to win recovery selection.
+    var moves = Ryker.instructions.recoveryMoves ? Ryker.instructions.recoveryMoves() : [];
+    if (!changes.length && !moves.length) return remove(draftKey());
     var draft = {
       version: 1, kind: 'draft',
       documentId: Ryker.config.load().RYKER_DOCUMENT_ID,
+      sessionId: Ryker.instructions.sessionId ? Ryker.instructions.sessionId() : null,
       baselineId: Ryker.instructions.baselineId(),
-      savedAt: new Date().toISOString(), changes: changes
+      savedAt: new Date().toISOString(), changes: changes,
+      order: Object.keys(snapshot), moves: moves
     };
     return set(draftKey(), JSON.stringify(draft));
   }
@@ -82,11 +128,21 @@ Ryker.recover = (function () {
   function compatible(found) {
     return found && found.baselineId &&
       found.baselineId === Ryker.instructions.baselineId() &&
-      Array.isArray(found.changes) && found.changes.length;
+      Array.isArray(found.changes) &&
+      (found.changes.length || (Array.isArray(found.moves) && found.moves.length) ||
+        (Array.isArray(found.order) && found.order.length));
   }
 
   function draft() {
     return get(draftKey()).then(function (raw) {
+      if (!raw && Ryker.SURFACE !== 'extension' && draftKey() !== baseDraftKey()) {
+        return get(baseDraftKey()).then(function (legacyRaw) {
+          var legacyFound = parse(legacyRaw);
+          if (!legacyFound) return null;
+          legacyFound.kind = 'draft';
+          return legacyFound;
+        });
+      }
       var found = parse(raw);
       if (!found) return null;
       found.kind = 'draft';
@@ -101,7 +157,11 @@ Ryker.recover = (function () {
         if (i >= entries.length) return null;
         return Ryker.logger.read(entries[i]).then(function (raw) {
           var found = parse(raw);
-          if (!found || !Array.isArray(found.changes) || !found.changes.length) return next(i + 1);
+          if (!found || !Array.isArray(found.changes) ||
+              (!found.changes.length && !(Array.isArray(found.moves) && found.moves.length) &&
+                !(Array.isArray(found.order) && found.order.length))) {
+            return next(i + 1);
+          }
           found.kind = 'saved';
           return found;
         }).catch(function () { return next(i + 1); });
@@ -111,6 +171,10 @@ Ryker.recover = (function () {
   }
 
   function legacy() {
+    // The retired drop-in journal belonged to the authored page. Reading it
+    // from an injected extension would cross back into the visited origin and
+    // let page-controlled storage impersonate extension recovery state.
+    if (Ryker.SURFACE === 'extension') return null;
     var raw;
     try { raw = localStorage.getItem(legacyKey()); } catch (e) { return null; }
     var old = parse(raw);
@@ -135,12 +199,32 @@ Ryker.recover = (function () {
   function apply(found) {
     applying = true;
     var before = Ryker.blocks.snapshot();
-    var out = Ryker.blocks.applyRecords([{ changes: found.changes }]);
-    var changes = Ryker.blocks.diffSnapshots(before, Ryker.blocks.snapshot());
-    applying = false;
+    var out, moveOut, changes;
+    try {
+      // New records carry explicit moves so parent changes can be replayed.
+      // Flat order remains the compatibility path for records written during
+      // the short-lived order-only format.
+      out = Ryker.blocks.applyRecords([{
+        changes: found.changes,
+        order: Array.isArray(found.moves) ? null : found.order
+      }]);
+      moveOut = Array.isArray(found.moves) && Ryker.move && Ryker.move.replay
+        ? Ryker.move.replay(found.moves)
+        : { applied: out.moved || 0, missed: out.orderMissed || 0, unchanged: 0 };
+      changes = Ryker.blocks.diffSnapshots(before, Ryker.blocks.snapshot());
+    } finally {
+      applying = false;
+    }
     settle(found);
-    if (!changes.length) {
-      Ryker.dialog.alert('Nothing to restore', 'Those changes are already reflected in this document.', 'ok');
+    if (!changes.length && !moveOut.applied) {
+      if (out.missed + moveOut.missed) {
+        Ryker.dialog.alert('Changes could not be restored',
+          (out.missed + moveOut.missed) +
+          ' saved change(s) did not match a safe element or position in this document.', 'warn');
+      } else {
+        Ryker.dialog.alert('Nothing to restore',
+          'Those changes are already reflected in this document.', 'ok');
+      }
       return false;
     }
     Ryker.instructions.record();
@@ -150,13 +234,15 @@ Ryker.recover = (function () {
     Ryker.boot.sync();
     checkpoint();
     Ryker.dialog.alert('Changes restored',
-      changes.length + ' block(s) were restored.' +
-      (out.missed ? ' ' + out.missed + ' change(s) could not be placed and were skipped.' : ''),
-      out.missed ? 'warn' : 'ok');
+      changes.length + ' block(s) and ' + moveOut.applied + ' move(s) were restored.' +
+      (out.missed + moveOut.missed ? ' ' + (out.missed + moveOut.missed) +
+        ' change(s) could not be placed and were skipped.' : ''),
+      out.missed + moveOut.missed ? 'warn' : 'ok');
     return true;
   }
 
   function present(found) {
+    if (!found) return Promise.resolve(false);
     return alreadySettled(found).then(function (settled) {
       if (settled) return false;
       if (!compatible(found)) {
@@ -170,7 +256,9 @@ Ryker.recover = (function () {
       Ryker.dialog.open({
         title: 'Restore earlier changes?',
         body: Ryker.dom.el('div', {}, [
-          Ryker.dom.el('p', { text: found.changes.length + ' change(s) were found' + when + '.' }),
+          Ryker.dom.el('p', { text: found.changes.length + ' content change(s)' +
+            (found.moves && found.moves.length ? ' plus ' + found.moves.length + ' move(s)' :
+              (found.order ? ' plus saved block order' : '')) + ' were found' + when + '.' }),
           Ryker.dom.el('p', { class: 'muted', text: 'The source matches their baseline. Nothing is applied unless you choose Restore.' })
         ]),
         buttons: [

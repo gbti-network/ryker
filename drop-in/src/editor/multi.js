@@ -16,7 +16,7 @@ Ryker.multi = (function () {
   'use strict';
 
   function inShell(node) {
-    return !!(node && node.closest && node.closest('#ryker-root'));
+    return !!(node && Ryker.shell && Ryker.shell.owns(node));
   }
 
   // What is selected across blocks. Ryker.pick owns it now.
@@ -152,7 +152,7 @@ Ryker.multi = (function () {
       if (e.key !== 'Backspace' && e.key !== 'Delete') return;
       var path = e.composedPath ? e.composedPath() : [];
       for (var i = 0; i < path.length; i++) {
-        if (path[i] && path[i].id === 'ryker-root') return;
+        if (path[i] && Ryker.shell && Ryker.shell.owns(path[i])) return;
         if (path[i] && path[i].tagName === 'TEXTAREA') return;
       }
       var picked = Ryker.pick.picked();

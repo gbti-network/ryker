@@ -21,10 +21,12 @@
 Ryker.merge = (function () {
   'use strict';
 
-  // Two records belong to the same session if they agree on the document and on
-  // the text their instructions quote.
+  // A baseline identifies the source text, not the browser session. Two tabs
+  // opened over the same unchanged source share a baseline and may contain
+  // unrelated edits. Only an explicitly recorded session id permits one saved
+  // round to supersede another.
   function groupKey(rec) {
-    return (rec.documentId || '') + ' ' + (rec.baselineId || '');
+    return (rec.documentId || '') + ' ' + (rec.sessionId || '') + ' ' + (rec.baselineId || '');
   }
 
   function editsOf(rec) {
@@ -54,6 +56,20 @@ Ryker.merge = (function () {
 
   function stateKey(html, tag) { return String(tag || '').toUpperCase() + '|' + norm(html); }
 
+  function sameTarget(a, b) {
+    var ap = a && a.position ? norm(a.position) : '';
+    var bp = b && b.position ? norm(b.position) : '';
+    var ai = a && a.id ? String(a.id) : '';
+    var bi = b && b.id ? String(b.id) : '';
+    // Legacy records can carry no target metadata. Preserve their old
+    // content-only composition, but never equate one known target with another
+    // known or unknown target.
+    if (!ap && !bp && !ai && !bi) return true;
+    if (ap && bp && ap === bp) return true;
+    if (ai && bi && ai === bi) return true;
+    return false;
+  }
+
   function when(rec) {
     var t = Date.parse(rec && rec.savedAt);
     return isNaN(t) ? 0 : t;
@@ -67,20 +83,16 @@ Ryker.merge = (function () {
 
   // ---- grouping -----------------------------------------------------------
 
-  // One entry per baseline, each holding the single record that supersedes the
-  // others in its group. Groups keep the order their newest record arrived in.
+  // One entry per explicit session, each holding the latest cumulative record
+  // for that session. Legacy records without a session id remain independent;
+  // content composition below can still relate them without discarding one.
   function collapse(records) {
     var groups = [];
     var byKey = {};
 
     chronological(records).forEach(function (rec) {
-      // A record with no baselineId is not evidence that it shares a baseline
-      // with the next one that also lacks it. Every record written before
-      // 2026-08-16 lacks it, so keying on the empty value put an entire corpus
-      // into one group and discarded all but the last of it. Each gets its own
-      // group and compose() works the relationship out from the text, which is
-      // what "inferred" has always meant here.
-      var key = rec.baselineId ? groupKey(rec) : ('@unkeyed:' + groups.length);
+      var scoped = !!rec.sessionId;
+      var key = scoped ? groupKey(rec) : ('@unscoped:' + groups.length);
       var g = byKey[key];
       if (!g) {
         g = byKey[key] = {
@@ -89,7 +101,8 @@ Ryker.merge = (function () {
           documentId: rec.documentId || null,
           winner: rec,
           superseded: [],
-          inferred: !rec.baselineId
+          sessionId: rec.sessionId || null,
+          inferred: !scoped
         };
         groups.push(g);
         return;
@@ -134,6 +147,7 @@ Ryker.merge = (function () {
       // meant, and folding must not quietly decide that for them.
       var same = acc.some(function (a) {
         return a.origin !== group && a.step.kind === e.kind &&
+               sameTarget(a.step, e) &&
                stateKey(a.step.before, beforeTag(a.step)) === from &&
                stateKey(a.step.after, afterTag(a.step)) === to;
       });
@@ -147,11 +161,20 @@ Ryker.merge = (function () {
       // Does this continue something already in the set?
       var chained = null;
       for (var i = acc.length - 1; i >= 0; i--) {
-        if (stateKey(acc[i].step.after, afterTag(acc[i].step)) === from) {
+        if (sameTarget(acc[i].step, e) &&
+            stateKey(acc[i].step.after, afterTag(acc[i].step)) === from) {
           chained = acc[i]; break;
         }
       }
       if (chained) {
+        // An element inserted in one record and deleted in a later record has
+        // no net instruction. Remove the earlier insert instead of emitting an
+        // empty Insert step.
+        if (chained.step.kind === 'insert' && e.kind === 'delete' && !norm(e.after)) {
+          acc.splice(acc.indexOf(chained), 1);
+          group.cancelled = (group.cancelled || 0) + 2;
+          return;
+        }
         chained.step = {
           kind: chained.step.kind === 'insert' ? 'insert' : e.kind,
           tag: e.tag || chained.step.tag,
@@ -159,6 +182,7 @@ Ryker.merge = (function () {
           afterTag: e.afterTag || afterTag(e) || null,
           before: chained.step.before,
           after: e.after,
+          id: e.id || chained.step.id || null,
           position: e.position || chained.step.position
         };
         chained.composedFrom = (chained.composedFrom || 1) + 1;
@@ -170,7 +194,8 @@ Ryker.merge = (function () {
       // the first group, and for a later group it means the edit is against
       // text the earlier groups never changed, which is still fine.
       var seenBefore = acc.some(function (a) {
-        return stateKey(a.step.before, beforeTag(a.step)) === from;
+        return sameTarget(a.step, e) &&
+          stateKey(a.step.before, beforeTag(a.step)) === from;
       });
       if (!seenBefore) {
         acc.push({ step: e, origin: group });
@@ -209,6 +234,7 @@ Ryker.merge = (function () {
     var inferred = groups.some(function (g) { return g.inferred; });
     var duplicated = groups.reduce(function (n, g) { return n + (g.duplicated || 0); }, 0);
     var composed = groups.reduce(function (n, g) { return n + (g.composed || 0); }, 0);
+    var cancelled = groups.reduce(function (n, g) { return n + (g.cancelled || 0); }, 0);
 
     // A record can carry the prose prompt and no structured pairs behind it.
     // Backfilled records are the case: 17 in the corpus, only 14 structured
@@ -236,17 +262,17 @@ Ryker.merge = (function () {
     }
     if (superseded) {
       warnings.push(superseded + ' record(s) were dropped because a later save from the ' +
-        'same starting text already contained them.');
+        'same recorded editing session superseded them.');
     }
     if (groups.length > 1) {
       warnings.push(groups.length + (inferred
-        ? ' record group(s) were folded together, grouped by content because the '
-          + 'records do not say which belong to the same session.'
+        ? ' record group(s) were folded together, with relationships inferred from content '
+          + 'because the records do not say which belong to the same session.'
         : ' separate editing sessions were folded together.'));
     }
     if (inferred) {
-      warnings.push('Some records predate baseline tracking, so their grouping is inferred ' +
-        'from content rather than recorded. Check the result before applying it.');
+      warnings.push('Some records predate session tracking, so relationships between them are ' +
+        'inferred from content rather than recorded. Check the result before applying it.');
     }
     if (refused.length) {
       warnings.push(refused.length + ' change(s) could not be folded in and are listed ' +
@@ -272,6 +298,7 @@ Ryker.merge = (function () {
       // Absorbed into a step already in the set, which is what composition IS:
       // the edit is not lost, it advanced an earlier one's TO text.
       composed: composed,
+      cancelled: cancelled,
       supersededEdits: groups.reduce(function (n, g) {
         return n + g.superseded.reduce(function (m, r) { return m + editsOf(r).length; }, 0);
       }, 0)
@@ -282,6 +309,7 @@ Ryker.merge = (function () {
       groups: groups,
       superseded: superseded,
       duplicated: duplicated,
+      cancelled: cancelled,
       promptOnly: promptOnly,
       notes: notes,
       accounted: accounted,

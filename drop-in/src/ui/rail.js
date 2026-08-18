@@ -22,13 +22,38 @@ Ryker.rail = (function () {
   function d() { return Ryker.dom; }
   function docId() { return Ryker.config.load().RYKER_DOCUMENT_ID; }
   function closedKey() { return 'ryker:rail-closed:' + docId() + ':' + Ryker.outline.mode(); }
+  function extensionClosedKey(mode) {
+    return 'preference:rail-closed:' + docId() + ':' + (mode || Ryker.outline.mode());
+  }
   function widthKey() { return 'ryker:rail-width'; }
 
   function loadClosed() {
-    try {
-      var raw = localStorage.getItem(closedKey());
-      closed = raw ? JSON.parse(raw) : null;
-    } catch (e) { closed = null; }
+    var raw = null;
+    if (Ryker.SURFACE === 'extension') {
+      var mode = Ryker.outline.mode();
+      var preferences = Ryker.extensionPreferences || {};
+      var saved = preferences.railClosed && preferences.railClosed[mode];
+      closed = saved && typeof saved === 'object' ? saved : null;
+      if (!closed && Ryker.extensionStorage) {
+        Ryker.extensionStorage.get(extensionClosedKey(mode)).then(function (value) {
+          if (!value || typeof value !== 'object') return;
+          Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+          Ryker.extensionPreferences.railClosed = Ryker.extensionPreferences.railClosed || {};
+          Ryker.extensionPreferences.railClosed[mode] = value;
+          if (Ryker.outline.mode() === mode) {
+            closed = value;
+            if (built) render();
+          }
+        }).catch(function (error) {
+          if (Ryker.pane) Ryker.pane.flash('Outline state could not be read: ' + error.message, 'warn');
+        });
+      }
+    } else {
+      try {
+        raw = localStorage.getItem(closedKey());
+        closed = raw ? JSON.parse(raw) : null;
+      } catch (e) { closed = null; }
+    }
     // Default: the h2 rows open, everything below shut. That gives a list the
     // length of the report's own contents rather than a wall of 150 rows.
     if (!closed) {
@@ -43,11 +68,26 @@ Ryker.rail = (function () {
   }
 
   function saveClosed() {
+    if (Ryker.SURFACE === 'extension') {
+      Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+      Ryker.extensionPreferences.railClosed = Ryker.extensionPreferences.railClosed || {};
+      Ryker.extensionPreferences.railClosed[Ryker.outline.mode()] = closed;
+      if (Ryker.extensionStorage) {
+        Ryker.extensionStorage.set(extensionClosedKey(), closed).catch(function (error) {
+          if (Ryker.pane) Ryker.pane.flash('Outline state could not be stored: ' + error.message, 'warn');
+        });
+      }
+      return;
+    }
     try { localStorage.setItem(closedKey(), JSON.stringify(closed)); } catch (e) {}
   }
 
   function storedWidth() {
     var v = 0;
+    if (Ryker.SURFACE === 'extension') {
+      v = parseInt((Ryker.extensionPreferences || {}).railWidth || '0', 10);
+      return v >= MIN_W ? v : DEFAULT_W;
+    }
     try { v = parseInt(localStorage.getItem(widthKey()) || '0', 10); } catch (e) {}
     return v >= MIN_W ? v : DEFAULT_W;
   }
@@ -431,11 +471,21 @@ Ryker.rail = (function () {
 
   // ---- resizing, mirrored from ui/pane.js -------------------------------
 
-  function applyWidth(px) {
+  function applyWidth(px, persist) {
     var max = Math.max(MIN_W, document.documentElement.clientWidth - 320);
     var w = Math.min(Math.max(px, MIN_W), max);
     node.style.width = w + 'px';
-    try { localStorage.setItem(widthKey(), String(w)); } catch (e) {}
+    if (persist && Ryker.SURFACE === 'extension') {
+      Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+      Ryker.extensionPreferences.railWidth = w;
+      if (Ryker.extensionStorage) {
+        Ryker.extensionStorage.set('preference:rail-width', w).catch(function (error) {
+          if (Ryker.pane) Ryker.pane.flash('Outline width could not be stored: ' + error.message, 'warn');
+        });
+      }
+    } else if (persist) {
+      try { localStorage.setItem(widthKey(), String(w)); } catch (e) {}
+    }
     if (open) Ryker.shell.setEdgeSpace(node, 'left');
   }
 
@@ -453,10 +503,13 @@ Ryker.rail = (function () {
       // Mirrored: the rail grows to the RIGHT, so the delta is not negated.
       if (dragging) applyWidth(startW + (e.clientX - startX));
     });
-    document.addEventListener('mouseup', function () { dragging = false; });
+    document.addEventListener('mouseup', function () {
+      if (dragging) applyWidth(node.getBoundingClientRect().width, true);
+      dragging = false;
+    });
     grip.addEventListener('keydown', function (e) {
-      if (e.key === 'ArrowRight') applyWidth(node.getBoundingClientRect().width + 24);
-      else if (e.key === 'ArrowLeft') applyWidth(node.getBoundingClientRect().width - 24);
+      if (e.key === 'ArrowRight') applyWidth(node.getBoundingClientRect().width + 24, true);
+      else if (e.key === 'ArrowLeft') applyWidth(node.getBoundingClientRect().width - 24, true);
       else return;
       e.preventDefault();
     });

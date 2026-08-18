@@ -24,7 +24,7 @@ Ryker.blocks = (function () {
 
   function excluded(node) {
     // Anything Ryker owns.
-    if (node.closest('#ryker-root')) return true;
+    if (Ryker.shell && Ryker.shell.owns(node)) return true;
     // SVG internals are never editable. The root SVG itself is an atomic
     // selectable object, however, so a person can highlight and remove the
     // whole chart without being allowed to damage paths, labels or geometry.
@@ -241,6 +241,20 @@ Ryker.blocks = (function () {
       if (b.id === id) { found = b.node; return true; }
       return false;
     });
+    if (found) return found;
+
+    // tracked() is built from candidates(), which drops a block with no text
+    // because an empty block has nothing to derive an identity from. A block
+    // that was GIVEN an identity is a different case: autoList() builds its
+    // <li> empty and calls transferId() onto it, so the id is cached and real
+    // while the node is invisible to the scan above. Recovery, moves and every
+    // instruction resolve blocks through here, so without this the newly
+    // converted list item cannot be found by the id it was just handed.
+    // sequence() keeps empties on purpose, which is exactly what it is for.
+    sequence().some(function (node) {
+      if (idCache.get(node) === id) { found = node; return true; }
+      return false;
+    });
     return found;
   }
 
@@ -294,7 +308,8 @@ Ryker.blocks = (function () {
         changes.push({ id: id, before: htmlOf(before[id]), after: htmlOf(a),
                        kind: 'changed', tag: a.tag,
                        beforeTag: before[id] && before[id].tag || null,
-                       afterTag: a.tag || null });
+                       afterTag: a.tag || null, prev: a.prev || null,
+                       box: a.box || null, boxTag: a.boxTag || null });
       }
     });
     Object.keys(before).forEach(function (id) {
@@ -303,6 +318,7 @@ Ryker.blocks = (function () {
         var meta = was && typeof was === 'object' ? was : {};
         changes.push({ id: id, before: htmlOf(was), after: null, kind: 'removed',
                        tag: meta.tag || null, atomic: !!meta.atomic,
+                       prev: meta.prev || null,
                        box: meta.box || null, boxTag: meta.boxTag || null });
       }
     });
@@ -312,8 +328,40 @@ Ryker.blocks = (function () {
   // Puts a recorded change back into the document. This is what makes a journal
   // held in browser storage worth anything: the file on disk is untouched, so
   // without replay a reload silently discarded every saved edit.
-  function applyChange(c) {
+  function boxIndex() {
+    var boxes = {};
+    Array.prototype.forEach.call(root().querySelectorAll(BOX), function (box) {
+      var key = boxKey(box);
+      if (key) boxes[key] = box;
+    });
+    return boxes;
+  }
+
+  function insertNew(node, c, anchor, context) {
+    var boxTag = String(c.boxTag || '').toUpperCase();
+    var box = c.box && context.boxes[c.box];
+    if (c.box && /^(OL|UL|DL|FIGURE)$/.test(boxTag)) {
+      if (!box) {
+        box = document.createElement(boxTag);
+        boxKeys.set(box, c.box);
+        context.boxes[c.box] = box;
+        var unit = anchor && (boxOf(anchor) || anchor);
+        if (unit && unit.parentNode) unit.parentNode.insertBefore(box, unit.nextSibling);
+        else root().insertBefore(box, root().firstChild);
+      }
+      if (anchor && anchor.parentNode === box) box.insertBefore(node, anchor.nextSibling);
+      else box.appendChild(node);
+      return;
+    }
+    if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(node, anchor.nextSibling);
+    else root().appendChild(node);
+  }
+
+  function applyChange(c, context) {
+    context = context || { boxes: boxIndex() };
     var node = byId(c.id);
+    var tag = String(c.afterTag || c.tag || '').toUpperCase();
+    var validTag = /^(H[1-5]|P|LI|TD|TH|FIGCAPTION|BLOCKQUOTE|DD|DT|SVG)$/.test(tag);
 
     if (c.kind === 'removed') {
       if (node && node.parentNode) node.parentNode.removeChild(node);
@@ -326,26 +374,117 @@ Ryker.blocks = (function () {
       // against, and appending it would silently corrupt the report, which is
       // exactly what happened before block identity survived a reload.
       if (c.kind !== 'added' || c.after == null) return false;
-      node = document.createElement(c.tag || 'P');
+      if (!validTag) return false;
+      node = document.createElement(tag);
       if (c.id.charAt(0) === '@') node.setAttribute('data-ryker-id', c.id.slice(1));
       else if (c.id.charAt(0) === '#') node.id = c.id.slice(1);
       var anchor = c.prev ? byId(c.prev) : null;
-      if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(node, anchor.nextSibling);
-      else root().appendChild(node);
+      insertNew(node, c, anchor, context);
+    }
+
+    if (c.kind === 'changed' && tag && node.tagName !== tag) {
+      if (!validTag || tag === 'SVG') return false;
+      var replacement = document.createElement(tag);
+      Array.prototype.slice.call(node.attributes).forEach(function (attr) {
+        replacement.setAttribute(attr.name, attr.value);
+      });
+      transferId(node, replacement);
+      var boxTag = String(c.boxTag || '').toUpperCase();
+      if (tag === 'LI' && /^(OL|UL)$/.test(boxTag) && node.parentNode.tagName !== boxTag) {
+        var list = document.createElement(boxTag);
+        if (c.box) { boxKeys.set(list, c.box); context.boxes[c.box] = list; }
+        node.parentNode.replaceChild(list, node);
+        list.appendChild(replacement);
+      } else {
+        node.parentNode.replaceChild(replacement, node);
+      }
+      node = replacement;
     }
 
     node.innerHTML = Ryker.sanitize.html(c.after);
     return true;
   }
 
-  function applyRecords(records) {
-    var applied = 0, missed = 0;
-    (records || []).forEach(function (r) {
-      (r.changes || []).forEach(function (c) {
-        if (applyChange(c)) applied += 1; else missed += 1;
-      });
+  function completeBoxDeletes(changes, context) {
+    var groups = {}, handled = {};
+    (changes || []).forEach(function (change) {
+      if (change.kind === 'removed' && change.box && change.boxTag === 'TABLE') {
+        (groups[change.box] = groups[change.box] || []).push(change.id);
+      }
     });
-    return { applied: applied, missed: missed };
+    Object.keys(groups).forEach(function (key) {
+      var box = context.boxes[key];
+      if (!box || !box.parentNode) return;
+      var inside = tracked().filter(function (block) { return box.contains(block.node); })
+        .map(function (block) { return block.id; });
+      if (!inside.length || !inside.every(function (id) { return groups[key].indexOf(id) !== -1; })) return;
+      box.parentNode.removeChild(box);
+      groups[key].forEach(function (id) { handled[id] = true; });
+      delete context.boxes[key];
+    });
+    return handled;
+  }
+
+  // Restore recorded order among blocks that share a parent. Moving across
+  // different containers needs container-level metadata and is reported as a
+  // miss by the recovery caller rather than guessed.
+  function applyOrder(ids) {
+    var groups = [];
+    var parents = [];
+    var missed = 0, moved = 0;
+    (ids || []).forEach(function (id) {
+      var node = byId(id);
+      if (!node || !node.parentNode) { missed += 1; return; }
+      var at = parents.indexOf(node.parentNode);
+      if (at === -1) {
+        parents.push(node.parentNode);
+        groups.push([node]);
+      } else {
+        groups[at].push(node);
+      }
+    });
+    groups.forEach(function (nodes) {
+      var parent = nodes[0] && nodes[0].parentNode;
+      if (!parent || nodes.length < 2) return;
+      var current = Array.prototype.filter.call(parent.children, function (child) {
+        return nodes.indexOf(child) !== -1;
+      });
+      var differs = nodes.some(function (node, i) { return current[i] !== node; });
+      if (!differs) return;
+
+      // A flat legacy order describes only tracked blocks. Preserve every
+      // untracked widget, image wrapper and text node in its existing slot by
+      // marking the tracked slots before moving anything into their new order.
+      var markers = current.map(function (node) {
+        var marker = document.createComment('ryker-order');
+        parent.insertBefore(marker, node);
+        return marker;
+      });
+      current.forEach(function (node) { parent.removeChild(node); });
+      markers.forEach(function (marker, i) {
+        parent.insertBefore(nodes[i], marker);
+        parent.removeChild(marker);
+      });
+      moved += nodes.filter(function (node, i) { return current[i] !== node; }).length;
+    });
+    return { moved: moved, missed: missed };
+  }
+
+  function applyRecords(records) {
+    var applied = 0, missed = 0, moved = 0, orderMissed = 0;
+    (records || []).forEach(function (r) {
+      var context = { boxes: boxIndex() };
+      var boxed = completeBoxDeletes(r.changes || [], context);
+      (r.changes || []).forEach(function (c) {
+        if (boxed[c.id] || applyChange(c, context)) applied += 1; else missed += 1;
+      });
+      if (Array.isArray(r.order)) {
+        var ordered = applyOrder(r.order);
+        moved += ordered.moved;
+        orderMissed += ordered.missed;
+      }
+    });
+    return { applied: applied, missed: missed, moved: moved, orderMissed: orderMissed };
   }
 
   function label(id) {
@@ -365,6 +504,6 @@ Ryker.blocks = (function () {
     excluded: excluded, snapshot: snapshot, diffSnapshots: diffSnapshots, label: label,
     seedIds: seedIds, stamp: stamp, htmlOf: htmlOf, sequence: sequence,
     boxOf: boxOf, boxKey: boxKey,
-    applyChange: applyChange, applyRecords: applyRecords
+    applyChange: applyChange, applyRecords: applyRecords, applyOrder: applyOrder
   };
 })();

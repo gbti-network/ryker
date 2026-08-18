@@ -7,18 +7,56 @@
 Ryker.exportHtml = (function () {
   'use strict';
 
+  function isWorkspace() {
+    return Ryker.SURFACE === 'extension' &&
+      !!document.getElementById('workspace-document') &&
+      document.body.classList.contains('workspace-loaded');
+  }
+
+  function sourceDocumentClone() {
+    if (!isWorkspace()) return document.documentElement.cloneNode(true);
+
+    // The workspace is extension chrome around an uploaded document. HTML
+    // uploads retain a sanitised clone of their authored document shell so safe
+    // title/meta/html/body metadata and comments survive; Markdown deliberately
+    // uses the small default shell below.
+    var supplied = window.RykerWorkspace &&
+      typeof window.RykerWorkspace.sourceShell === 'function'
+      ? window.RykerWorkspace.sourceShell() : null;
+    if (supplied) {
+      var suppliedBody = supplied.querySelector('body');
+      if (!suppliedBody) throw new Error('The uploaded HTML document has no exportable body.');
+      suppliedBody.innerHTML = document.getElementById('workspace-document').innerHTML;
+      return supplied;
+    }
+
+    var clean = document.implementation.createHTMLDocument(
+      Ryker.config.load().RYKER_DOCUMENT_PATH || document.title || 'Ryker document');
+    clean.documentElement.setAttribute('lang', document.documentElement.lang || 'en');
+    clean.head.insertBefore(clean.createElement('meta'), clean.head.firstChild);
+    clean.head.firstChild.setAttribute('charset', 'utf-8');
+    clean.body.innerHTML = document.getElementById('workspace-document').innerHTML;
+    return clean.documentElement;
+  }
+
   // A clone of the live document with everything Ryker added taken back out.
   // Ryker's chrome lives in one element and its edits live in the report's own
   // markup, so removing the element and the attributes is the whole job.
   function snapshot(keepRyker) {
-    var doc = document.documentElement.cloneNode(true);
+    var doc = sourceDocumentClone();
 
     // Both of these are rebuilt at boot, so neither is kept in either export.
     // Leaving the stylesheet behind would put Ryker's highlight rules in a file
     // that carries no Ryker.
-    ['#ryker-root', '#ryker-document-css'].forEach(function (sel) {
+    var owner = Ryker.shell && Ryker.shell.owner ? Ryker.shell.owner() : null;
+    var owned = owner ? '[data-ryker-owner="' + owner.replace(/"/g, '') + '"]' : null;
+    [owned].forEach(function (sel) {
+      if (!sel) return;
       var n = doc.querySelector(sel);
-      if (n && n.parentNode) n.parentNode.removeChild(n);
+      while (n) {
+        if (n.parentNode) n.parentNode.removeChild(n);
+        n = doc.querySelector(sel);
+      }
     });
 
     Array.prototype.forEach.call(doc.querySelectorAll('[contenteditable]'), function (n) {
@@ -38,14 +76,26 @@ Ryker.exportHtml = (function () {
       n.parentNode.removeChild(n);
     });
     // The reserved space is inline on body and would otherwise ship in the
-    // export as a stray padding rule with no panel to justify it.
+    // export as a stray padding rule with no panel to justify it. Restore the
+    // authored inline declaration, including !important, when the live shell
+    // remembers one instead of erasing it with Ryker's temporary value.
     var exportBody = doc.body || doc.querySelector('body');
     if (exportBody) {
-      exportBody.style.removeProperty('padding-left');
-      exportBody.style.removeProperty('padding-right');
-      // Pre-existing leak: the toolbar's vertical offset shipped in every
-      // export as a stray body padding with no toolbar to justify it.
-      exportBody.style.removeProperty('padding-top');
+      ['padding-left', 'padding-right', 'padding-top'].forEach(function (prop) {
+        var authored = Ryker.shell && Ryker.shell.originalBodyPadding
+          ? Ryker.shell.originalBodyPadding(prop) : null;
+        // Remembering a property is the ONLY evidence Ryker claimed it. The
+        // data-ryker-pushed attribute is one flag on body covering all three
+        // sides, so consulting it per property made an open pane on the right
+        // erase an authored padding-left the rail never touched. A property
+        // Ryker did not claim is the page's own and must ship untouched.
+        if (!authored) return;
+        if (authored.value) {
+          exportBody.style.setProperty(prop, authored.value, authored.priority || '');
+        } else {
+          exportBody.style.removeProperty(prop);
+        }
+      });
       if (exportBody.className === '') exportBody.removeAttribute('class');
       exportBody.removeAttribute('data-ryker-rail');
       exportBody.removeAttribute('data-ryker-pushed');
@@ -78,7 +128,14 @@ Ryker.exportHtml = (function () {
   }
 
   function clean() { return snapshot(false); }
-  function withRyker() { return snapshot(true); }
+  function canAttach() { return !isWorkspace(); }
+  function withRyker() {
+    if (!canAttach()) {
+      throw new Error('With Ryker export is unavailable for extension workspace uploads. ' +
+        'Install the drop-in in the source file to create a portable editable copy.');
+    }
+    return snapshot(true);
+  }
 
   // Returns { html, hits }. A caller that ignores hits is a bug, so the scan
   // result travels with the content rather than being a separate call someone
@@ -121,6 +178,7 @@ Ryker.exportHtml = (function () {
 
   return {
     clean: clean, withRyker: withRyker, scanned: scanned,
+    canAttach: canAttach,
     download: download, baseName: baseName,
     manifest: manifest
   };

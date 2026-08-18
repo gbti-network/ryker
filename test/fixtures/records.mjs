@@ -7,21 +7,21 @@
 //
 // The real corpus has 17 records across at least five sessions, saveNumber
 // running 1 to 5 then resetting to 2 then to 1 then continuing at 6, two
-// filenames colliding, and no baselineId on any of them. Every one of those
+// filenames colliding, and no sessionId on any of the legacy records. Every one of those
 // shapes appears below.
 
 // Session A. Three saves against the same starting text, so each is a
 // cumulative superset of the one before and only the last should survive.
 const A = [
   {
-    documentId: 'fixture-doc', baselineId: 'base-a', saveNumber: 1,
+    documentId: 'fixture-doc', baselineId: 'base-a', sessionId: 'session-a', saveNumber: 1,
     savedAt: '2026-08-15T09:00:00.000Z',
     edits: [
       { kind: 'replace', tag: 'P', before: 'The original first line.', after: 'The edited first line.' }
     ]
   },
   {
-    documentId: 'fixture-doc', baselineId: 'base-a', saveNumber: 2,
+    documentId: 'fixture-doc', baselineId: 'base-a', sessionId: 'session-a', saveNumber: 2,
     savedAt: '2026-08-15T10:00:00.000Z',
     edits: [
       { kind: 'replace', tag: 'P', before: 'The original first line.', after: 'The edited first line.' },
@@ -29,7 +29,7 @@ const A = [
     ]
   },
   {
-    documentId: 'fixture-doc', baselineId: 'base-a', saveNumber: 3,
+    documentId: 'fixture-doc', baselineId: 'base-a', sessionId: 'session-a', saveNumber: 3,
     savedAt: '2026-08-15T11:00:00.000Z',
     edits: [
       { kind: 'replace', tag: 'P', before: 'The original first line.', after: 'The edited first line.' },
@@ -44,14 +44,14 @@ const A = [
 // onto A rather than superseding it.
 const B = [
   {
-    documentId: 'fixture-doc', baselineId: 'base-b', saveNumber: 1,
+    documentId: 'fixture-doc', baselineId: 'base-b', sessionId: 'session-b', saveNumber: 1,
     savedAt: '2026-08-15T14:00:00.000Z',
     edits: [
       { kind: 'replace', tag: 'P', before: 'The edited first line.', after: 'The twice edited first line.' }
     ]
   },
   {
-    documentId: 'fixture-doc', baselineId: 'base-b', saveNumber: 2,
+    documentId: 'fixture-doc', baselineId: 'base-b', sessionId: 'session-b', saveNumber: 2,
     savedAt: '2026-08-15T15:00:00.000Z',
     edits: [
       { kind: 'replace', tag: 'P', before: 'The edited first line.', after: 'The twice edited first line.' },
@@ -60,8 +60,8 @@ const B = [
   }
 ];
 
-// Session C. No baselineId at all, the way every record written before
-// 2026-08-16 looks. Its FROM text chains off session B, so the fold has to work
+// Session C. No sessionId at all, the way every record written before session
+// tracking looks. Its FROM text chains off session B, so the fold has to work
 // that out from content rather than from the field.
 const C = [
   {
@@ -78,7 +78,7 @@ const C = [
 // this; it has to be reported.
 const D = [
   {
-    documentId: 'fixture-doc', baselineId: 'base-d', saveNumber: 1,
+    documentId: 'fixture-doc', baselineId: 'base-d', sessionId: 'session-d', saveNumber: 1,
     savedAt: '2026-08-15T20:00:00.000Z',
     edits: [
       { kind: 'replace', tag: 'P', before: 'The original first line.', after: 'A completely different first line.' }
@@ -91,7 +91,7 @@ const D = [
 // keep that refusal rather than tidying them away.
 const E = [
   {
-    documentId: 'fixture-doc', baselineId: 'base-e', saveNumber: 1,
+    documentId: 'fixture-doc', baselineId: 'base-e', sessionId: 'session-e', saveNumber: 1,
     savedAt: '2026-08-15T22:00:00.000Z',
     edits: [
       { kind: 'insert', tag: 'P', before: null, after: 'Pasted twice by accident.' },

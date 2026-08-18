@@ -11,6 +11,91 @@ Ryker.fs = (function () {
   var DB = 'ryker', STORE = 'handles';
   var root = null;
 
+  // Extension records cross the isolated-world boundary as validated messages
+  // to the service worker. Values here are JSON data, never filesystem handles:
+  // Chrome versions using JSON extension messaging would turn a handle into an
+  // empty object. A granted folder therefore remains useful for this tab while
+  // revisions, recovery and preferences live durably in the extension store.
+  function extensionRequest(operation, key, value) {
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+      return Promise.reject(new Error('Ryker extension storage is unavailable.'));
+    }
+    var message = { channel: 'ryker.storage.v1', version: 1, operation: operation };
+    // usage asks about the sender's own document, so it deliberately carries no
+    // key for the worker to have to second-guess.
+    if (operation !== 'usage') message.key = key;
+    if (operation === 'set') message.value = value;
+    return chrome.runtime.sendMessage(message).then(function (response) {
+      if (!response || response.ok !== true) {
+        var detail = response && response.error || {};
+        var error = new Error(detail.message || 'Ryker extension storage rejected the operation.');
+        error.code = detail.code || 'storage-failed';
+        throw error;
+      }
+      return response.value;
+    });
+  }
+
+  function installExtensionStorage() {
+    if (Ryker.SURFACE !== 'extension') return null;
+    var api = {
+      get: function (key) { return extensionRequest('get', key); },
+      set: function (key, value) { return extensionRequest('set', key, value); },
+      remove: function (key) { return extensionRequest('remove', key); },
+      list: function (prefix) { return extensionRequest('list', prefix); },
+      usage: function () { return extensionRequest('usage'); }
+    };
+    Ryker.extensionStorage = api;
+    Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+    connectWorkspacePort();
+    [
+      ['saveNotes', 'preference:save-notes'],
+      ['paneWidth', 'preference:pane-width'],
+      ['railWidth', 'preference:rail-width']
+    ].forEach(function (pair) {
+      api.get(pair[1]).then(function (value) {
+        if (value !== null && value !== undefined) {
+          Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+          Ryker.extensionPreferences[pair[0]] = value;
+        }
+      }).catch(function () { /* boot remains usable; writes surface their own error */ });
+    });
+    return api;
+  }
+
+  // tabs.sendMessage only reaches content scripts, not an extension-owned tab.
+  // The workspace therefore opens a named runtime Port. Its sender carries the
+  // owning tab id, allowing the worker to toggle exactly the clicked workspace
+  // without reloading the HTML/Markdown document held in that tab.
+  function connectWorkspacePort() {
+    if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.connect ||
+        !chrome.runtime.getURL || location.href.indexOf(chrome.runtime.getURL('workspace.html')) !== 0) return;
+    var stopped = false;
+    function connect() {
+      if (stopped) return;
+      var port;
+      try { port = chrome.runtime.connect({ name: 'ryker.workspace.v1' }); }
+      catch (error) { return; }
+      port.onMessage.addListener(function (message) {
+        if (!message || message.channel !== 'ryker.workspace.v1' || message.action !== 'toggle') return;
+        var state = 'workspace-ready';
+        if (Ryker.boot && Ryker.boot.isOpen && Ryker.boot.isOpen()) {
+          state = Ryker.boot.toggle() ? 'mounted' : 'closed';
+        } else if (Ryker.boot && Ryker.boot.toggle && Ryker.shell && Ryker.shell.host()) {
+          state = Ryker.boot.toggle() ? 'mounted' : 'closed';
+        }
+        port.postMessage({ channel: 'ryker.workspace.v1', requestId: message.requestId, state: state });
+      });
+      port.onDisconnect.addListener(function () {
+        if (!stopped) setTimeout(connect, 250);
+      });
+    }
+    window.addEventListener('pagehide', function () { stopped = true; }, { once: true });
+    connect();
+  }
+
+  var extensionStorage = installExtensionStorage();
+
   function supported() { return typeof window.showDirectoryPicker === 'function'; }
   function isReady() { return !!root; }
   function handle() { return root; }
@@ -56,7 +141,14 @@ Ryker.fs = (function () {
     };
   }
 
-  var persistence = defaultPersistence();
+  // Never fall back to a visited website's IndexedDB on the extension surface.
+  // Directory-handle persistence is deliberately session-only until the
+  // extension requires structured-clone messaging or owns the picker itself.
+  var persistence = extensionStorage ? {
+    get: function () { return Promise.resolve(null); },
+    set: function () { return Promise.resolve(false); },
+    remove: function () { return Promise.resolve(true); }
+  } : defaultPersistence();
 
   // An extension supplies an adapter whose storage belongs to the extension,
   // not to whichever page its content script happens to be editing.
@@ -184,6 +276,45 @@ Ryker.fs = (function () {
     });
   }
 
+  // A bounded recursive traversal for packaging. list() intentionally returns
+  // one complete directory, which is useful for the revision browser but lets
+  // a single huge directory allocate without limit. walk() counts every entry
+  // as it is yielded and stops before descending farther.
+  function walk(base, path, options) {
+    options = options || {};
+    var max = Math.max(1, Number(options.maxEntries) || 5000);
+    var seen = 0, out = [];
+
+    function visit(dir, prefix) {
+      var it = dir.values();
+      function step() {
+        return it.next().then(function (res) {
+          if (res.done) return null;
+          var entry = res.value;
+          var full = prefix + entry.name;
+          seen += 1;
+          if (seen > max) {
+            throw new Error('The selected folder contains more than ' + max +
+              ' entries. Choose a narrower report folder.');
+          }
+          if (options.skip && options.skip(entry, full)) return step();
+          if (entry.kind === 'directory') {
+            return visit(entry, full + '/').then(step);
+          }
+          return entry.getFile().then(function (f) {
+            out.push({ name: full, kind: 'file', size: f.size,
+              modified: f.lastModified, handle: entry });
+          }).then(step);
+        });
+      }
+      return step();
+    }
+
+    return directory(base, path, false).then(function (dir) {
+      return visit(dir, '').then(function () { return out; });
+    });
+  }
+
   function remove(base, path) {
     var names;
     try { names = parts(path); } catch (e) { return Promise.reject(e); }
@@ -199,6 +330,6 @@ Ryker.fs = (function () {
     grant: grant, pick: grant, permission: permission,
     usePersistence: usePersistence, remember: remember, recall: recall, forget: forget,
     directory: directory, read: read, readBytes: readBytes, write: write,
-    list: list, remove: remove
+    list: list, walk: walk, remove: remove
   };
 })();

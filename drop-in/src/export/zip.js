@@ -7,6 +7,10 @@
 Ryker.zip = (function () {
   'use strict';
 
+  var MAX_ENTRIES = 65535;
+  var MAX_U16 = 65535;
+  var MAX_U32 = 4294967295;
+
   var CRC = (function () {
     var t = new Uint32Array(256);
     for (var n = 0; n < 256; n++) {
@@ -66,16 +70,58 @@ Ryker.zip = (function () {
     return new TextEncoder().encode(String(data));
   }
 
+  function safeName(value) {
+    var name = String(value == null ? '' : value).replace(/\\/g, '/');
+    if (!name) throw new Error('A ZIP entry has no filename.');
+    if (name.charAt(0) === '/' || /^[a-z]:/i.test(name)) {
+      throw new Error('ZIP entry names must be relative: ' + name);
+    }
+    if (name.indexOf('\0') >= 0) throw new Error('A ZIP entry name contains a null byte.');
+    var parts = name.split('/');
+    if (parts.some(function (part) { return !part || part === '.' || part === '..'; })) {
+      throw new Error('ZIP entry names cannot contain empty, current, or parent path segments: ' + name);
+    }
+    return parts.join('/');
+  }
+
+  function checkedAdd(a, b, what) {
+    var total = a + b;
+    if (!Number.isSafeInteger(total) || total > MAX_U32) {
+      throw new Error('The ZIP is too large for this exporter (' + what + ' exceeds 4 GiB).');
+    }
+    return total;
+  }
+
   // files: [{ name: 'a/b.csv', data: string | Uint8Array }]
   function build(files) {
+    if (!Array.isArray(files)) return Promise.reject(new Error('ZIP input must be a list of files.'));
+    if (files.length > MAX_ENTRIES) {
+      return Promise.reject(new Error('A ZIP can contain at most ' + MAX_ENTRIES + ' files in this exporter.'));
+    }
     var when = new Date();
     var time = dosTime(when), date = dosDate(when);
+    var names = {};
+    var prepared;
+    try {
+      prepared = files.map(function (f) {
+        var name = safeName(f.name);
+        if (names[name]) throw new Error('The ZIP contains the same filename twice: ' + name);
+        names[name] = true;
+        return { name: name, data: f.data };
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
 
-    return Promise.all(files.map(function (f) {
+    return Promise.all(prepared.map(function (f) {
       var raw = toBytes(f.data);
+      if (raw.length > MAX_U32) throw new Error('A ZIP member exceeds 4 GiB: ' + f.name);
+      var nameBytes = new TextEncoder().encode(f.name);
+      if (nameBytes.length > MAX_U16) throw new Error('A ZIP filename is too long: ' + f.name);
       return deflate(raw).then(function (comp) {
         return {
-          nameBytes: new TextEncoder().encode(f.name),
+          name: f.name,
+          nameBytes: nameBytes,
           raw: raw,
           body: comp || raw,
           method: comp ? 8 : 0,
@@ -94,7 +140,7 @@ Ryker.zip = (function () {
         e.offset = offset;
         var h = head.done();
         locals.push(h, e.body);
-        offset += h.length + e.body.length;
+        offset = checkedAdd(checkedAdd(offset, h.length, e.name), e.body.length, e.name);
       });
 
       var cdStart = offset;
@@ -108,7 +154,7 @@ Ryker.zip = (function () {
           .u32(e.offset).raw(e.nameBytes);
         var cb = c.done();
         central.push(cb);
-        offset += cb.length;
+        offset = checkedAdd(offset, cb.length, e.name);
       });
 
       var end = W(22);
@@ -117,7 +163,9 @@ Ryker.zip = (function () {
         .u32(offset - cdStart).u32(cdStart).u16(0);
 
       var parts = locals.concat(central, [end.done()]);
-      var total = parts.reduce(function (n, p) { return n + p.length; }, 0);
+      var total = parts.reduce(function (n, p) {
+        return checkedAdd(n, p.length, 'archive size');
+      }, 0);
       var out = new Uint8Array(total);
       var at = 0;
       parts.forEach(function (p) { out.set(p, at); at += p.length; });
@@ -137,5 +185,8 @@ Ryker.zip = (function () {
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   }
 
-  return { build: build, download: download, crc32: crc32 };
+  return {
+    build: build, download: download, crc32: crc32, safeName: safeName,
+    limits: { entries: MAX_ENTRIES, bytes: MAX_U32 }
+  };
 })();

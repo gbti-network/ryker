@@ -14,8 +14,8 @@
     </span>
   </header>
 
-  <main id="workspace-document">
-    <section class="workspace-open" aria-labelledby="workspace-title">
+  <div id="workspace-shell">
+    <section id="workspace-open" class="workspace-open" aria-labelledby="workspace-title">
       <img class="workspace-wing" src="icons/ryker-128.png" width="82" height="82" alt="">
       <p class="workspace-eyebrow">Local document workspace</p>
       <h1 id="workspace-title">Open an HTML or Markdown file</h1>
@@ -25,7 +25,8 @@
       <p class="workspace-drop">or drop an <strong>.html</strong>, <strong>.htm</strong>, <strong>.md</strong>, or <strong>.markdown</strong> file here</p>
       <p id="workspace-status" class="workspace-status" role="status" aria-live="polite"></p>
     </section>
-  </main>
+    <main id="workspace-document" hidden></main>
+  </div>
 
   <script src="ryker.js"></script>
   <script src="workspace.js"></script>

@@ -7,24 +7,38 @@
 
   var input = document.getElementById('workspace-file');
   var main = document.getElementById('workspace-document');
+  var open = document.getElementById('workspace-open');
   var status = document.getElementById('workspace-status');
   var allowed = /\.(html?|md|markdown)$/i;
+  var pendingKey = 'ryker:workspace-pending';
+  var openGeneration = 0;
+  var sourceShell = null;
 
   function escapeHtml(value) {
-    return String(value).replace(/[&<>"']/g, function (char) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char];
-    });
+    return Ryker.dom.escapeHtml(value);
   }
 
   function inlineMarkdown(value) {
-    return escapeHtml(value)
-      .replace(/`([^`]+)`/g, '<code>$1</code>')
-      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
-      .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-      .replace(/_([^_]+)_/g, '<em>$1</em>')
+    var code = [];
+    var escaped = escapeHtml(value).replace(/`([^`]+)`/g, function (_, contents) {
+      var token = '\uE000' + code.length + '\uE001';
+      code.push('<code>' + contents + '</code>');
+      return token;
+    });
+    escaped = escaped
+      .replace(/(^|[^*])\*\*([^*\s](?:[^*]*[^*\s])?)\*\*(?!\*)/g,
+        '$1<strong>$2</strong>')
+      .replace(/(^|[^\w_])__([^_\s](?:[^_]*[^_\s])?)__(?![\w_])/g,
+        '$1<strong>$2</strong>')
+      .replace(/(^|[^*])\*([^*\s](?:[^*]*[^*\s])?)\*(?!\*)/g,
+        '$1<em>$2</em>')
+      .replace(/(^|[^\w_])_([^_\s](?:[^_]*[^_\s])?)_(?![\w_])/g,
+        '$1<em>$2</em>')
       .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+|#[^\s)]+)\)/g,
         '<a href="$2">$1</a>');
+    return escaped.replace(/\uE000(\d+)\uE001/g, function (_, index) {
+      return code[Number(index)] || '';
+    });
   }
 
   function markdown(text) {
@@ -85,23 +99,123 @@
     return out.join('\n');
   }
 
-  function safeHtml(text) {
+  function markdownLimitation(text) {
+    var lines = String(text).replace(/\r\n?/g, '\n').split('\n');
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s{2,}(?:[-*+] |\d+[.)] )/.test(lines[i])) return 'nested lists';
+      if (i + 1 < lines.length && /\|/.test(lines[i]) &&
+          /^\s*\|?\s*:?-{3,}/.test(lines[i + 1])) return 'tables';
+    }
+    return null;
+  }
+
+  var TAG_ATTRS = {
+    A: ['href', 'target', 'rel', 'download'],
+    ABBR: ['title'], TIME: ['datetime'], DEL: ['datetime'], INS: ['datetime'],
+    IMG: ['src', 'alt', 'width', 'height', 'loading', 'decoding'],
+    VIDEO: ['src', 'poster', 'controls', 'preload', 'width', 'height', 'muted', 'loop'],
+    AUDIO: ['src', 'controls', 'preload', 'muted', 'loop'],
+    SOURCE: ['src', 'type', 'media'], TRACK: ['src', 'kind', 'srclang', 'label', 'default'],
+    OL: ['start', 'reversed', 'type'], LI: ['value'],
+    TD: ['colspan', 'rowspan', 'headers'], TH: ['colspan', 'rowspan', 'headers', 'scope'],
+    COL: ['span'], COLGROUP: ['span'],
+    SVG: ['viewbox', 'width', 'height', 'x', 'y', 'preserveaspectratio', 'xmlns'],
+    PATH: ['d', 'fill', 'stroke', 'stroke-width', 'transform'],
+    G: ['fill', 'stroke', 'stroke-width', 'transform'],
+    CIRCLE: ['cx', 'cy', 'r', 'fill', 'stroke', 'stroke-width', 'transform'],
+    ELLIPSE: ['cx', 'cy', 'rx', 'ry', 'fill', 'stroke', 'stroke-width', 'transform'],
+    RECT: ['x', 'y', 'width', 'height', 'rx', 'ry', 'fill', 'stroke', 'stroke-width', 'transform'],
+    LINE: ['x1', 'y1', 'x2', 'y2', 'stroke', 'stroke-width', 'transform'],
+    POLYLINE: ['points', 'fill', 'stroke', 'stroke-width', 'transform'],
+    POLYGON: ['points', 'fill', 'stroke', 'stroke-width', 'transform'],
+    TEXT: ['x', 'y', 'dx', 'dy', 'fill', 'stroke', 'text-anchor', 'transform'],
+    USE: ['href', 'xlink:href', 'x', 'y', 'width', 'height']
+  };
+
+  function unwrap(node) {
+    if (!node.parentNode) return;
+    while (node.firstChild) node.parentNode.insertBefore(node.firstChild, node);
+    node.parentNode.removeChild(node);
+  }
+
+  function shellAttributes(node, extra) {
+    extra = extra || [];
+    for (var i = node.attributes.length - 1; i >= 0; i--) {
+      var attr = node.attributes[i];
+      var name = attr.name.toLowerCase();
+      var named = extra.indexOf(name) !== -1 ||
+        /^(id|class|lang|dir|title|role)$/.test(name) ||
+        /^(aria|data)-[a-z0-9_.:-]+$/i.test(name);
+      if (!named || !Ryker.sanitize.safeAttribute(node.tagName, name, attr.value)) {
+        node.removeAttribute(attr.name);
+      }
+    }
+  }
+
+  function safeDocument(text) {
     var parsed = new DOMParser().parseFromString(String(text), 'text/html');
-    parsed.querySelectorAll('script,style,link,meta,base,iframe,object,embed').forEach(function (node) {
+    parsed.querySelectorAll(
+      'script,style,link,base,iframe,object,embed,template,foreignObject,' +
+      'animate,animateMotion,animateTransform,set,portal,fencedframe'
+    ).forEach(function (node) { node.remove(); });
+
+    // Preserve inert document metadata, but never the head elements that can
+    // execute, fetch, navigate or restyle the exported document. A charset is
+    // normalised because every Ryker export is encoded as UTF-8.
+    Array.prototype.slice.call(parsed.head.childNodes).forEach(function (node) {
+      if (node.nodeType === Node.TEXT_NODE || node.nodeType === Node.COMMENT_NODE) return;
+      if (node.nodeType !== Node.ELEMENT_NODE) { node.remove(); return; }
+      if (node.tagName === 'TITLE') {
+        while (node.attributes.length) node.removeAttribute(node.attributes[0].name);
+        return;
+      }
+      if (node.tagName === 'META' && !node.hasAttribute('http-equiv')) {
+        shellAttributes(node, ['charset', 'name', 'content', 'property', 'itemprop']);
+        if (node.hasAttribute('charset')) node.setAttribute('charset', 'utf-8');
+        if (node.hasAttribute('charset') || node.hasAttribute('name') ||
+            node.hasAttribute('property') || node.hasAttribute('itemprop')) return;
+      }
       node.remove();
     });
-    parsed.querySelectorAll('*').forEach(function (node) {
-      Array.prototype.slice.call(node.attributes).forEach(function (attr) {
-        var name = attr.name.toLowerCase();
-        var value = String(attr.value || '').trim();
-        if (name.indexOf('on') === 0 || name === 'srcdoc' || name === 'style') node.removeAttribute(attr.name);
-        if ((name === 'href' || name === 'src' || name === 'action') &&
-            /^(javascript|vbscript|file|blob):/i.test(value)) node.removeAttribute(attr.name);
-        if ((name === 'href' || name === 'src') && /^data:/i.test(value) &&
-            !/^data:image\/(png|jpe?g|gif|webp|avif)[;,]/i.test(value)) node.removeAttribute(attr.name);
+    if (!parsed.head.querySelector('meta[charset]')) {
+      var charset = parsed.createElement('meta');
+      charset.setAttribute('charset', 'utf-8');
+      parsed.head.insertBefore(charset, parsed.head.firstChild);
+    }
+
+    shellAttributes(parsed.documentElement, ['xmlns']);
+    if (parsed.documentElement.hasAttribute('xmlns') &&
+        parsed.documentElement.getAttribute('xmlns') !== 'http://www.w3.org/1999/xhtml') {
+      parsed.documentElement.removeAttribute('xmlns');
+    }
+    shellAttributes(parsed.body);
+    parsed.body.querySelectorAll('form,input,button,select,textarea,option').forEach(unwrap);
+    parsed.body.querySelectorAll('*').forEach(function (node) {
+      var tag = String(node.tagName || '').toUpperCase();
+      Ryker.sanitize.attributes(node, TAG_ATTRS[tag] || []);
+      if (tag === 'USE') {
+        ['href', 'xlink:href'].forEach(function (name) {
+          var value = node.getAttribute(name);
+          if (value && !/^#[^\s]+$/.test(value)) node.removeAttribute(name);
+        });
+      }
+      ['fill', 'stroke'].forEach(function (name) {
+        var value = node.getAttribute(name);
+        if (value && /url\((?!\s*#)/i.test(value)) node.removeAttribute(name);
       });
+      if (tag === 'A' && node.getAttribute('target') === '_blank') {
+        node.setAttribute('rel', 'noopener noreferrer');
+      }
     });
-    return parsed.body.innerHTML;
+    return parsed;
+  }
+
+  function safeHtml(text) {
+    return safeDocument(text).body.innerHTML;
+  }
+
+  function sourceShellClone() {
+    return sourceShell ? sourceShell.cloneNode(true) : null;
   }
 
   function hash(text) {
@@ -113,40 +227,93 @@
     });
   }
 
-  function storedConfig() {
-    if (!window.chrome || !chrome.storage || !chrome.storage.local) return Promise.resolve({});
-    return chrome.storage.local.get('rykerConfig').then(function (saved) {
-      return saved.rykerConfig || {};
-    }, function () { return {}; });
+  function rendered(name, text) {
+    var isMarkdown = /\.(md|markdown)$/i.test(name);
+    var unsupported = isMarkdown ? markdownLimitation(text) : null;
+    if (unsupported) {
+      throw new Error('This Markdown contains ' + unsupported +
+        ', which Ryker cannot preserve yet. Convert it to HTML before editing.');
+    }
+    var parsed = isMarkdown ? null : safeDocument(text);
+    var html = isMarkdown ? markdown(text) : parsed.body.innerHTML;
+    var template = document.createElement('template');
+    template.innerHTML = html;
+    var displayable = (template.content.textContent || '').trim() ||
+      template.content.querySelector('img,svg,video,audio,canvas,table,hr');
+    if (!displayable) throw new Error('The selected file has no displayable content.');
+    return {
+      html: html,
+      markdown: isMarkdown,
+      shell: parsed ? parsed.documentElement.cloneNode(true) : null
+    };
   }
 
-  function openText(name, text) {
+  function reloadWith(name, text) {
+    if (window.Ryker && Ryker.editable && Ryker.editable.isDirty() &&
+        !window.confirm('Open another file and discard the current unsaved edits?')) {
+      return Promise.reject(new Error('The current document remains open.'));
+    }
+    try {
+      sessionStorage.setItem(pendingKey, JSON.stringify({ name: name, text: text }));
+    } catch (error) {
+      return Promise.reject(new Error(
+        'The next file is too large to carry across a safe workspace reload.'));
+    }
+    location.reload();
+    return Promise.resolve({ name: name, reloading: true });
+  }
+
+  function superseded(name) {
+    return { name: name, superseded: true };
+  }
+
+  function openTextAt(name, text, generation) {
     if (!allowed.test(name || '')) return Promise.reject(new Error('Choose an HTML or Markdown file.'));
-    var isMarkdown = /\.(md|markdown)$/i.test(name);
-    return Promise.all([hash(text), storedConfig()]).then(function (values) {
-      main.innerHTML = isMarkdown ? markdown(text) : safeHtml(text);
-      if (!main.textContent.trim() && !main.querySelector('img')) {
-        throw new Error('The selected file has no displayable content.');
-      }
+    var output;
+    try { output = rendered(name, text); }
+    catch (error) { return Promise.reject(error); }
+    // Boot and its listeners own one document lifecycle. Reload before a
+    // second file so its identity and pristine baseline cannot inherit the
+    // first file's state.
+    if (document.body.classList.contains('workspace-loaded')) return reloadWith(name, text);
+    return hash(text).then(function (fingerprint) {
+      if (generation !== openGeneration) return superseded(name);
+      main.innerHTML = output.html;
+      sourceShell = output.shell;
+      main.hidden = false;
+      open.hidden = true;
       document.title = name + ' - Ryker';
       document.body.classList.remove('workspace-dragging');
       document.body.classList.add('workspace-loaded');
-      var config = values[1];
-      config.RYKER_DOCUMENT_ID = 'upload:' + name + ':' + values[0];
-      config.RYKER_DOCUMENT_PATH = name;
-      window.Ryker.extensionConfig = config;
+      // A workspace upload owns only its per-document identity. Preferences
+      // arrive through the extension-owned storage adapter; no global config
+      // object is read from chrome.storage or polluted with file-specific data.
+      window.Ryker.extensionConfig = {
+        RYKER_DOCUMENT_ID: 'upload:' + name + ':' + fingerprint,
+        RYKER_DOCUMENT_PATH: name
+      };
       window.Ryker.boot.start();
-      return { name: name, markdown: isMarkdown, blocks: window.Ryker.blocks.all().length };
+      return { name: name, markdown: output.markdown, blocks: window.Ryker.blocks.all().length };
+    }, function (error) {
+      if (generation !== openGeneration) return superseded(name);
+      throw error;
     });
+  }
+
+  function openText(name, text) {
+    return openTextAt(name, text, ++openGeneration);
   }
 
   function openFile(file) {
     if (!file) return;
+    var generation = ++openGeneration;
     status.classList.remove('error');
-    status.textContent = 'Opening ' + file.name + '…';
+    status.textContent = 'Opening ' + file.name + '...';
     file.text().then(function (text) {
-      return openText(file.name, text);
+      if (generation !== openGeneration) return superseded(file.name);
+      return openTextAt(file.name, text, generation);
     }).catch(function (error) {
+      if (generation !== openGeneration) return;
       status.classList.add('error');
       status.textContent = error && error.message ? error.message : String(error);
       input.value = '';
@@ -165,5 +332,27 @@
     openFile(event.dataTransfer && event.dataTransfer.files && event.dataTransfer.files[0]);
   });
 
-  window.RykerWorkspace = { openText: openText, markdown: markdown, safeHtml: safeHtml };
+  window.RykerWorkspace = {
+    openText: openText,
+    markdown: markdown,
+    safeHtml: safeHtml,
+    sourceShell: sourceShellClone
+  };
+
+  try {
+    var pending = sessionStorage.getItem(pendingKey);
+    if (pending) {
+      sessionStorage.removeItem(pendingKey);
+      pending = JSON.parse(pending);
+      setTimeout(function () {
+        openText(pending.name, pending.text).catch(function (error) {
+          status.classList.add('error');
+          status.textContent = error && error.message ? error.message : String(error);
+        });
+      }, 0);
+    }
+  } catch (error) {
+    status.classList.add('error');
+    status.textContent = 'The selected file could not be restored after the workspace reload.';
+  }
 })();

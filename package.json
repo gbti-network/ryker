@@ -1,6 +1,6 @@
 {
   "name": "@gbti/ryker",
-  "version": "0.1.1-rc.1",
+  "version": "0.1.1",
   "description": "Add Ryker inline editing and prompt-ready change requests to authored HTML documents.",
   "type": "module",
   "bin": {
@@ -28,8 +28,7 @@
     "package:preview": "npm pack --dry-run --ignore-scripts --cache .npm-cache",
     "package:tarball": "npm pack --cache .npm-cache",
     "prepack": "npm run build && npm run test:cli && npm run package:check",
-    "prepublishOnly": "npm test && npm run package:check",
-    "sync": "wsl.exe -d Ubuntu -- bash ./scripts/sync-placement-audits.sh"
+    "prepublishOnly": "npm run build && npm test && npm run test:cli && npm run package:check"
   },
   "repository": {
     "type": "git",

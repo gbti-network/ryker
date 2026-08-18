@@ -1,40 +1,40 @@
 /*!
- * Ryker Extension 0.1.1-rc.1
+ * Ryker Extension 0.1.1
  * A drop-in editing layer for authored HTML reports.
  *
  * Generated bundle. Do not edit. Sources, in load order:
- *   utils/dom.js  (131 lines)
- *   config/config.js  (126 lines)
- *   security/scan.js  (64 lines)
- *   editor/sanitize.js  (174 lines)
- *   editor/blocks.js  (371 lines)
- *   export/zip.js  (142 lines)
- *   export/html.js  (128 lines)
- *   export/packager.js  (228 lines)
+ *   utils/dom.js  (51 lines)
+ *   config/config.js  (116 lines)
+ *   security/scan.js  (86 lines)
+ *   editor/sanitize.js  (218 lines)
+ *   editor/blocks.js  (510 lines)
+ *   export/zip.js  (193 lines)
+ *   export/html.js  (186 lines)
+ *   export/packager.js  (277 lines)
  *   ui/theme.js  (56 lines)
- *   ui/styles.js  (374 lines)
- *   ui/shell.js  (194 lines)
+ *   ui/styles.js  (371 lines)
+ *   ui/shell.js  (241 lines)
  *   ui/icons.js  (67 lines)
  *   ui/tooltip.js  (82 lines)
  *   ui/dialog.js  (132 lines)
  *   ui/menu.js  (104 lines)
- *   editor/editable.js  (555 lines)
- *   editor/history.js  (138 lines)
+ *   editor/editable.js  (575 lines)
+ *   editor/history.js  (213 lines)
  *   editor/formatbar.js  (212 lines)
  *   editor/links.js  (173 lines)
  *   editor/pick.js  (228 lines)
  *   editor/multi.js  (172 lines)
- *   editor/outline.js  (288 lines)
- *   editor/move.js  (337 lines)
- *   ui/rail.js  (477 lines)
- *   instructions/instructions.js  (558 lines)
- *   instructions/merge.js  (377 lines)
- *   storage/fs.js  (205 lines)
- *   storage/logger.js  (311 lines)
- *   instructions/browser.js  (256 lines)
- *   ui/pane.js  (278 lines)
- *   storage/recover.js  (210 lines)
- *   bootstrap/boot.js  (548 lines)
+ *   editor/outline.js  (289 lines)
+ *   editor/move.js  (375 lines)
+ *   ui/rail.js  (530 lines)
+ *   instructions/instructions.js  (600 lines)
+ *   instructions/merge.js  (405 lines)
+ *   storage/fs.js  (336 lines)
+ *   storage/logger.js  (428 lines)
+ *   instructions/browser.js  (296 lines)
+ *   ui/pane.js  (292 lines)
+ *   storage/recover.js  (298 lines)
+ *   bootstrap/boot.js  (567 lines)
  *
  * Classic script by design: module scripts do not load from file:// URLs,
  * and a report handed over as a ZIP is opened from disk.
@@ -42,7 +42,7 @@
 (function () {
   'use strict';
   if (window.Ryker && window.Ryker.VERSION) return;
-  var Ryker = { VERSION: "0.1.1-rc.1", BUILD: "Ryker Extension", SURFACE: "extension" };
+  var Ryker = { VERSION: "0.1.1", BUILD: "Ryker Extension", SURFACE: "extension" };
   window.Ryker = Ryker;
 
   /* ---- utils/dom.js ---------------------------------------------- */
@@ -64,86 +64,8 @@
       return n;
     }
 
-    // Deterministic id for a block that has none of its own. Position-based ids
-    // would move when a block is inserted above, so the path is taken from the
-    // nearest ancestor that carries a real id and stays stable under text edits.
-    function pathId(node, root) {
-      var parts = [];
-      var cur = node;
-      while (cur && cur !== root) {
-        if (cur.id) { parts.unshift('#' + cur.id); break; }
-        var p = cur.parentNode;
-        if (!p) break;
-        var same = [];
-        for (var i = 0; i < p.children.length; i++) {
-          if (p.children[i].tagName === cur.tagName) same.push(p.children[i]);
-        }
-        parts.unshift(cur.tagName.toLowerCase() + (same.length > 1 ? ':' + same.indexOf(cur) : ''));
-        cur = p;
-      }
-      return parts.join('/');
-    }
-
     function textOf(node) {
       return (node.textContent || '').replace(/\s+/g, ' ').trim();
-    }
-
-    // Walks text nodes in document order, skipping anything Ryker owns.
-    function textNodes(root) {
-      var out = [];
-      var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-        acceptNode: function (n) {
-          if (!n.nodeValue || !n.nodeValue.trim()) return NodeFilter.FILTER_REJECT;
-          var p = n.parentNode;
-          while (p && p !== root) {
-            var t = p.tagName;
-            if (p.id === 'ryker-root' || t === 'SCRIPT' || t === 'STYLE' || t === 'SVG' || t === 'svg') {
-              return NodeFilter.FILTER_REJECT;
-            }
-            p = p.parentNode;
-          }
-          return NodeFilter.FILTER_ACCEPT;
-        }
-      });
-      var n;
-      while ((n = w.nextNode())) out.push(n);
-      return out;
-    }
-
-    // Concatenated text of a root plus an index letting a global offset be
-    // resolved back to a node and a local offset. Comment anchoring needs both.
-    function flatten(root) {
-      var nodes = textNodes(root);
-      var text = '';
-      var index = [];
-      nodes.forEach(function (n) {
-        index.push({ node: n, start: text.length, len: n.nodeValue.length });
-        text += n.nodeValue;
-      });
-      return { text: text, index: index };
-    }
-
-    function locate(flat, offset) {
-      for (var i = 0; i < flat.index.length; i++) {
-        var e = flat.index[i];
-        if (offset >= e.start && offset <= e.start + e.len) {
-          return { node: e.node, offset: offset - e.start };
-        }
-      }
-      return null;
-    }
-
-    function rangeFromOffsets(root, start, end) {
-      var flat = flatten(root);
-      var a = locate(flat, start);
-      var b = locate(flat, end);
-      if (!a || !b) return null;
-      var r = document.createRange();
-      try {
-        r.setStart(a.node, a.offset);
-        r.setEnd(b.node, b.offset);
-      } catch (e) { return null; }
-      return r;
     }
 
     function escapeHtml(s) {
@@ -171,15 +93,13 @@
     }
 
     return {
-      el: el, pathId: pathId, textOf: textOf, textNodes: textNodes,
-      flatten: flatten, locate: locate, rangeFromOffsets: rangeFromOffsets,
-      escapeHtml: escapeHtml, uid: uid, now: now, fmtDate: fmtDate
+      el: el, textOf: textOf, escapeHtml: escapeHtml, uid: uid, now: now, fmtDate: fmtDate
     };
   })();
 
 
   /* ---- config/config.js ------------------------------------------ */
-  // Configuration intake and the four detection states of spec section 6.
+  // Configuration intake.
   //
   // Config never arrives by fetch. A file:// page cannot read a sibling file:
   // fetch() rejects and synchronous XHR throws NetworkError, measured 2026-08-13.
@@ -192,13 +112,6 @@
       RYKER_ENABLED: true,
       RYKER_DOCUMENT_ID: null,
       RYKER_DOCUMENT_PATH: null,
-      RYKER_GITHUB_ENABLED: false,
-      RYKER_GITHUB_OWNER: null,
-      RYKER_GITHUB_REPO: null,
-      RYKER_GITHUB_REPOSITORY_ID: null,
-      RYKER_GITHUB_BRANCH: 'main',
-      RYKER_GITHUB_CLIENT_ID: null,
-      RYKER_GOOGLE_ENABLED: false,
       // Read by export/packager.js:37 to list files that belong with the report
       // but are not inside it. It was missing from this object, and load() below
       // copies only the keys named here, so the value was stripped out of every
@@ -211,6 +124,13 @@
     // Anything on this list is a secret and must never reach a shipped report.
     // Checked at boot so a misconfigured build fails loudly in the toolbar rather
     // than shipping a credential quietly.
+    //
+    // These names outlive the GitHub and Google features they were written for.
+    // The feature keys are gone from DEFAULTS above because nothing read them,
+    // but a config file written for an older build can still carry the secrets,
+    // and an inherited ryker.config.js is exactly where one would sit unnoticed.
+    // This list is the check that catches it, so it stays whether or not Ryker
+    // has anything left to do with either service.
     var FORBIDDEN = [
       'RYKER_GITHUB_CLIENT_SECRET', 'RYKER_GITHUB_PRIVATE_KEY',
       'RYKER_GITHUB_TOKEN', 'RYKER_GITHUB_INSTALLATION_TOKEN',
@@ -219,6 +139,21 @@
     ];
 
     var state = null;
+
+    function extensionDocumentId() {
+      var canonical = String(location.origin || '') + String(location.pathname || '/');
+      var host = String(location.hostname || location.protocol.replace(':', '') || 'document')
+        .toLowerCase().replace(/[^a-z0-9.-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 36) || 'document';
+      function part(seed) {
+        var h = seed >>> 0;
+        for (var i = 0; i < canonical.length; i++) {
+          h ^= canonical.charCodeAt(i);
+          h = Math.imul(h, 16777619);
+        }
+        return (h >>> 0).toString(16).padStart(8, '0');
+      }
+      return 'web-' + host + '-' + part(2166136261) + part(2246822519);
+    }
 
     function readInline() {
       var tag = document.getElementById('ryker-config');
@@ -254,11 +189,12 @@
       });
 
       // Authored reports use their stable title rather than a filename. On the
-      // extension surface the URL is the only identity the page actually owns;
-      // titles commonly carry counts and transient application state.
+      // extension surface origin + path are the stable identity. Query strings
+      // and fragments commonly contain signed-preview or SSO secrets and must not
+      // become storage keys, revision metadata or exported package manifests.
       if (!cfg.RYKER_DOCUMENT_ID) {
         cfg.RYKER_DOCUMENT_ID = Ryker.SURFACE === 'extension'
-          ? location.href
+          ? extensionDocumentId()
           : slug(document.title || 'untitled');
       }
       if (!cfg.RYKER_DOCUMENT_PATH) {
@@ -267,7 +203,6 @@
       }
 
       cfg._leaked = leaked;
-      cfg._state = detect(cfg);
       state = cfg;
       return state;
     }
@@ -277,32 +212,7 @@
         .replace(/^-+|-+$/g, '').slice(0, 80) || 'untitled';
     }
 
-    // Section 6's four states. Reported rather than inferred at each call site,
-    // so the toolbar and the onboarding panel cannot disagree about which one
-    // the document is in.
-    function detect(cfg) {
-      var hasRepo = !!(cfg.RYKER_GITHUB_OWNER && cfg.RYKER_GITHUB_REPO);
-      var hasAuth = cfg.RYKER_GITHUB_ENABLED === true;
-      if (!hasAuth && !hasRepo) return 'unconfigured';
-      if (hasAuth && !hasRepo) return 'repo-missing';
-      if (!hasAuth && hasRepo) return 'auth-missing';
-      return 'configured';
-    }
-
-    function stateLabel(s) {
-      return {
-        'unconfigured': 'GitHub collaboration not configured',
-        'repo-missing': 'GitHub ready, repository not set',
-        'auth-missing': 'Repository set, GitHub sign-in not enabled',
-        'configured': 'GitHub collaboration available'
-      }[s] || s;
-    }
-
-    function repoSlug(cfg) {
-      return cfg.RYKER_GITHUB_OWNER + '/' + cfg.RYKER_GITHUB_REPO;
-    }
-
-    return { load: load, detect: detect, stateLabel: stateLabel, repoSlug: repoSlug, slug: slug };
+    return { load: load, slug: slug };
   })();
 
 
@@ -333,7 +243,7 @@
       { name: 'Google API key', re: /\bAIza[A-Za-z0-9_-]{35}\b/ },
       { name: 'Service account credential', re: /"type"\s*:\s*"service_account"/ },
       { name: 'AWS access key id', re: /\bAKIA[0-9A-Z]{16}\b/ },
-      { name: 'Generic bearer token assignment', re: /\b(client_secret|refresh_token|private_key)\s*[:=]\s*["'][^"']{16,}["']/ }
+      { name: 'Generic bearer token assignment', re: /["']?\b(client_secret|refresh_token|private_key)\b["']?\s*[:=]\s*["'][^"'\r\n]{16,4096}["']/ }
     ];
 
     // Returns [] when clean. Each hit names the pattern and gives a short
@@ -361,11 +271,33 @@
 
     // Binary members of a package are checked as latin1 so a key pasted into a
     // CSV or a text file inside the ZIP is still caught. Images will not match.
+    //
+    // Scan in bounded chunks rather than silently stopping after 2 MiB. The
+    // overlap is larger than the longest bounded pattern above, so a credential
+    // split across two chunks is still seen. Duplicate hits from the overlap are
+    // collapsed before returning.
     function bytes(u8, label) {
-      var s = '';
-      var limit = Math.min(u8.length, 2 * 1024 * 1024);
-      for (var i = 0; i < limit; i++) s += String.fromCharCode(u8[i]);
-      return text(s, label);
+      var chunkSize = 256 * 1024;
+      var overlap = 8192;
+      var tail = '';
+      var hits = [];
+      var seen = {};
+      for (var offset = 0; offset < u8.length; offset += chunkSize) {
+        var end = Math.min(offset + chunkSize, u8.length);
+        var content = tail;
+        for (var i = offset; i < end; i++) content += String.fromCharCode(u8[i]);
+        text(content, label).forEach(function (hit) {
+          var key = hit.artifact + '\n' + hit.pattern + '\n' + hit.excerpt;
+          if (!seen[key]) { seen[key] = true; hits.push(hit); }
+        });
+        tail = content.slice(-overlap);
+      }
+      // Properties keep the array API compatible while making it impossible for
+      // a caller to mistake a future partial scan for a clean one.
+      hits.truncated = false;
+      hits.scannedBytes = u8.length;
+      hits.totalBytes = u8.length;
+      return hits;
     }
 
     return { text: text, bytes: bytes, patterns: PATTERNS };
@@ -377,7 +309,7 @@
   //
   // Written rather than vendored. DOMPurify exists to sanitise HTML arriving from
   // arbitrary untrusted sources; Ryker's input is a contenteditable surface in a
-  // page it controls, and the allowlist below is a dozen tags. Vendoring 2,700
+  // page it controls, and the allowlist below is a small explicit set. Vendoring 2,700
   // lines that would need splitting across five files to meet the 600 line cap,
   // then maintaining it against upstream fixes no longer being received, is worse
   // than 200 lines that are understood.
@@ -388,12 +320,21 @@
     'use strict';
 
     var ALLOWED = {
-      A: ['href', 'title', 'target', 'download'],
-      B: [], STRONG: [], I: [], EM: [], U: [], S: [],
-      CODE: [], SUP: [], SUB: [], BR: [], SPAN: [], MARK: []
+      A: ['href', 'target', 'download', 'rel'],
+      IMG: ['src', 'alt', 'width', 'height', 'loading', 'decoding'],
+      B: [], STRONG: [], I: [], EM: [], U: [], S: [], DEL: ['cite', 'datetime'],
+      INS: ['cite', 'datetime'], SMALL: [], ABBR: [], TIME: ['datetime'],
+      CODE: [], KBD: [], SAMP: [], VAR: [], CITE: [], Q: ['cite'],
+      SUP: [], SUB: [], BR: [], SPAN: [], MARK: []
     };
 
-    var URL_OK = /^(https?:|mailto:|tel:|#|\/|\.\/|\.\.\/)/i;
+    // Shared safe attributes preserve authored identity, language and accessible
+    // names without carrying executable or layout-bearing markup into the page.
+    var GLOBAL_ATTRS = ['id', 'class', 'lang', 'dir', 'title', 'role'];
+    var URL_ATTRS = {
+      href: 'link', cite: 'link', src: 'image', poster: 'image', background: 'image',
+      action: 'action', formaction: 'action', 'xlink:href': 'image'
+    };
 
     // A data: URI whose payload cannot execute. The self-contained reports embed
     // every dataset and image this way, so refusing data: outright destroyed them:
@@ -403,14 +344,50 @@
 
     function safeDataUri(v) { return SAFE_DATA.test(String(v || '').trim()); }
 
-    function badUrl(v) {
+    function safeUrl(v, kind) {
       var s = String(v || '').trim().replace(/[\u0000-\u001F\u007F]/g, '');
-      if (!s) return true;
-      if (safeDataUri(s)) return false;
-      // javascript:, vbscript: and any other data: payload are the executable
-      // shapes, and blob: and file: point outside the document entirely.
-      if (/^(javascript|vbscript|data|blob|file):/i.test(s)) return true;
-      return !URL_OK.test(s);
+      if (!s) return false;
+      if (/^data:/i.test(s)) {
+        return kind === 'image'
+          ? /^data:image\/(png|jpe?g|gif|webp|avif)\s*[;,]/i.test(s)
+          : (kind !== 'action' && safeDataUri(s));
+      }
+
+      // A URL with no scheme is relative, including bare sibling paths such as
+      // appendix.html and data/results.csv. Those are the ordinary authored form
+      // in a portable report and must not be mistaken for an unsafe protocol.
+      var scheme = s.match(/^([a-z][a-z0-9+.-]*):/i);
+      if (!scheme) return true;
+      scheme = scheme[1].toLowerCase();
+      if (kind === 'image' || kind === 'action') return scheme === 'http' || scheme === 'https';
+      return scheme === 'http' || scheme === 'https' || scheme === 'mailto' || scheme === 'tel';
+    }
+
+    function badUrl(v) { return !safeUrl(v, 'link'); }
+
+    // This is a safety screen, not a document-wide allowlist. A caller decides
+    // which attributes make sense for its tag, then uses this to reject event,
+    // layout and dangerous URL forms consistently across Ryker surfaces.
+    function safeAttribute(tag, name, value) {
+      name = String(name || '').toLowerCase();
+      if (!name || name.indexOf('on') === 0 || name === 'style' || name === 'srcdoc' ||
+          name === 'ping' || name === 'srcset') return false;
+      var kind = URL_ATTRS[name];
+      return kind ? safeUrl(value, kind) : true;
+    }
+
+    // Mutates one element using a caller-supplied tag allowlist plus the shared
+    // safe attributes above. The workspace can reuse this with its own per-tag
+    // schema instead of growing a second URL policy.
+    function attributes(node, allowed) {
+      for (var i = node.attributes.length - 1; i >= 0; i--) {
+        var attr = node.attributes[i];
+        var name = attr.name.toLowerCase();
+        var named = allowed.indexOf(name) !== -1 || GLOBAL_ATTRS.indexOf(name) !== -1 ||
+          /^aria-[a-z0-9_.:-]+$/i.test(name);
+        if (!named || !safeAttribute(node.tagName, name, attr.value)) node.removeAttribute(attr.name);
+      }
+      return node;
     }
 
     // Only a link that leaves the page needs rel. Adding it to an in-page
@@ -439,17 +416,7 @@
       while ((node = walk.nextNode())) {
         var tag = node.tagName;
         if (!Object.prototype.hasOwnProperty.call(ALLOWED, tag)) { kill.push(node); continue; }
-        var allowed = ALLOWED[tag];
-        for (var i = node.attributes.length - 1; i >= 0; i--) {
-          var attr = node.attributes[i];
-          var name = attr.name.toLowerCase();
-          // Every on* handler goes, whether or not the tag is allowed.
-          if (name.indexOf('on') === 0 || allowed.indexOf(name) === -1) {
-            node.removeAttribute(attr.name);
-            continue;
-          }
-          if (name === 'href' && badUrl(attr.value)) node.removeAttribute(attr.name);
-        }
+        attributes(node, ALLOWED[tag]);
         if (tag === 'A' && (leavesPage(node.getAttribute('href')) ||
             node.getAttribute('target') === '_blank')) {
           node.setAttribute('rel', 'noopener noreferrer');
@@ -459,13 +426,13 @@
         if (tag === 'A' && node.hasAttribute('download') && !node.getAttribute('href')) {
           node.removeAttribute('download');
         }
-        // A span that has lost every attribute carries nothing. Pasting from a
-        // browser wraps everything in them, and left alone they pile up.
-        if ((tag === 'SPAN' || tag === 'MARK') && !node.attributes.length) kill.push(node);
       }
       // Unwrap rather than delete, so pasted text survives when its wrapper does
       // not. A paste that silently loses its words is worse than one that loses
       // its formatting.
+      var BLOCK = /^(ADDRESS|ARTICLE|ASIDE|BLOCKQUOTE|DIV|DL|DT|DD|FIELDSET|FIGCAPTION|FIGURE|FOOTER|HEADER|H[1-6]|HR|LI|MAIN|NAV|OL|P|PRE|SECTION|TABLE|TBODY|TD|TFOOT|TH|THEAD|TR|UL)$/;
+      function isBreak(n) { return n && n.nodeType === 1 && n.tagName === 'BR'; }
+
       kill.forEach(function (n) {
         if (!n.parentNode) return;
         if (n.tagName === 'SCRIPT' || n.tagName === 'STYLE' || n.tagName === 'IFRAME' ||
@@ -475,8 +442,16 @@
           n.parentNode.removeChild(n);
           return;
         }
-        while (n.firstChild) n.parentNode.insertBefore(n.firstChild, n);
-        n.parentNode.removeChild(n);
+        var parent = n.parentNode;
+        var separate = BLOCK.test(n.tagName);
+        var before = n.previousSibling;
+        var after = n.nextSibling;
+        if (separate && before && !isBreak(before)) parent.insertBefore(document.createElement('br'), n);
+        while (n.firstChild) parent.insertBefore(n.firstChild, n);
+        if (separate && after && !isBreak(n.previousSibling) && !isBreak(after)) {
+          parent.insertBefore(document.createElement('br'), n);
+        }
+        parent.removeChild(n);
       });
       return frag;
     }
@@ -525,8 +500,8 @@
       return Ryker.dom.escapeHtml(t).replace(/\r?\n/g, '<br>');
     }
 
-    // Called after an edit lands, to catch anything that arrived by a route the
-    // paste handler did not see, such as a drag and drop.
+    // Called after an explicit markup command such as link creation or inline
+    // formatting. Ordinary focus/blur must never rewrite an authored block.
     function element(node) {
       var tpl = document.createElement('template');
       tpl.innerHTML = node.innerHTML;
@@ -544,7 +519,8 @@
     }
 
     return { html: html, fragment: fragment, element: element,
-             fromClipboard: fromClipboard, badUrl: badUrl, safeDataUri: safeDataUri };
+             fromClipboard: fromClipboard, badUrl: badUrl, safeUrl: safeUrl,
+             safeAttribute: safeAttribute, attributes: attributes, safeDataUri: safeDataUri };
   })();
 
 
@@ -575,7 +551,7 @@
 
     function excluded(node) {
       // Anything Ryker owns.
-      if (node.closest('#ryker-root')) return true;
+      if (Ryker.shell && Ryker.shell.owns(node)) return true;
       // SVG internals are never editable. The root SVG itself is an atomic
       // selectable object, however, so a person can highlight and remove the
       // whole chart without being allowed to damage paths, labels or geometry.
@@ -792,6 +768,20 @@
         if (b.id === id) { found = b.node; return true; }
         return false;
       });
+      if (found) return found;
+
+      // tracked() is built from candidates(), which drops a block with no text
+      // because an empty block has nothing to derive an identity from. A block
+      // that was GIVEN an identity is a different case: autoList() builds its
+      // <li> empty and calls transferId() onto it, so the id is cached and real
+      // while the node is invisible to the scan above. Recovery, moves and every
+      // instruction resolve blocks through here, so without this the newly
+      // converted list item cannot be found by the id it was just handed.
+      // sequence() keeps empties on purpose, which is exactly what it is for.
+      sequence().some(function (node) {
+        if (idCache.get(node) === id) { found = node; return true; }
+        return false;
+      });
       return found;
     }
 
@@ -845,7 +835,8 @@
           changes.push({ id: id, before: htmlOf(before[id]), after: htmlOf(a),
                          kind: 'changed', tag: a.tag,
                          beforeTag: before[id] && before[id].tag || null,
-                         afterTag: a.tag || null });
+                         afterTag: a.tag || null, prev: a.prev || null,
+                         box: a.box || null, boxTag: a.boxTag || null });
         }
       });
       Object.keys(before).forEach(function (id) {
@@ -854,6 +845,7 @@
           var meta = was && typeof was === 'object' ? was : {};
           changes.push({ id: id, before: htmlOf(was), after: null, kind: 'removed',
                          tag: meta.tag || null, atomic: !!meta.atomic,
+                         prev: meta.prev || null,
                          box: meta.box || null, boxTag: meta.boxTag || null });
         }
       });
@@ -863,8 +855,40 @@
     // Puts a recorded change back into the document. This is what makes a journal
     // held in browser storage worth anything: the file on disk is untouched, so
     // without replay a reload silently discarded every saved edit.
-    function applyChange(c) {
+    function boxIndex() {
+      var boxes = {};
+      Array.prototype.forEach.call(root().querySelectorAll(BOX), function (box) {
+        var key = boxKey(box);
+        if (key) boxes[key] = box;
+      });
+      return boxes;
+    }
+
+    function insertNew(node, c, anchor, context) {
+      var boxTag = String(c.boxTag || '').toUpperCase();
+      var box = c.box && context.boxes[c.box];
+      if (c.box && /^(OL|UL|DL|FIGURE)$/.test(boxTag)) {
+        if (!box) {
+          box = document.createElement(boxTag);
+          boxKeys.set(box, c.box);
+          context.boxes[c.box] = box;
+          var unit = anchor && (boxOf(anchor) || anchor);
+          if (unit && unit.parentNode) unit.parentNode.insertBefore(box, unit.nextSibling);
+          else root().insertBefore(box, root().firstChild);
+        }
+        if (anchor && anchor.parentNode === box) box.insertBefore(node, anchor.nextSibling);
+        else box.appendChild(node);
+        return;
+      }
+      if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(node, anchor.nextSibling);
+      else root().appendChild(node);
+    }
+
+    function applyChange(c, context) {
+      context = context || { boxes: boxIndex() };
       var node = byId(c.id);
+      var tag = String(c.afterTag || c.tag || '').toUpperCase();
+      var validTag = /^(H[1-5]|P|LI|TD|TH|FIGCAPTION|BLOCKQUOTE|DD|DT|SVG)$/.test(tag);
 
       if (c.kind === 'removed') {
         if (node && node.parentNode) node.parentNode.removeChild(node);
@@ -877,26 +901,117 @@
         // against, and appending it would silently corrupt the report, which is
         // exactly what happened before block identity survived a reload.
         if (c.kind !== 'added' || c.after == null) return false;
-        node = document.createElement(c.tag || 'P');
+        if (!validTag) return false;
+        node = document.createElement(tag);
         if (c.id.charAt(0) === '@') node.setAttribute('data-ryker-id', c.id.slice(1));
         else if (c.id.charAt(0) === '#') node.id = c.id.slice(1);
         var anchor = c.prev ? byId(c.prev) : null;
-        if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(node, anchor.nextSibling);
-        else root().appendChild(node);
+        insertNew(node, c, anchor, context);
+      }
+
+      if (c.kind === 'changed' && tag && node.tagName !== tag) {
+        if (!validTag || tag === 'SVG') return false;
+        var replacement = document.createElement(tag);
+        Array.prototype.slice.call(node.attributes).forEach(function (attr) {
+          replacement.setAttribute(attr.name, attr.value);
+        });
+        transferId(node, replacement);
+        var boxTag = String(c.boxTag || '').toUpperCase();
+        if (tag === 'LI' && /^(OL|UL)$/.test(boxTag) && node.parentNode.tagName !== boxTag) {
+          var list = document.createElement(boxTag);
+          if (c.box) { boxKeys.set(list, c.box); context.boxes[c.box] = list; }
+          node.parentNode.replaceChild(list, node);
+          list.appendChild(replacement);
+        } else {
+          node.parentNode.replaceChild(replacement, node);
+        }
+        node = replacement;
       }
 
       node.innerHTML = Ryker.sanitize.html(c.after);
       return true;
     }
 
-    function applyRecords(records) {
-      var applied = 0, missed = 0;
-      (records || []).forEach(function (r) {
-        (r.changes || []).forEach(function (c) {
-          if (applyChange(c)) applied += 1; else missed += 1;
-        });
+    function completeBoxDeletes(changes, context) {
+      var groups = {}, handled = {};
+      (changes || []).forEach(function (change) {
+        if (change.kind === 'removed' && change.box && change.boxTag === 'TABLE') {
+          (groups[change.box] = groups[change.box] || []).push(change.id);
+        }
       });
-      return { applied: applied, missed: missed };
+      Object.keys(groups).forEach(function (key) {
+        var box = context.boxes[key];
+        if (!box || !box.parentNode) return;
+        var inside = tracked().filter(function (block) { return box.contains(block.node); })
+          .map(function (block) { return block.id; });
+        if (!inside.length || !inside.every(function (id) { return groups[key].indexOf(id) !== -1; })) return;
+        box.parentNode.removeChild(box);
+        groups[key].forEach(function (id) { handled[id] = true; });
+        delete context.boxes[key];
+      });
+      return handled;
+    }
+
+    // Restore recorded order among blocks that share a parent. Moving across
+    // different containers needs container-level metadata and is reported as a
+    // miss by the recovery caller rather than guessed.
+    function applyOrder(ids) {
+      var groups = [];
+      var parents = [];
+      var missed = 0, moved = 0;
+      (ids || []).forEach(function (id) {
+        var node = byId(id);
+        if (!node || !node.parentNode) { missed += 1; return; }
+        var at = parents.indexOf(node.parentNode);
+        if (at === -1) {
+          parents.push(node.parentNode);
+          groups.push([node]);
+        } else {
+          groups[at].push(node);
+        }
+      });
+      groups.forEach(function (nodes) {
+        var parent = nodes[0] && nodes[0].parentNode;
+        if (!parent || nodes.length < 2) return;
+        var current = Array.prototype.filter.call(parent.children, function (child) {
+          return nodes.indexOf(child) !== -1;
+        });
+        var differs = nodes.some(function (node, i) { return current[i] !== node; });
+        if (!differs) return;
+
+        // A flat legacy order describes only tracked blocks. Preserve every
+        // untracked widget, image wrapper and text node in its existing slot by
+        // marking the tracked slots before moving anything into their new order.
+        var markers = current.map(function (node) {
+          var marker = document.createComment('ryker-order');
+          parent.insertBefore(marker, node);
+          return marker;
+        });
+        current.forEach(function (node) { parent.removeChild(node); });
+        markers.forEach(function (marker, i) {
+          parent.insertBefore(nodes[i], marker);
+          parent.removeChild(marker);
+        });
+        moved += nodes.filter(function (node, i) { return current[i] !== node; }).length;
+      });
+      return { moved: moved, missed: missed };
+    }
+
+    function applyRecords(records) {
+      var applied = 0, missed = 0, moved = 0, orderMissed = 0;
+      (records || []).forEach(function (r) {
+        var context = { boxes: boxIndex() };
+        var boxed = completeBoxDeletes(r.changes || [], context);
+        (r.changes || []).forEach(function (c) {
+          if (boxed[c.id] || applyChange(c, context)) applied += 1; else missed += 1;
+        });
+        if (Array.isArray(r.order)) {
+          var ordered = applyOrder(r.order);
+          moved += ordered.moved;
+          orderMissed += ordered.missed;
+        }
+      });
+      return { applied: applied, missed: missed, moved: moved, orderMissed: orderMissed };
     }
 
     function label(id) {
@@ -916,7 +1031,7 @@
       excluded: excluded, snapshot: snapshot, diffSnapshots: diffSnapshots, label: label,
       seedIds: seedIds, stamp: stamp, htmlOf: htmlOf, sequence: sequence,
       boxOf: boxOf, boxKey: boxKey,
-      applyChange: applyChange, applyRecords: applyRecords
+      applyChange: applyChange, applyRecords: applyRecords, applyOrder: applyOrder
     };
   })();
 
@@ -930,6 +1045,10 @@
   // missing, which produces a larger but perfectly valid archive.
   Ryker.zip = (function () {
     'use strict';
+
+    var MAX_ENTRIES = 65535;
+    var MAX_U16 = 65535;
+    var MAX_U32 = 4294967295;
 
     var CRC = (function () {
       var t = new Uint32Array(256);
@@ -990,16 +1109,58 @@
       return new TextEncoder().encode(String(data));
     }
 
+    function safeName(value) {
+      var name = String(value == null ? '' : value).replace(/\\/g, '/');
+      if (!name) throw new Error('A ZIP entry has no filename.');
+      if (name.charAt(0) === '/' || /^[a-z]:/i.test(name)) {
+        throw new Error('ZIP entry names must be relative: ' + name);
+      }
+      if (name.indexOf('\0') >= 0) throw new Error('A ZIP entry name contains a null byte.');
+      var parts = name.split('/');
+      if (parts.some(function (part) { return !part || part === '.' || part === '..'; })) {
+        throw new Error('ZIP entry names cannot contain empty, current, or parent path segments: ' + name);
+      }
+      return parts.join('/');
+    }
+
+    function checkedAdd(a, b, what) {
+      var total = a + b;
+      if (!Number.isSafeInteger(total) || total > MAX_U32) {
+        throw new Error('The ZIP is too large for this exporter (' + what + ' exceeds 4 GiB).');
+      }
+      return total;
+    }
+
     // files: [{ name: 'a/b.csv', data: string | Uint8Array }]
     function build(files) {
+      if (!Array.isArray(files)) return Promise.reject(new Error('ZIP input must be a list of files.'));
+      if (files.length > MAX_ENTRIES) {
+        return Promise.reject(new Error('A ZIP can contain at most ' + MAX_ENTRIES + ' files in this exporter.'));
+      }
       var when = new Date();
       var time = dosTime(when), date = dosDate(when);
+      var names = {};
+      var prepared;
+      try {
+        prepared = files.map(function (f) {
+          var name = safeName(f.name);
+          if (names[name]) throw new Error('The ZIP contains the same filename twice: ' + name);
+          names[name] = true;
+          return { name: name, data: f.data };
+        });
+      } catch (error) {
+        return Promise.reject(error);
+      }
 
-      return Promise.all(files.map(function (f) {
+      return Promise.all(prepared.map(function (f) {
         var raw = toBytes(f.data);
+        if (raw.length > MAX_U32) throw new Error('A ZIP member exceeds 4 GiB: ' + f.name);
+        var nameBytes = new TextEncoder().encode(f.name);
+        if (nameBytes.length > MAX_U16) throw new Error('A ZIP filename is too long: ' + f.name);
         return deflate(raw).then(function (comp) {
           return {
-            nameBytes: new TextEncoder().encode(f.name),
+            name: f.name,
+            nameBytes: nameBytes,
             raw: raw,
             body: comp || raw,
             method: comp ? 8 : 0,
@@ -1018,7 +1179,7 @@
           e.offset = offset;
           var h = head.done();
           locals.push(h, e.body);
-          offset += h.length + e.body.length;
+          offset = checkedAdd(checkedAdd(offset, h.length, e.name), e.body.length, e.name);
         });
 
         var cdStart = offset;
@@ -1032,7 +1193,7 @@
             .u32(e.offset).raw(e.nameBytes);
           var cb = c.done();
           central.push(cb);
-          offset += cb.length;
+          offset = checkedAdd(offset, cb.length, e.name);
         });
 
         var end = W(22);
@@ -1041,7 +1202,9 @@
           .u32(offset - cdStart).u32(cdStart).u16(0);
 
         var parts = locals.concat(central, [end.done()]);
-        var total = parts.reduce(function (n, p) { return n + p.length; }, 0);
+        var total = parts.reduce(function (n, p) {
+          return checkedAdd(n, p.length, 'archive size');
+        }, 0);
         var out = new Uint8Array(total);
         var at = 0;
         parts.forEach(function (p) { out.set(p, at); at += p.length; });
@@ -1061,7 +1224,10 @@
       setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
     }
 
-    return { build: build, download: download, crc32: crc32 };
+    return {
+      build: build, download: download, crc32: crc32, safeName: safeName,
+      limits: { entries: MAX_ENTRIES, bytes: MAX_U32 }
+    };
   })();
 
 
@@ -1075,18 +1241,56 @@
   Ryker.exportHtml = (function () {
     'use strict';
 
+    function isWorkspace() {
+      return Ryker.SURFACE === 'extension' &&
+        !!document.getElementById('workspace-document') &&
+        document.body.classList.contains('workspace-loaded');
+    }
+
+    function sourceDocumentClone() {
+      if (!isWorkspace()) return document.documentElement.cloneNode(true);
+
+      // The workspace is extension chrome around an uploaded document. HTML
+      // uploads retain a sanitised clone of their authored document shell so safe
+      // title/meta/html/body metadata and comments survive; Markdown deliberately
+      // uses the small default shell below.
+      var supplied = window.RykerWorkspace &&
+        typeof window.RykerWorkspace.sourceShell === 'function'
+        ? window.RykerWorkspace.sourceShell() : null;
+      if (supplied) {
+        var suppliedBody = supplied.querySelector('body');
+        if (!suppliedBody) throw new Error('The uploaded HTML document has no exportable body.');
+        suppliedBody.innerHTML = document.getElementById('workspace-document').innerHTML;
+        return supplied;
+      }
+
+      var clean = document.implementation.createHTMLDocument(
+        Ryker.config.load().RYKER_DOCUMENT_PATH || document.title || 'Ryker document');
+      clean.documentElement.setAttribute('lang', document.documentElement.lang || 'en');
+      clean.head.insertBefore(clean.createElement('meta'), clean.head.firstChild);
+      clean.head.firstChild.setAttribute('charset', 'utf-8');
+      clean.body.innerHTML = document.getElementById('workspace-document').innerHTML;
+      return clean.documentElement;
+    }
+
     // A clone of the live document with everything Ryker added taken back out.
     // Ryker's chrome lives in one element and its edits live in the report's own
     // markup, so removing the element and the attributes is the whole job.
     function snapshot(keepRyker) {
-      var doc = document.documentElement.cloneNode(true);
+      var doc = sourceDocumentClone();
 
       // Both of these are rebuilt at boot, so neither is kept in either export.
       // Leaving the stylesheet behind would put Ryker's highlight rules in a file
       // that carries no Ryker.
-      ['#ryker-root', '#ryker-document-css'].forEach(function (sel) {
+      var owner = Ryker.shell && Ryker.shell.owner ? Ryker.shell.owner() : null;
+      var owned = owner ? '[data-ryker-owner="' + owner.replace(/"/g, '') + '"]' : null;
+      [owned].forEach(function (sel) {
+        if (!sel) return;
         var n = doc.querySelector(sel);
-        if (n && n.parentNode) n.parentNode.removeChild(n);
+        while (n) {
+          if (n.parentNode) n.parentNode.removeChild(n);
+          n = doc.querySelector(sel);
+        }
       });
 
       Array.prototype.forEach.call(doc.querySelectorAll('[contenteditable]'), function (n) {
@@ -1106,14 +1310,26 @@
         n.parentNode.removeChild(n);
       });
       // The reserved space is inline on body and would otherwise ship in the
-      // export as a stray padding rule with no panel to justify it.
+      // export as a stray padding rule with no panel to justify it. Restore the
+      // authored inline declaration, including !important, when the live shell
+      // remembers one instead of erasing it with Ryker's temporary value.
       var exportBody = doc.body || doc.querySelector('body');
       if (exportBody) {
-        exportBody.style.removeProperty('padding-left');
-        exportBody.style.removeProperty('padding-right');
-        // Pre-existing leak: the toolbar's vertical offset shipped in every
-        // export as a stray body padding with no toolbar to justify it.
-        exportBody.style.removeProperty('padding-top');
+        ['padding-left', 'padding-right', 'padding-top'].forEach(function (prop) {
+          var authored = Ryker.shell && Ryker.shell.originalBodyPadding
+            ? Ryker.shell.originalBodyPadding(prop) : null;
+          // Remembering a property is the ONLY evidence Ryker claimed it. The
+          // data-ryker-pushed attribute is one flag on body covering all three
+          // sides, so consulting it per property made an open pane on the right
+          // erase an authored padding-left the rail never touched. A property
+          // Ryker did not claim is the page's own and must ship untouched.
+          if (!authored) return;
+          if (authored.value) {
+            exportBody.style.setProperty(prop, authored.value, authored.priority || '');
+          } else {
+            exportBody.style.removeProperty(prop);
+          }
+        });
         if (exportBody.className === '') exportBody.removeAttribute('class');
         exportBody.removeAttribute('data-ryker-rail');
         exportBody.removeAttribute('data-ryker-pushed');
@@ -1146,7 +1362,14 @@
     }
 
     function clean() { return snapshot(false); }
-    function withRyker() { return snapshot(true); }
+    function canAttach() { return !isWorkspace(); }
+    function withRyker() {
+      if (!canAttach()) {
+        throw new Error('With Ryker export is unavailable for extension workspace uploads. ' +
+          'Install the drop-in in the source file to create a portable editable copy.');
+      }
+      return snapshot(true);
+    }
 
     // Returns { html, hits }. A caller that ignores hits is a bug, so the scan
     // result travels with the content rather than being a separate call someone
@@ -1189,6 +1412,7 @@
 
     return {
       clean: clean, withRyker: withRyker, scanned: scanned,
+      canAttach: canAttach,
       download: download, baseName: baseName,
       manifest: manifest
     };
@@ -1207,6 +1431,8 @@
   //      to include because their bytes are in the page already.
   Ryker.packager = (function () {
     'use strict';
+
+    var MAX_FOLDER_ENTRIES = 5000;
 
     function d() { return Ryker.dom; }
 
@@ -1235,59 +1461,61 @@
       var list = cfg.RYKER_PACKAGE_MANIFEST;
       if (!Array.isArray(list)) return [];
       return list.map(function (f) {
-        return { name: f.name || f, source: 'manifest', bytes: f.bytes || null, path: f.name || f };
-      });
+        if (!f) return null;
+        var item = typeof f === 'string' ? { name: f } : f;
+        var path = item.path || item.href || item.name;
+        if (!path) return null;
+        return {
+          name: item.name || path,
+          source: 'manifest',
+          bytes: typeof item.bytes === 'number' ? item.bytes : null,
+          href: item.href || path,
+          data: item.data == null ? null : item.data
+        };
+      }).filter(Boolean);
     }
 
     function folderAssets(dirHandle) {
-      var out = [];
-      function walk(prefix) {
-        return Ryker.fs.list(dirHandle, prefix).then(function (entries) {
-          return entries.reduce(function (chain, e) {
-            return chain.then(function () {
-            var name = prefix + e.name;
-            // Skip dotfiles, and skip the change-request log wherever it lives.
-            //
-            // This said `e.name === '.ryker'`, which was the RETIRED build's path
-            // and is redundant with the dot test on the same line anyway. The
-            // surviving logger writes to `ryker/` with no dot (logger.js LIB), so
-            // the log was not being skipped at all. It is dormant only because
-            // fsBackend() returns null and no folder can currently be listed;
-            // sow-006 Phase 2 turns listing back on, and the first "Package
-            // report" against a granted folder would have put every logged prompt
-            // into the ZIP, where the credential scan then reads all of them.
-            //
-            // Read from the logger rather than repeated here, so the two cannot
-            // drift apart again the way they just did.
-            var lib = (Ryker.logger && Ryker.logger.LIB) || 'ryker';
-            if (e.name === lib || e.name.charAt(0) === '.') return null;
-            if (e.kind === 'directory') {
-              return walk(name + '/');
-            }
-            out.push({ name: name, source: 'folder', bytes: e.size,
-                       root: dirHandle, path: name });
-            return null;
-            });
-          }, Promise.resolve());
-        });
+      var lib = (Ryker.logger && Ryker.logger.LIB) || 'ryker';
+      var logPrefix = dirHandle && String(dirHandle.name || '').toLowerCase() === lib
+        ? 'revisions'
+        : lib + '/revisions';
+
+      function isLogPath(name) {
+        var normalized = String(name).replace(/\/$/, '').toLowerCase();
+        return normalized === logPrefix || normalized.indexOf(logPrefix + '/') === 0;
       }
-      return walk('').then(function () { return out; });
+      return Ryker.fs.walk(dirHandle, '', {
+        maxEntries: MAX_FOLDER_ENTRIES,
+        // Skip dot trees and only the revision corpus. The rest of `ryker/` can
+        // include the distributable bundle that a with-Ryker report needs.
+        skip: function (entry, name) {
+          return entry.name.charAt(0) === '.' || isLogPath(name);
+        }
+      }).then(function (entries) {
+        return entries.map(function (entry) {
+          return { name: entry.name, source: 'folder', bytes: entry.size,
+            root: dirHandle, path: entry.name };
+        });
+      });
     }
 
-    // The storage adapter went with the full build, so there is no folder backend
-    // left to ask and every caller below takes its no-folder path. This is one
-    // function rather than a guard at each call site on purpose: sow-006 Phase 2
-    // converges storage/fs.js with the handle persistence in logger.js into a
-    // single file-system module, and returning that here is the whole of putting
-    // folder access back.
+    // One seam keeps the dialog independent of the concrete folder adapter.
     function fsBackend() {
       return Ryker.fs;
+    }
+
+    function showError(title, error) {
+      if (error && error.name === 'AbortError') return;
+      Ryker.dialog.alert(title,
+        Ryker.dom.escapeHtml((error && error.message) || String(error)), 'bad');
     }
 
     function open() {
       var fs = fsBackend();
       if (fs && fs.isReady()) {
-        folderAssets(fs.handle()).then(function (files) { dialog(files, true); });
+        folderAssets(fs.handle()).then(function (files) { dialog(files, true); })
+          .catch(function (error) { showError('Could not read the report folder', error); });
         return;
       }
       var files = manifestAssets().concat(inlinedAssets());
@@ -1296,6 +1524,7 @@
 
     function dialog(files, fromFolder) {
       var base = Ryker.exportHtml.baseName();
+      var attachedBundle = bundlePath();
       var rows = [];
       var list = d().el('div', { class: 'filelist' });
 
@@ -1311,10 +1540,14 @@
         rows.push({ cb: cb, payload: payload });
       }
 
-      row(base + '.html', true, 'the report', { kind: 'report' });
+      row(base + '.html', true, 'clean report', { kind: 'report', mode: 'clean' });
+      if (attachedBundle) {
+        row(base + '-ryker.html', false, 'report with Ryker attached',
+          { kind: 'report', mode: 'ryker', bundle: attachedBundle });
+      }
 
       files.forEach(function (f) {
-        row(f.name, true, f.bytes ? kb(f.bytes) : f.source, { kind: 'asset', file: f });
+        row(f.name, !fromFolder, f.bytes ? kb(f.bytes) : f.source, { kind: 'asset', file: f });
       });
 
       var chooseBtn = null;
@@ -1323,23 +1556,15 @@
         chooseBtn = { label: 'Choose report folder', keepOpen: true, action: function (api) {
           fs.pick().then(function (h) {
             api.close();
-            folderAssets(h).then(function (fl) { dialog(fl, true); });
-          }).catch(function () {});
+            return folderAssets(h).then(function (fl) { dialog(fl, true); });
+          }).catch(function (error) { showError('Could not read the report folder', error); });
           return false;
         } };
       }
 
-      // Built after chooseBtn, and keyed to it rather than to fromFolder, because
-      // it is the only text in this dialog and it was telling people to use a
-      // control that is filtered out of the button list. fsBackend() has returned
-      // null since the decommission, so chooseBtn is never constructed, so the
-      // sentence "Choose the report folder to see the rest" named a button that
-      // was not on screen and could not be made to appear. Now the sentence and
-      // the button arrive together or not at all, which also means sow-006
-      // Phase 2 restores both by changing fsBackend() alone.
       var note = fromFolder
         ? '<div class="note ok">Listing the folder you granted access to, so anything added since ' +
-          'the report was built appears here too.</div>'
+          'the report was built appears here too. Folder files start unchecked.</div>'
         : '<div class="note">This lists what the document already carries' +
           (files.some(function (f) { return f.source === 'manifest'; })
             ? ' plus anything named in the build manifest' : '') + '.' +
@@ -1366,25 +1591,71 @@
     function htmlNode(s) { var n = document.createElement('div'); n.innerHTML = s; return n; }
     function kb(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
 
+    function bundlePath() {
+      var script = document.querySelector('script[data-ryker][src]');
+      if (!script) return null;
+      var path = String(script.getAttribute('src') || '').split(/[?#]/)[0].replace(/\\/g, '/');
+      try { path = decodeURIComponent(path); } catch (error) {}
+      return path.replace(/^\.\//, '').replace(/^\//, '') || null;
+    }
+
+    function samePath(a, b) {
+      return String(a || '').replace(/\\/g, '/').replace(/^\.\//, '') ===
+        String(b || '').replace(/\\/g, '/').replace(/^\.\//, '');
+    }
+
+    function assetJob(f) {
+      if (f.data != null) return Promise.resolve({ name: f.name, data: f.data });
+      if (f.root && f.path) {
+        return Ryker.fs.readBytes(f.root, f.path)
+          .then(function (bytes) { return { name: f.name, data: bytes }; });
+      }
+      if (f.href) {
+        return fetch(f.href).then(function (response) {
+          if (!response.ok && !/^data:/i.test(f.href)) {
+            throw new Error('Could not read ' + f.name + ' (' + response.status + ').');
+          }
+          return response.arrayBuffer();
+        }).then(function (buf) { return { name: f.name, data: new Uint8Array(buf) }; });
+      }
+      return Promise.reject(new Error('No readable source was supplied for ' + f.name + '.'));
+    }
+
+    function asBytes(data) {
+      if (data instanceof Uint8Array) return data;
+      if (data instanceof ArrayBuffer) return new Uint8Array(data);
+      return new TextEncoder().encode(String(data));
+    }
+
     function build(rows, base, api) {
       var chosen = rows.filter(function (r) { return r.cb.checked; });
+      var withRyker = chosen.filter(function (r) {
+        return r.payload.kind === 'report' && r.payload.mode === 'ryker';
+      })[0];
+      if (withRyker) {
+        var bundleRow = rows.filter(function (r) {
+          return r.payload.kind === 'asset' && samePath(r.payload.file.name, withRyker.payload.bundle);
+        })[0];
+        if (!bundleRow) {
+          api.close();
+          showError('Could not build the package', new Error(
+            'The with-Ryker copy needs ' + withRyker.payload.bundle +
+            '. Choose the report folder so Ryker can include that bundle.'));
+          return;
+        }
+        if (chosen.indexOf(bundleRow) < 0) chosen.push(bundleRow);
+      }
       var jobs = chosen.map(function (r) {
         var p = r.payload;
         if (p.kind === 'report') {
-          var out = Ryker.exportHtml.scanned('ryker');
+          var out = Ryker.exportHtml.scanned(p.mode);
           if (out.hits.length) return Promise.reject({ leak: out.hits });
-          return Promise.resolve({ name: base + '.html', data: out.html });
+          return Promise.resolve({
+            name: p.mode === 'clean' ? base + '.html' : base + '-ryker.html',
+            data: out.html
+          });
         }
-        var f = p.file;
-        if (f.root && f.path) {
-          return Ryker.fs.readBytes(f.root, f.path)
-            .then(function (bytes) { return { name: f.name, data: bytes }; });
-        }
-        if (f.href) {
-          return fetch(f.href).then(function (r) { return r.arrayBuffer(); })
-            .then(function (buf) { return { name: f.name, data: new Uint8Array(buf) }; });
-        }
-        return Promise.resolve(null);
+        return assetJob(p.file);
       });
 
       Promise.all(jobs).then(function (entries) {
@@ -1396,7 +1667,10 @@
         files.forEach(function (f) {
           var found = typeof f.data === 'string'
             ? Ryker.scan.text(f.data, f.name)
-            : Ryker.scan.bytes(f.data, f.name);
+            : Ryker.scan.bytes(asBytes(f.data), f.name);
+          if (found.truncated) {
+            throw new Error('The credential scan could not inspect all of ' + f.name + '.');
+          }
           hits = hits.concat(found);
         });
         if (hits.length) { Ryker.dialog.leak(hits); api.close(); return; }
@@ -1404,7 +1678,7 @@
         var withManifest = files.concat([{
           name: 'ryker-package.json',
           data: Ryker.exportHtml.manifest(files.map(function (f) {
-            var bytes = typeof f.data === 'string' ? new TextEncoder().encode(f.data) : f.data;
+            var bytes = asBytes(f.data);
             return { name: f.name, bytes: bytes.length, crc32: Ryker.zip.crc32(bytes) };
           }))
         }]);
@@ -1416,8 +1690,7 @@
       }).catch(function (err) {
         api.close();
         if (err && err.leak) { Ryker.dialog.leak(err.leak); return; }
-        Ryker.dialog.alert('Could not build the package',
-          Ryker.dom.escapeHtml((err && err.message) || String(err)), 'bad');
+        showError('Could not build the package', err);
       });
     }
 
@@ -1543,8 +1816,7 @@
       'body[data-ryker-rail] nav.toc{display:none}',
       // Ryker must leave no trace in print. The PDF is the regression check, so
       // this rule is load-bearing rather than cosmetic.
-      '@media print{#ryker-root{display:none !important}' +
-        '[contenteditable]{outline:none !important;background:none !important}' +
+      '@media print{[contenteditable]{outline:none !important;background:none !important}' +
         '.ryker-pick{background:none !important;box-shadow:none !important}' +
         // Only ever matches padding Ryker itself applied, so a report with body
         // padding of its own keeps it.
@@ -1554,6 +1826,7 @@
 
     var shadowCss = [
       ':host{all:initial}',
+      '@media print{:host{display:none !important}}',
       '*,*::before,*::after{box-sizing:border-box}',
 
       // One palette. Ryker is chrome around a document, and a toolbar that changes
@@ -1634,8 +1907,6 @@
       '.where:disabled{cursor:default}',
       '.where:not(:disabled):hover{background:var(--rk-bg3);border-color:var(--rk-line2);color:var(--rk-fg2)}',
       '.where:focus-visible{outline:2px solid transparent;box-shadow:0 0 0 3px var(--rk-ring)}',
-
-      '.hint{font-size:11px;color:var(--rk-muted)}',
 
       // ---- instant tooltip ---------------------------------------------------
       // White on black regardless of the palette, so it reads the same over the
@@ -1777,7 +2048,6 @@
       'button.rk.iconbtn.danger{color:var(--rk-danger);opacity:.75}',
       'button.rk.iconbtn.danger:hover:not(:disabled){color:var(--rk-danger);opacity:1;',
       '  background:var(--rk-danger-soft);border-color:transparent}',
-      '.danger-lead{font-size:12.5px;font-weight:600;border-left-width:4px}',
       '@media (max-width:820px){.pane{width:100%}}',
 
       // A row of buttons. This was '.card .acts' until 2026-08-16, and .card was
@@ -1869,14 +2139,51 @@
   Ryker.shell = (function () {
     'use strict';
 
-    var host = null, shadow = null, layer = null;
+    var host = null, shadow = null, layer = null, documentStyle = null;
     var shifted = [];
+    var bodyPadding = {};
+    var owner = Ryker.dom.uid('owner');
+
+    function owns(node) {
+      if (!host || !node) return false;
+      if (node === host) return true;
+      return !!(shadow && node.getRootNode && node.getRootNode() === shadow);
+    }
+
+    function rememberBodyPadding(prop) {
+      if (Object.prototype.hasOwnProperty.call(bodyPadding, prop)) return;
+      bodyPadding[prop] = {
+        value: document.body.style.getPropertyValue(prop),
+        priority: document.body.style.getPropertyPriority(prop)
+      };
+    }
+
+    function restoreBodyPadding(prop) {
+      if (!Object.prototype.hasOwnProperty.call(bodyPadding, prop)) return;
+      var was = bodyPadding[prop];
+      if (was.value) document.body.style.setProperty(prop, was.value, was.priority || '');
+      else document.body.style.removeProperty(prop);
+      delete bodyPadding[prop];
+    }
+
+    // Export works from a clone while the live shell may still be claiming
+    // space. Return a copy of the authored inline value so the clone can remove
+    // Ryker's temporary padding without deleting the page's own declaration.
+    function originalBodyPadding(prop) {
+      if (!Object.prototype.hasOwnProperty.call(bodyPadding, prop)) return null;
+      return {
+        value: bodyPadding[prop].value,
+        priority: bodyPadding[prop].priority
+      };
+    }
 
     function mount() {
       if (host) return shadow;
 
       host = document.createElement('div');
       host.id = 'ryker-root';
+      host.setAttribute('data-ryker-host', '');
+      host.setAttribute('data-ryker-owner', owner);
       // The host element itself must not affect layout at all.
       host.style.cssText = 'all:initial;position:static;display:block;width:0;height:0;overflow:visible';
       host.setAttribute('data-ryker-lock', '');
@@ -1898,10 +2205,12 @@
       // comment highlight pseudo-elements too, and those were the reason it was
       // first justified; they went with comments on 2026-08-16 and the rest of it
       // is still load-bearing.
-      var doc = document.createElement('style');
-      doc.id = 'ryker-document-css';
-      doc.textContent = Ryker.styles.documentCss;
-      document.head.appendChild(doc);
+      documentStyle = document.createElement('style');
+      documentStyle.id = 'ryker-document-css';
+      documentStyle.setAttribute('data-ryker-document-css', '');
+      documentStyle.setAttribute('data-ryker-owner', owner);
+      documentStyle.textContent = Ryker.styles.documentCss;
+      document.head.appendChild(documentStyle);
 
       return shadow;
     }
@@ -1915,7 +2224,7 @@
     function stickyCandidates() {
       var out = [];
       Array.prototype.forEach.call(document.querySelectorAll('body *'), function (n) {
-        if (n.id === 'ryker-root' || n.closest('#ryker-root')) return;
+        if (owns(n)) return;
         var cs = getComputedStyle(n);
         if ((cs.position === 'sticky' || cs.position === 'fixed') && cs.top === '0px') out.push(n);
       });
@@ -1934,6 +2243,7 @@
       // The bar is fixed, so without this the top of the document sits underneath
       // it. Recorded on an attribute as well as in the style, so the print rules
       // can undo it without having to guess whether the padding was Ryker's.
+      rememberBodyPadding('padding-top');
       document.body.style.paddingTop = px + 'px';
       document.body.setAttribute('data-ryker-pushed', '');
       document.documentElement.style.scrollPaddingTop = px + 'px';
@@ -1949,7 +2259,7 @@
         if (!n.getAttribute('style')) n.removeAttribute('style');
       });
       shifted = [];
-      document.body.style.removeProperty('padding-top');
+      restoreBodyPadding('padding-top');
       if (!spaces.left && !spaces.right) document.body.removeAttribute('data-ryker-pushed');
       if (!document.body.getAttribute('style')) document.body.removeAttribute('style');
       document.documentElement.style.removeProperty('scroll-padding-top');
@@ -1979,13 +2289,19 @@
     // measuring against it would surrender 250px for a list the rail duplicates.
     function setEdgeSpace(node, side) {
       var prop = side === 'left' ? 'padding-left' : 'padding-right';
+      // Every reflow starts from the host page's real value, then measures the
+      // additional room Ryker needs. Releasing the panel restores that exact
+      // inline value, including its !important priority.
+      restoreBodyPadding(prop);
       spaces[side] = node || null;
-      document.body.style.removeProperty(prop);
       if (!node) {
         if (!spaces.left && !spaces.right) document.body.removeAttribute('data-ryker-pushed');
         if (!document.body.getAttribute('style')) document.body.removeAttribute('style');
         return;
       }
+
+      rememberBodyPadding(prop);
+      document.body.style.removeProperty(prop);
 
       var ceiling = Math.floor(document.documentElement.clientWidth * 0.55);
       var applied = 0;
@@ -2038,10 +2354,9 @@
       releasePanelSpace();
       releaseOffset();
       document.documentElement.style.removeProperty('--ryker-offset');
-      var doc = document.getElementById('ryker-document-css');
-      if (doc && doc.parentNode) doc.parentNode.removeChild(doc);
+      if (documentStyle && documentStyle.parentNode) documentStyle.parentNode.removeChild(documentStyle);
       if (host && host.parentNode) host.parentNode.removeChild(host);
-      host = shadow = layer = null;
+      host = shadow = layer = documentStyle = null;
     }
 
     return {
@@ -2049,6 +2364,8 @@
       setOffset: setOffset, releaseOffset: releaseOffset,
       setPanelSpace: setPanelSpace, releasePanelSpace: releasePanelSpace,
       setEdgeSpace: setEdgeSpace, releaseEdgeSpace: releaseEdgeSpace,
+      originalBodyPadding: originalBodyPadding,
+      owns: owns, owner: function () { return owner; },
       shadow: function () { return shadow; },
       host: function () { return host; }
     };
@@ -2449,32 +2766,45 @@
 
 
   /* ---- editor/editable.js ---------------------------------------- */
-  // Edit Mode. Per-block contenteditable over prose only, with sanitising on
-  // paste and on input, and a baseline snapshot so a save knows exactly which
-  // blocks moved.
+  // Edit Mode. Per-block contenteditable over prose only, with sanitising at
+  // explicit markup-entry boundaries and a baseline snapshot so a save knows
+  // exactly which blocks moved.
   Ryker.editable = (function () {
     'use strict';
 
     var on = false;
     var baseline = null;
     var bound = [];
+    var resumable = [];
     var listeners = [];
     var pendingListSpace = new WeakSet();
 
     function onChange(fn) { listeners.push(fn); }
     function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
 
+    function arm(node, id) {
+      if (!node || !node.isConnected || Ryker.blocks.excluded(node)) return;
+      if (bound.some(function (b) { return b.node === node; })) return;
+      node.setAttribute('contenteditable', 'true');
+      node.setAttribute('spellcheck', 'true');
+      node.classList.add('ryker-editing');
+      bindOne(node, id || Ryker.blocks.blockId(node));
+    }
+
     function enable() {
       if (on) return;
       // No stamping here. Block ids come from the document's own content and are
       // already correct, so the baseline taken at boot stays valid.
-      baseline = baseline || Ryker.blocks.snapshot();
-      Ryker.blocks.all().forEach(function (b) {
-        b.node.setAttribute('contenteditable', 'true');
-        b.node.setAttribute('spellcheck', 'true');
-        b.node.classList.add('ryker-editing');
-        bindOne(b.node, b.id);
-      });
+      if (!baseline) {
+        baseline = Ryker.blocks.snapshot();
+        Ryker.history.captureBaseline(baseline);
+      }
+      Ryker.blocks.all().forEach(function (b) { arm(b.node, b.id); });
+      // all() deliberately omits empty authored blocks because they have no stable
+      // content identity. A block that Ryker already armed can later become empty,
+      // though, and Hide must not make it permanently inert when Ryker reopens.
+      resumable.forEach(function (node) { arm(node); });
+      resumable = [];
       on = true;
       emit();
     }
@@ -2498,9 +2828,6 @@
             if (consumeListSpace(n)) return;
             if (autoList(n, id)) return;
             Ryker.history.text(n); mark(n, id);
-          },
-          blur: function () {
-            if (Ryker.sanitize.element(n)) mark(n, id);
           },
           keydown: function (e) {
             // Backspace at the very start of a block joins it to the one before,
@@ -2620,6 +2947,9 @@
       if (!node.textContent.trim()) node.innerHTML = '<br>';
 
       var nodeBefore = beforeSplit;
+      // Per history entry. A module-level value made an older split's redo read
+      // the most recent split's HTML and silently transplant the wrong paragraph.
+      var nodeAfter = node.innerHTML;
       node.parentNode.insertBefore(clone, node.nextSibling);
       Ryker.history.record({
         label: 'split',
@@ -2629,7 +2959,7 @@
           place(node, 'end');
         },
         redo: function () {
-          node.innerHTML = nodeAfterSplit;
+          node.innerHTML = nodeAfter;
           node.parentNode.insertBefore(clone, node.nextSibling);
           rebind(clone);
           place(clone, 'start');
@@ -2653,11 +2983,8 @@
       sel.addRange(caret);
       clone.focus();
 
-      nodeAfterSplit = node.innerHTML;
       emit();
     }
-
-    var nodeAfterSplit = '';
 
     // A detached element keeps its listeners, classes and attributes, so putting
     // one back needs no rebinding in the ordinary case. This exists for the case
@@ -2926,6 +3253,7 @@
 
     function disable() {
       if (!on) return;
+      resumable = bound.map(function (b) { return b.node; });
       bound.forEach(function (b) {
         Object.keys(b.handlers).forEach(function (k) {
           b.node.removeEventListener(k, b.handlers[k]);
@@ -2937,6 +3265,17 @@
       bound = [];
       on = false;
       emit();
+    }
+
+    function forgetDetachedBindings() {
+      bound = bound.filter(function (b) {
+        if (b.node.isConnected) return true;
+        Object.keys(b.handlers).forEach(function (k) {
+          b.node.removeEventListener(k, b.handlers[k]);
+        });
+        return false;
+      });
+      resumable = resumable.filter(function (node) { return node.isConnected; });
     }
 
     function isOn() { return on; }
@@ -2964,6 +3303,7 @@
     // against what was on screen when the tab opened.
     function rebase() {
       baseline = Ryker.blocks.snapshot();
+      Ryker.history.captureBaseline(baseline);
       Array.prototype.forEach.call(document.querySelectorAll('.ryker-dirty'), function (n) {
         n.classList.remove('ryker-dirty');
       });
@@ -2972,11 +3312,8 @@
 
     function revertAll() {
       if (!baseline) return;
-      Object.keys(baseline).forEach(function (id) {
-        var node = Ryker.blocks.byId(id);
-        var was = Ryker.blocks.htmlOf(baseline[id]);
-        if (node && node.innerHTML !== was) node.innerHTML = was;
-      });
+      Ryker.history.restoreBaseline(baseline, bound.map(function (b) { return b.node; }));
+      forgetDetachedBindings();
       Array.prototype.forEach.call(document.querySelectorAll('.ryker-dirty'), function (n) {
         n.classList.remove('ryker-dirty');
       });
@@ -3026,6 +3363,8 @@
     var future = [];
     var listeners = [];
     var applying = false;
+    var baselineNodes = {};
+    var baselineBoxes = {};
 
     var pending = null;   // block being typed into
     var timer = null;
@@ -3115,6 +3454,74 @@
     function depth() { return past.length; }
     function isApplying() { return applying; }
 
+    // Discard restores the actual authored nodes rather than reconstructing them
+    // from text. These references retain attributes, namespaces, host listeners
+    // and removable containers without cloning the whole report per edit.
+    function captureBaseline(snapshot) {
+      baselineNodes = {};
+      baselineBoxes = {};
+      Object.keys(snapshot || {}).forEach(function (id) {
+        var node = Ryker.blocks.byId(id);
+        if (!node) return;
+        baselineNodes[id] = { node: node, parent: node.parentNode, next: node.nextSibling };
+        var boxId = snapshot[id] && snapshot[id].box;
+        var box = boxId && node.closest ? node.closest('table, figure, ul, ol, dl') : null;
+        if (box && !baselineBoxes[boxId]) {
+          baselineBoxes[boxId] = { node: box, parent: box.parentNode, next: box.nextSibling };
+        }
+      });
+    }
+
+    function restoreBaseline(snapshot, armed) {
+      flushText();
+      var current = Ryker.blocks.snapshot();
+      var extras = [];
+
+      Object.keys(current).forEach(function (id) {
+        if (!Object.prototype.hasOwnProperty.call(snapshot, id)) {
+          var node = Ryker.blocks.byId(id);
+          if (node) extras.push(node);
+        }
+      });
+      (armed || []).forEach(function (node) {
+        var id = Ryker.blocks.blockId(node);
+        if (node.isConnected && !Object.prototype.hasOwnProperty.call(snapshot, id) &&
+            extras.indexOf(node) === -1) extras.push(node);
+      });
+
+      function removeExtra(node) {
+        var parent = node.parentNode;
+        if (!parent) return;
+        parent.removeChild(node);
+        if (parent.matches && parent.matches('ul, ol, dl') &&
+            !parent.querySelector(Ryker.blocks.SELECTOR) && parent.parentNode) {
+          parent.parentNode.removeChild(parent);
+        }
+      }
+      function restore(ref) {
+        if (!ref || !ref.parent) return;
+        var at = ref.next && ref.next.parentNode === ref.parent ? ref.next : null;
+        ref.parent.insertBefore(ref.node, at);
+      }
+
+      extras.forEach(removeExtra);
+      Object.keys(baselineBoxes).reverse().forEach(function (id) {
+        if (!baselineBoxes[id].node.isConnected) restore(baselineBoxes[id]);
+      });
+      Object.keys(snapshot).reverse().forEach(function (id) {
+        var ref = baselineNodes[id];
+        if (!ref) return;
+        var currentNode = Ryker.blocks.byId(id);
+        if (currentNode && currentNode !== ref.node) removeExtra(currentNode);
+        if (!snapshot[id].atomic) ref.node.innerHTML = Ryker.blocks.htmlOf(snapshot[id]);
+        restore(ref);
+        ref.node.classList.remove('ryker-dirty', 'ryker-pick');
+        if (!snapshot[id].atomic) Ryker.editable.rebind(ref.node);
+      });
+      if (Ryker.pick) Ryker.pick.clear();
+      clear();
+    }
+
     // Ctrl+Z and Ctrl+Shift+Z, plus Ctrl+Y. Taken over completely rather than
     // shared with the browser: a stack that sometimes handles an action and
     // sometimes defers is worse than one that always does, because nobody can
@@ -3125,11 +3532,15 @@
         var k = (e.key || '').toLowerCase();
         if (k !== 'z' && k !== 'y') return;
         if (!Ryker.editable.isOn()) return;
-        // The instruction pane is an ordinary textarea and keeps its own undo.
+        // Form fields and independent editable controls keep their own native undo.
+        // Ryker takes over only inside one of the document blocks it armed; doing
+        // otherwise makes Ctrl+Z in a link/save dialog mutate the page behind it.
         var path = e.composedPath ? e.composedPath() : [];
         for (var i = 0; i < path.length; i++) {
           var n = path[i];
-          if (n && n.tagName === 'TEXTAREA') return;
+          if (!n || !n.tagName) continue;
+          if (n.tagName === 'TEXTAREA' || n.tagName === 'INPUT' || n.tagName === 'SELECT') return;
+          if (n.isContentEditable && !(n.closest && n.closest('.ryker-editing'))) return;
         }
         e.preventDefault();
         e.stopPropagation();
@@ -3140,7 +3551,8 @@
     return {
       record: record, text: text, flush: flushText, undo: undo, redo: redo,
       clear: clear, canUndo: canUndo, canRedo: canRedo, depth: depth,
-      isApplying: isApplying, bind: bind, onChange: onChange
+      isApplying: isApplying, bind: bind, onChange: onChange,
+      captureBaseline: captureBaseline, restoreBaseline: restoreBaseline
     };
   })();
 
@@ -3268,7 +3680,7 @@
       var n = sel.getRangeAt(0).commonAncestorContainer;
       if (n.nodeType === 3) n = n.parentNode;
       if (!n || !n.closest) return null;
-      if (n.closest('#ryker-root')) return null;
+      if (Ryker.shell && Ryker.shell.owns(n)) return null;
       if (!n.closest('[contenteditable="true"]')) return null;
       return sel.getRangeAt(0);
     }
@@ -3386,7 +3798,7 @@
       }
       if (node.nodeType === 3) node = node.parentNode;
       if (!node || !node.closest) return null;
-      if (node.closest('#ryker-root')) return null;
+      if (Ryker.shell && Ryker.shell.owns(node)) return null;
       var a = node.closest('a');
       if (!a) return null;
       return a.closest('[contenteditable="true"]') ? a : null;
@@ -3561,7 +3973,7 @@
     // The scroll band at the window edge, and the most it moves in one frame.
     var EDGE = 90, CAP = 18;
 
-    function inShell(n) { return !!(n && n.closest && n.closest('#ryker-root')); }
+    function inShell(n) { return !!(n && Ryker.shell && Ryker.shell.owns(n)); }
     function onChange(fn) { listeners.push(fn); }
     function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
 
@@ -3783,7 +4195,7 @@
     'use strict';
 
     function inShell(node) {
-      return !!(node && node.closest && node.closest('#ryker-root'));
+      return !!(node && Ryker.shell && Ryker.shell.owns(node));
     }
 
     // What is selected across blocks. Ryker.pick owns it now.
@@ -3919,7 +4331,7 @@
         if (e.key !== 'Backspace' && e.key !== 'Delete') return;
         var path = e.composedPath ? e.composedPath() : [];
         for (var i = 0; i < path.length; i++) {
-          if (path[i] && path[i].id === 'ryker-root') return;
+          if (path[i] && Ryker.shell && Ryker.shell.owns(path[i])) return;
           if (path[i] && path[i].tagName === 'TEXTAREA') return;
         }
         var picked = Ryker.pick.picked();
@@ -3975,7 +4387,8 @@
     }
 
     function visible(el) {
-      if (!el || !el.isConnected || el.closest('#ryker-root,[hidden],[aria-hidden="true"],template')) return false;
+      if (!el || !el.isConnected || (Ryker.shell && Ryker.shell.owns(el)) ||
+          el.closest('[hidden],[aria-hidden="true"],template')) return false;
       var n = el;
       while (n && n.nodeType === 1) {
         var s = window.getComputedStyle ? window.getComputedStyle(n) : null;
@@ -4546,6 +4959,44 @@
       return null;
     }
 
+    // Reapply recorded structural moves without adding them to the current
+    // tab's undo stack. Recovery starts from the authored DOM, resolves block
+    // ids back to their smallest complete units, then uses the saved predecessor
+    // to place those units even when the move crossed container boundaries.
+    function replay(records) {
+      var applied = 0, missed = 0, unchanged = 0;
+      (records || []).forEach(function (record) {
+        var ids = Array.isArray(record && record.ids) ? record.ids : [];
+        var nodes = nodesOf({ ids: ids });
+        if (!ids.length || nodes.length !== ids.length) { missed += 1; return; }
+        var elements = cover(nodes);
+        if (!elements.length) { missed += 1; return; }
+
+        var target = record.prev ? Ryker.blocks.byId(record.prev) : null;
+        var where = record.prev ? 'after' : 'before';
+        if (!target) {
+          target = Ryker.blocks.sequence().filter(function (candidate) {
+            return !elements.some(function (element) {
+              return element === candidate || element.contains(candidate);
+            });
+          })[0] || null;
+        }
+        if (!target) { missed += 1; return; }
+
+        var why = check(elements, target, where);
+        if (why === 'It is already there.') { unchanged += 1; return; }
+        if (why) { missed += 1; return; }
+
+        var landingTarget = landing(elements, target);
+        var host = landingTarget.parentNode;
+        var anchor = where === 'before' ? landingTarget : landingTarget.nextSibling;
+        elements.forEach(function (element) { host.insertBefore(element, anchor); });
+        applied += 1;
+      });
+      if (applied) syncNav();
+      return { applied: applied, missed: missed, unchanged: unchanged };
+    }
+
     // One step up or down, for the keyboard and for the context menu. Drag is not
     // the only way to reorder a document and should not be the only way here.
     function nudge(nodes, dir) {
@@ -4561,7 +5012,7 @@
 
     return {
       between: between, count: count, describe: describe, cover: cover,
-      apply: apply, check: check, nudge: nudge, landing: landing,
+      apply: apply, replay: replay, check: check, nudge: nudge, landing: landing,
       movable: movable, syncNav: syncNav
     };
   })();
@@ -4592,13 +5043,38 @@
     function d() { return Ryker.dom; }
     function docId() { return Ryker.config.load().RYKER_DOCUMENT_ID; }
     function closedKey() { return 'ryker:rail-closed:' + docId() + ':' + Ryker.outline.mode(); }
+    function extensionClosedKey(mode) {
+      return 'preference:rail-closed:' + docId() + ':' + (mode || Ryker.outline.mode());
+    }
     function widthKey() { return 'ryker:rail-width'; }
 
     function loadClosed() {
-      try {
-        var raw = localStorage.getItem(closedKey());
-        closed = raw ? JSON.parse(raw) : null;
-      } catch (e) { closed = null; }
+      var raw = null;
+      if (Ryker.SURFACE === 'extension') {
+        var mode = Ryker.outline.mode();
+        var preferences = Ryker.extensionPreferences || {};
+        var saved = preferences.railClosed && preferences.railClosed[mode];
+        closed = saved && typeof saved === 'object' ? saved : null;
+        if (!closed && Ryker.extensionStorage) {
+          Ryker.extensionStorage.get(extensionClosedKey(mode)).then(function (value) {
+            if (!value || typeof value !== 'object') return;
+            Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+            Ryker.extensionPreferences.railClosed = Ryker.extensionPreferences.railClosed || {};
+            Ryker.extensionPreferences.railClosed[mode] = value;
+            if (Ryker.outline.mode() === mode) {
+              closed = value;
+              if (built) render();
+            }
+          }).catch(function (error) {
+            if (Ryker.pane) Ryker.pane.flash('Outline state could not be read: ' + error.message, 'warn');
+          });
+        }
+      } else {
+        try {
+          raw = localStorage.getItem(closedKey());
+          closed = raw ? JSON.parse(raw) : null;
+        } catch (e) { closed = null; }
+      }
       // Default: the h2 rows open, everything below shut. That gives a list the
       // length of the report's own contents rather than a wall of 150 rows.
       if (!closed) {
@@ -4613,11 +5089,26 @@
     }
 
     function saveClosed() {
+      if (Ryker.SURFACE === 'extension') {
+        Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+        Ryker.extensionPreferences.railClosed = Ryker.extensionPreferences.railClosed || {};
+        Ryker.extensionPreferences.railClosed[Ryker.outline.mode()] = closed;
+        if (Ryker.extensionStorage) {
+          Ryker.extensionStorage.set(extensionClosedKey(), closed).catch(function (error) {
+            if (Ryker.pane) Ryker.pane.flash('Outline state could not be stored: ' + error.message, 'warn');
+          });
+        }
+        return;
+      }
       try { localStorage.setItem(closedKey(), JSON.stringify(closed)); } catch (e) {}
     }
 
     function storedWidth() {
       var v = 0;
+      if (Ryker.SURFACE === 'extension') {
+        v = parseInt((Ryker.extensionPreferences || {}).railWidth || '0', 10);
+        return v >= MIN_W ? v : DEFAULT_W;
+      }
       try { v = parseInt(localStorage.getItem(widthKey()) || '0', 10); } catch (e) {}
       return v >= MIN_W ? v : DEFAULT_W;
     }
@@ -5001,11 +5492,21 @@
 
     // ---- resizing, mirrored from ui/pane.js -------------------------------
 
-    function applyWidth(px) {
+    function applyWidth(px, persist) {
       var max = Math.max(MIN_W, document.documentElement.clientWidth - 320);
       var w = Math.min(Math.max(px, MIN_W), max);
       node.style.width = w + 'px';
-      try { localStorage.setItem(widthKey(), String(w)); } catch (e) {}
+      if (persist && Ryker.SURFACE === 'extension') {
+        Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+        Ryker.extensionPreferences.railWidth = w;
+        if (Ryker.extensionStorage) {
+          Ryker.extensionStorage.set('preference:rail-width', w).catch(function (error) {
+            if (Ryker.pane) Ryker.pane.flash('Outline width could not be stored: ' + error.message, 'warn');
+          });
+        }
+      } else if (persist) {
+        try { localStorage.setItem(widthKey(), String(w)); } catch (e) {}
+      }
       if (open) Ryker.shell.setEdgeSpace(node, 'left');
     }
 
@@ -5023,10 +5524,13 @@
         // Mirrored: the rail grows to the RIGHT, so the delta is not negated.
         if (dragging) applyWidth(startW + (e.clientX - startX));
       });
-      document.addEventListener('mouseup', function () { dragging = false; });
+      document.addEventListener('mouseup', function () {
+        if (dragging) applyWidth(node.getBoundingClientRect().width, true);
+        dragging = false;
+      });
       grip.addEventListener('keydown', function (e) {
-        if (e.key === 'ArrowRight') applyWidth(node.getBoundingClientRect().width + 24);
-        else if (e.key === 'ArrowLeft') applyWidth(node.getBoundingClientRect().width - 24);
+        if (e.key === 'ArrowRight') applyWidth(node.getBoundingClientRect().width + 24, true);
+        else if (e.key === 'ArrowLeft') applyWidth(node.getBoundingClientRect().width - 24, true);
         else return;
         e.preventDefault();
       });
@@ -5049,18 +5553,9 @@
   /* ---- instructions/instructions.js ------------------------------ */
   // Turns a session's edits into a prompt an AI can act on.
   //
-  // This is what Ryker exists for. Nothing durable is recorded anywhere; what is
-  // produced instead is a description of the difference between the document as
-  // authored and the document as it now stands, in terms someone can apply to the
-  // source file. On a report with a known source that description can be applied
-  // for you, and on a page whose source Ryker cannot reach it is the only output
-  // there could be, which is why it is the product rather than a fallback.
-  //
-  // Two rules govern the output. Everything is expressed against the ORIGINAL
-  // document, so five edits to one paragraph read as one change from the text
-  // that is actually in the file. And nothing refers to Ryker's own machinery:
-  // the source HTML has never heard of a block id, so an instruction that cites
-  // one cannot be followed.
+  // The prompt describes authored-to-current differences in source terms. Saved
+  // rounds may also persist the same data for recovery and explicit export, but
+  // instructions never rely on Ryker's runtime-only block ids as user locators.
   Ryker.instructions = (function () {
     'use strict';
 
@@ -5069,42 +5564,53 @@
     var saves = 0;
     var saveNotes = [];
     var baseline = null;
+    var session = null;  // one page load; scopes cumulative revision records
+    var recovery = null; // stable in one tab so a refresh can find its draft
+    var pristinePositions = {};
     var listeners = [];
+
+    function tabSession() {
+      var fresh = Ryker.dom.uid('session');
+      if (Ryker.SURFACE === 'extension') return fresh;
+      var key = 'ryker:session:' + Ryker.config.load().RYKER_DOCUMENT_ID;
+      try {
+        var saved = sessionStorage.getItem(key);
+        if (saved) return saved;
+        sessionStorage.setItem(key, fresh);
+      } catch (e) { /* an in-memory id still keeps this page load safe */ }
+      return fresh;
+    }
 
     function captureOrigin() {
       pristine = Ryker.blocks.snapshot();
       baseline = null;
+      pristinePositions = {};
+      Object.keys(pristine).forEach(function (id) {
+        pristinePositions[id] = placeOf(Ryker.blocks.byId(id));
+      });
+      recovery = tabSession();
+      session = Ryker.dom.uid('edit');
       return Object.keys(pristine).length;
     }
 
-    // What the instructions in this session are measured against.
-    //
-    // Every record written from one page load quotes the same pristine document,
-    // so all of them are cumulative supersets of each other and only the last is
-    // worth keeping. A reload re-runs captureOrigin() against the document as it
-    // then stands, and from that point the records quote a different starting
-    // text, so they have to be COMPOSED with the earlier ones rather than
-    // deduplicated against them.
-    //
-    // Nothing written before 2026-08-16 recorded which of those two cases it was
-    // in. saveNumber resets on reload and is not it: the 17 records in the corpus
-    // run to 5, reset to 2, reset to 1, then continue at 6.
-    //
-    // Derived from the content rather than minted at random on purpose. Two loads
-    // of an unmodified document produce the same id and their records correctly
-    // deduplicate; a load after edits produces a different one and its records
-    // correctly compose. The grouping falls out of what the document was instead
-    // of being asserted by whoever happened to be running.
+    // Content-derived identity for the authored FROM state. Session identity is
+    // separate because independent tabs can start from identical content.
     function baselineId() {
       if (baseline) return baseline;
       if (!pristine) return null;
-      var keys = Object.keys(pristine).sort();
-      var parts = keys.map(function (k) {
-        return k + '\u0000' + Ryker.blocks.htmlOf(pristine[k]);
+      var keys = Object.keys(pristine);
+      var parts = keys.map(function (k, i) {
+        var p = pristine[k] || {};
+        return [i, k, String(p.tag || '').toUpperCase(), p.prev || '',
+          String(p.boxTag || '').toUpperCase(), p.atomic ? '1' : '0',
+          Ryker.blocks.htmlOf(p)].join('\u0000');
       });
       baseline = Ryker.blocks.hash(parts.join('\u0001'));
       return baseline;
     }
+
+    function sessionId() { return recovery; }
+    function editingSessionId() { return session; }
 
     function pristineHtml(id) {
       if (!pristine || !Object.prototype.hasOwnProperty.call(pristine, id)) return undefined;
@@ -5166,6 +5672,16 @@
       return Ryker.blocks.diffSnapshots(pristine, Ryker.blocks.snapshot());
     }
 
+    function recoveryMoves() {
+      if (!pristine) return [];
+      return Ryker.move.between(pristine, Ryker.blocks.snapshot()).map(function (move) {
+        return {
+          kind: 'move', ids: move.ids.slice(),
+          prev: move.prev || null, wasAfter: move.wasAfter || null
+        };
+      });
+    }
+
     // A table holds no blocks of its own: every cell is one. Deleting a table of
     // ten cells therefore reads as ten instructions to remove a word each, which
     // is both unfollowable and hides what actually happened. Where every block
@@ -5202,8 +5718,10 @@
         if (!e.box || !whole[e.box]) { out.push(e); return; }
         if (done[e.box]) return;
         done[e.box] = true;
+        var first = list[whole[e.box][0]];
         out.push({
           kind: 'deletebox', tag: 'TABLE',
+          position: first && first.id && where(first.id),
           cells: whole[e.box].map(function (j) { return list[j].before; })
         });
       });
@@ -5221,21 +5739,36 @@
       return n + (s[(v - 20) % 10] || s[v] || s[0]);
     }
 
+    // Host-authored metadata lives outside the literal FROM/TO fences. Keep it
+    // on one line and JSON-quote it so an id, title or path containing Markdown
+    // cannot manufacture a new instruction section.
+    function oneLine(value) {
+      return String(value == null ? '' : value).replace(/[\r\n\u2028\u2029]+/g, ' ')
+        .replace(/\s+/g, ' ').trim();
+    }
+
+    function quoted(value) { return JSON.stringify(oneLine(value)); }
+
     // Where a block is, said in terms the source file actually contains.
     //
     // Ryker's own ids are derived from content or stamped at runtime, so neither
     // appears in the HTML being edited and neither can be used to find anything.
     // A real id attribute is used when the element has one; otherwise the block is
     // located by its position inside the nearest section that does.
-    function where(id) { return placeOf(Ryker.blocks.byId(id)); }
+    function where(id) {
+      if (Object.prototype.hasOwnProperty.call(pristinePositions, id)) {
+        return pristinePositions[id];
+      }
+      return placeOf(Ryker.blocks.byId(id));
+    }
 
     function placeOf(node) {
       if (!node) return null;
-      if (node.id) return 'the element with id="' + node.id + '"';
+      if (node.id) return 'the element with id=' + quoted(node.id);
 
       var scope = node.parentElement;
       while (scope && !scope.id && scope !== document.body) scope = scope.parentElement;
-      var scopeName = scope && scope.id ? 'the section with id="' + scope.id + '"' : 'the document body';
+      var scopeName = scope && scope.id ? 'the section with id=' + quoted(scope.id) : 'the document body';
       var within = (scope && scope.id) ? scope : Ryker.blocks.root();
 
       var tag = node.tagName.toLowerCase();
@@ -5324,7 +5857,7 @@
         return t ? 'That element begins: "' + t + '"' : null;
       }
       var label = Ryker.outline.label(node);
-      return label ? 'That element is a ' + label.charAt(0).toLowerCase() + label.slice(1) : null;
+      return label ? 'That element is described as ' + quoted(label) + '.' : null;
     }
 
     // One move, written so it can be followed without knowing anything about
@@ -5380,7 +5913,7 @@
         out.push('The contents list links into what moved. Move ' +
           (at.nav.length > 1 ? 'these entries' : 'the entry') + ' to match, so the list');
         out.push('stays in document order:');
-        at.nav.forEach(function (t2) { out.push('  - "' + t2 + '"'); });
+        at.nav.forEach(function (t2) { out.push('  - ' + quoted(t2)); });
       }
     }
 
@@ -5404,8 +5937,8 @@
 
       out.push('# Document edit instructions');
       out.push('');
-      out.push('Document: ' + (document.title || cfg.RYKER_DOCUMENT_ID));
-      out.push('File: ' + cfg.RYKER_DOCUMENT_PATH);
+      out.push('Document: ' + quoted(document.title || cfg.RYKER_DOCUMENT_ID));
+      out.push('File: ' + quoted(cfg.RYKER_DOCUMENT_PATH));
       out.push('Edits: ' + list.length + ' change(s)' +
         (mv.length ? ' and ' + mv.length + ' move(s)' : '') +
         ' across ' + saves + ' save(s) this session');
@@ -5448,8 +5981,9 @@
       out.push('authored. Every FROM below is the original text, so this applies cleanly');
       out.push('to a fresh copy of the file even where a block was edited several times.');
       out.push('');
-      out.push('Locate each element by the quoted FROM text, which is exact and unique.');
-      out.push('The position given alongside it is a cross-check, not a selector. Replace');
+      out.push('Locate each element using both its quoted FROM text and its Position.');
+      out.push('The FROM text is exact but may also occur in another element. Position is');
+      out.push('therefore part of the selector, not merely a cross-check. Replace');
       out.push('only the inner HTML, leaving the tag and its attributes alone. Add no');
       out.push('attributes of your own. Text between <<< and >>> is literal and includes');
       out.push('markup. Change nothing that is not named here.');
@@ -5561,6 +6095,10 @@
         } else if (e.kind === 'deletebox') {
           out.push('## ' + n + '. Delete a whole <table>');
           out.push('');
+          if (e.position) {
+            out.push('Position: the <table> containing ' + e.position + '.');
+            out.push('');
+          }
           out.push('Remove the entire <table> element, its rows and its cells. Leave any');
           out.push('caption, heading or paragraph around it alone unless another step names');
           out.push('it. The table is the one whose cells read, in order:');
@@ -5573,6 +6111,8 @@
         } else if (e.kind === 'delete' && e.atomic && String(e.tag).toUpperCase() === 'SVG') {
           out.push('## ' + n + '. Delete the whole <svg>');
           out.push('');
+          var sw = where(e.id);
+          if (sw) { out.push('Position: ' + sw); out.push(''); }
           out.push('Remove the entire SVG element, including all paths, shapes, labels and attributes.');
           out.push('Leave its surrounding container and adjacent content unchanged. Match this exact element:');
           out.push('<<<'); out.push(e.before); out.push('>>>');
@@ -5580,6 +6120,11 @@
         } else {
           out.push('## ' + n + '. Delete a block');
           out.push('');
+          var dw = where(e.id);
+          if (dw) {
+            out.push('Position: ' + dw);
+            out.push('');
+          }
           out.push('Remove the element whose exact contents are:');
           out.push('<<<'); out.push(e.before); out.push('>>>');
           out.push('');
@@ -5599,7 +6144,8 @@
     return {
       record: record, build: build, edits: edits, moves: moves, reset: reset,
       captureOrigin: captureOrigin, originalOf: originalOf, baselineId: baselineId,
-      recoveryChanges: recoveryChanges,
+      sessionId: sessionId, editingSessionId: editingSessionId,
+      recoveryChanges: recoveryChanges, recoveryMoves: recoveryMoves,
       saveCount: saveCount, saveNotes: notes,
       onChange: onChange, where: where, suspicious: suspicious
     };
@@ -5630,10 +6176,12 @@
   Ryker.merge = (function () {
     'use strict';
 
-    // Two records belong to the same session if they agree on the document and on
-    // the text their instructions quote.
+    // A baseline identifies the source text, not the browser session. Two tabs
+    // opened over the same unchanged source share a baseline and may contain
+    // unrelated edits. Only an explicitly recorded session id permits one saved
+    // round to supersede another.
     function groupKey(rec) {
-      return (rec.documentId || '') + ' ' + (rec.baselineId || '');
+      return (rec.documentId || '') + ' ' + (rec.sessionId || '') + ' ' + (rec.baselineId || '');
     }
 
     function editsOf(rec) {
@@ -5663,6 +6211,20 @@
 
     function stateKey(html, tag) { return String(tag || '').toUpperCase() + '|' + norm(html); }
 
+    function sameTarget(a, b) {
+      var ap = a && a.position ? norm(a.position) : '';
+      var bp = b && b.position ? norm(b.position) : '';
+      var ai = a && a.id ? String(a.id) : '';
+      var bi = b && b.id ? String(b.id) : '';
+      // Legacy records can carry no target metadata. Preserve their old
+      // content-only composition, but never equate one known target with another
+      // known or unknown target.
+      if (!ap && !bp && !ai && !bi) return true;
+      if (ap && bp && ap === bp) return true;
+      if (ai && bi && ai === bi) return true;
+      return false;
+    }
+
     function when(rec) {
       var t = Date.parse(rec && rec.savedAt);
       return isNaN(t) ? 0 : t;
@@ -5676,20 +6238,16 @@
 
     // ---- grouping -----------------------------------------------------------
 
-    // One entry per baseline, each holding the single record that supersedes the
-    // others in its group. Groups keep the order their newest record arrived in.
+    // One entry per explicit session, each holding the latest cumulative record
+    // for that session. Legacy records without a session id remain independent;
+    // content composition below can still relate them without discarding one.
     function collapse(records) {
       var groups = [];
       var byKey = {};
 
       chronological(records).forEach(function (rec) {
-        // A record with no baselineId is not evidence that it shares a baseline
-        // with the next one that also lacks it. Every record written before
-        // 2026-08-16 lacks it, so keying on the empty value put an entire corpus
-        // into one group and discarded all but the last of it. Each gets its own
-        // group and compose() works the relationship out from the text, which is
-        // what "inferred" has always meant here.
-        var key = rec.baselineId ? groupKey(rec) : ('@unkeyed:' + groups.length);
+        var scoped = !!rec.sessionId;
+        var key = scoped ? groupKey(rec) : ('@unscoped:' + groups.length);
         var g = byKey[key];
         if (!g) {
           g = byKey[key] = {
@@ -5698,7 +6256,8 @@
             documentId: rec.documentId || null,
             winner: rec,
             superseded: [],
-            inferred: !rec.baselineId
+            sessionId: rec.sessionId || null,
+            inferred: !scoped
           };
           groups.push(g);
           return;
@@ -5743,6 +6302,7 @@
         // meant, and folding must not quietly decide that for them.
         var same = acc.some(function (a) {
           return a.origin !== group && a.step.kind === e.kind &&
+                 sameTarget(a.step, e) &&
                  stateKey(a.step.before, beforeTag(a.step)) === from &&
                  stateKey(a.step.after, afterTag(a.step)) === to;
         });
@@ -5756,11 +6316,20 @@
         // Does this continue something already in the set?
         var chained = null;
         for (var i = acc.length - 1; i >= 0; i--) {
-          if (stateKey(acc[i].step.after, afterTag(acc[i].step)) === from) {
+          if (sameTarget(acc[i].step, e) &&
+              stateKey(acc[i].step.after, afterTag(acc[i].step)) === from) {
             chained = acc[i]; break;
           }
         }
         if (chained) {
+          // An element inserted in one record and deleted in a later record has
+          // no net instruction. Remove the earlier insert instead of emitting an
+          // empty Insert step.
+          if (chained.step.kind === 'insert' && e.kind === 'delete' && !norm(e.after)) {
+            acc.splice(acc.indexOf(chained), 1);
+            group.cancelled = (group.cancelled || 0) + 2;
+            return;
+          }
           chained.step = {
             kind: chained.step.kind === 'insert' ? 'insert' : e.kind,
             tag: e.tag || chained.step.tag,
@@ -5768,6 +6337,7 @@
             afterTag: e.afterTag || afterTag(e) || null,
             before: chained.step.before,
             after: e.after,
+            id: e.id || chained.step.id || null,
             position: e.position || chained.step.position
           };
           chained.composedFrom = (chained.composedFrom || 1) + 1;
@@ -5779,7 +6349,8 @@
         // the first group, and for a later group it means the edit is against
         // text the earlier groups never changed, which is still fine.
         var seenBefore = acc.some(function (a) {
-          return stateKey(a.step.before, beforeTag(a.step)) === from;
+          return sameTarget(a.step, e) &&
+            stateKey(a.step.before, beforeTag(a.step)) === from;
         });
         if (!seenBefore) {
           acc.push({ step: e, origin: group });
@@ -5818,6 +6389,7 @@
       var inferred = groups.some(function (g) { return g.inferred; });
       var duplicated = groups.reduce(function (n, g) { return n + (g.duplicated || 0); }, 0);
       var composed = groups.reduce(function (n, g) { return n + (g.composed || 0); }, 0);
+      var cancelled = groups.reduce(function (n, g) { return n + (g.cancelled || 0); }, 0);
 
       // A record can carry the prose prompt and no structured pairs behind it.
       // Backfilled records are the case: 17 in the corpus, only 14 structured
@@ -5845,17 +6417,17 @@
       }
       if (superseded) {
         warnings.push(superseded + ' record(s) were dropped because a later save from the ' +
-          'same starting text already contained them.');
+          'same recorded editing session superseded them.');
       }
       if (groups.length > 1) {
         warnings.push(groups.length + (inferred
-          ? ' record group(s) were folded together, grouped by content because the '
-            + 'records do not say which belong to the same session.'
+          ? ' record group(s) were folded together, with relationships inferred from content '
+            + 'because the records do not say which belong to the same session.'
           : ' separate editing sessions were folded together.'));
       }
       if (inferred) {
-        warnings.push('Some records predate baseline tracking, so their grouping is inferred ' +
-          'from content rather than recorded. Check the result before applying it.');
+        warnings.push('Some records predate session tracking, so relationships between them are ' +
+          'inferred from content rather than recorded. Check the result before applying it.');
       }
       if (refused.length) {
         warnings.push(refused.length + ' change(s) could not be folded in and are listed ' +
@@ -5881,6 +6453,7 @@
         // Absorbed into a step already in the set, which is what composition IS:
         // the edit is not lost, it advanced an earlier one's TO text.
         composed: composed,
+        cancelled: cancelled,
         supersededEdits: groups.reduce(function (n, g) {
           return n + g.superseded.reduce(function (m, r) { return m + editsOf(r).length; }, 0);
         }, 0)
@@ -5891,6 +6464,7 @@
         groups: groups,
         superseded: superseded,
         duplicated: duplicated,
+        cancelled: cancelled,
         promptOnly: promptOnly,
         notes: notes,
         accounted: accounted,
@@ -5999,6 +6573,91 @@
     var DB = 'ryker', STORE = 'handles';
     var root = null;
 
+    // Extension records cross the isolated-world boundary as validated messages
+    // to the service worker. Values here are JSON data, never filesystem handles:
+    // Chrome versions using JSON extension messaging would turn a handle into an
+    // empty object. A granted folder therefore remains useful for this tab while
+    // revisions, recovery and preferences live durably in the extension store.
+    function extensionRequest(operation, key, value) {
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.sendMessage) {
+        return Promise.reject(new Error('Ryker extension storage is unavailable.'));
+      }
+      var message = { channel: 'ryker.storage.v1', version: 1, operation: operation };
+      // usage asks about the sender's own document, so it deliberately carries no
+      // key for the worker to have to second-guess.
+      if (operation !== 'usage') message.key = key;
+      if (operation === 'set') message.value = value;
+      return chrome.runtime.sendMessage(message).then(function (response) {
+        if (!response || response.ok !== true) {
+          var detail = response && response.error || {};
+          var error = new Error(detail.message || 'Ryker extension storage rejected the operation.');
+          error.code = detail.code || 'storage-failed';
+          throw error;
+        }
+        return response.value;
+      });
+    }
+
+    function installExtensionStorage() {
+      if (Ryker.SURFACE !== 'extension') return null;
+      var api = {
+        get: function (key) { return extensionRequest('get', key); },
+        set: function (key, value) { return extensionRequest('set', key, value); },
+        remove: function (key) { return extensionRequest('remove', key); },
+        list: function (prefix) { return extensionRequest('list', prefix); },
+        usage: function () { return extensionRequest('usage'); }
+      };
+      Ryker.extensionStorage = api;
+      Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+      connectWorkspacePort();
+      [
+        ['saveNotes', 'preference:save-notes'],
+        ['paneWidth', 'preference:pane-width'],
+        ['railWidth', 'preference:rail-width']
+      ].forEach(function (pair) {
+        api.get(pair[1]).then(function (value) {
+          if (value !== null && value !== undefined) {
+            Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+            Ryker.extensionPreferences[pair[0]] = value;
+          }
+        }).catch(function () { /* boot remains usable; writes surface their own error */ });
+      });
+      return api;
+    }
+
+    // tabs.sendMessage only reaches content scripts, not an extension-owned tab.
+    // The workspace therefore opens a named runtime Port. Its sender carries the
+    // owning tab id, allowing the worker to toggle exactly the clicked workspace
+    // without reloading the HTML/Markdown document held in that tab.
+    function connectWorkspacePort() {
+      if (typeof chrome === 'undefined' || !chrome.runtime || !chrome.runtime.connect ||
+          !chrome.runtime.getURL || location.href.indexOf(chrome.runtime.getURL('workspace.html')) !== 0) return;
+      var stopped = false;
+      function connect() {
+        if (stopped) return;
+        var port;
+        try { port = chrome.runtime.connect({ name: 'ryker.workspace.v1' }); }
+        catch (error) { return; }
+        port.onMessage.addListener(function (message) {
+          if (!message || message.channel !== 'ryker.workspace.v1' || message.action !== 'toggle') return;
+          var state = 'workspace-ready';
+          if (Ryker.boot && Ryker.boot.isOpen && Ryker.boot.isOpen()) {
+            state = Ryker.boot.toggle() ? 'mounted' : 'closed';
+          } else if (Ryker.boot && Ryker.boot.toggle && Ryker.shell && Ryker.shell.host()) {
+            state = Ryker.boot.toggle() ? 'mounted' : 'closed';
+          }
+          port.postMessage({ channel: 'ryker.workspace.v1', requestId: message.requestId, state: state });
+        });
+        port.onDisconnect.addListener(function () {
+          if (!stopped) setTimeout(connect, 250);
+        });
+      }
+      window.addEventListener('pagehide', function () { stopped = true; }, { once: true });
+      connect();
+    }
+
+    var extensionStorage = installExtensionStorage();
+
     function supported() { return typeof window.showDirectoryPicker === 'function'; }
     function isReady() { return !!root; }
     function handle() { return root; }
@@ -6044,7 +6703,14 @@
       };
     }
 
-    var persistence = defaultPersistence();
+    // Never fall back to a visited website's IndexedDB on the extension surface.
+    // Directory-handle persistence is deliberately session-only until the
+    // extension requires structured-clone messaging or owns the picker itself.
+    var persistence = extensionStorage ? {
+      get: function () { return Promise.resolve(null); },
+      set: function () { return Promise.resolve(false); },
+      remove: function () { return Promise.resolve(true); }
+    } : defaultPersistence();
 
     // An extension supplies an adapter whose storage belongs to the extension,
     // not to whichever page its content script happens to be editing.
@@ -6172,6 +6838,45 @@
       });
     }
 
+    // A bounded recursive traversal for packaging. list() intentionally returns
+    // one complete directory, which is useful for the revision browser but lets
+    // a single huge directory allocate without limit. walk() counts every entry
+    // as it is yielded and stops before descending farther.
+    function walk(base, path, options) {
+      options = options || {};
+      var max = Math.max(1, Number(options.maxEntries) || 5000);
+      var seen = 0, out = [];
+
+      function visit(dir, prefix) {
+        var it = dir.values();
+        function step() {
+          return it.next().then(function (res) {
+            if (res.done) return null;
+            var entry = res.value;
+            var full = prefix + entry.name;
+            seen += 1;
+            if (seen > max) {
+              throw new Error('The selected folder contains more than ' + max +
+                ' entries. Choose a narrower report folder.');
+            }
+            if (options.skip && options.skip(entry, full)) return step();
+            if (entry.kind === 'directory') {
+              return visit(entry, full + '/').then(step);
+            }
+            return entry.getFile().then(function (f) {
+              out.push({ name: full, kind: 'file', size: f.size,
+                modified: f.lastModified, handle: entry });
+            }).then(step);
+          });
+        }
+        return step();
+      }
+
+      return directory(base, path, false).then(function (dir) {
+        return visit(dir, '').then(function () { return out; });
+      });
+    }
+
     function remove(base, path) {
       var names;
       try { names = parts(path); } catch (e) { return Promise.reject(e); }
@@ -6187,7 +6892,7 @@
       grant: grant, pick: grant, permission: permission,
       usePersistence: usePersistence, remember: remember, recall: recall, forget: forget,
       directory: directory, read: read, readBytes: readBytes, write: write,
-      list: list, remove: remove
+      list: list, walk: walk, remove: remove
     };
   })();
 
@@ -6195,11 +6900,11 @@
   /* ---- storage/logger.js ----------------------------------------- */
   // Writing a copy of the instructions to disk on every save, as training data.
   //
-  // "Silently" is achievable, with one honest caveat stated up front: a browser
-  // cannot write to a folder it has never been shown. Somebody grants access to
-  // the report's folder once, and from then on every save writes without a prompt,
-  // a dialog or a download. Chrome remembers the folder between visits, so the
-  // most a reload costs is a single click to confirm it again.
+  // The extension writes records into its own local IndexedDB through the service
+  // worker, so saving never requires a folder grant. The drop-in cannot own a
+  // browser origin of its own; there the honest caveat remains that a browser
+  // cannot write to a folder it has never been shown. Once granted, later saves
+  // write without another dialog or download.
   //
   // Each save writes one JSON file holding the prose prompt AND the structured
   // edits behind it. Training on the prompt alone would lose the before and after
@@ -6227,13 +6932,22 @@
     // Change requests dialog immediately after Save used to list the directory
     // while createWritable().close() was still pending and report an empty log.
     var writeTail = Promise.resolve();
+    // Nothing here ever prunes. The corpus is the only durable copy of what
+    // changed across sessions, so the answer to a filling store is to say so and
+    // offer the export, not to delete the oldest thing the user still has.
+    var PRESSURE = 0.8;
+    var pressureReported = false;
 
     function onChange(fn) { listeners.push(fn); }
     function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
 
-    function supported() { return Ryker.fs.supported(); }
-    function isOn() { return !!dir; }
-    function folderName() { return dir ? dir.name : null; }
+    function ownedStore() {
+      return Ryker.SURFACE === 'extension' && Ryker.extensionStorage;
+    }
+
+    function supported() { return !!ownedStore() || Ryker.fs.supported(); }
+    function isOn() { return !!dir || !!ownedStore(); }
+    function folderName() { return dir ? dir.name : (ownedStore() ? 'Ryker local storage' : null); }
     function error() { return lastError; }
     function count() { return seq; }
 
@@ -6265,6 +6979,7 @@
     // granted, and stays quiet when it is not: asking on load would be a prompt
     // nobody asked for.
     function resume() {
+      if (ownedStore()) return Promise.resolve(true);
       if (!supported()) return Promise.resolve(false);
       return Ryker.fs.recall(KEY).then(function (handle) {
         if (!handle) return false;
@@ -6291,6 +7006,16 @@
         p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
     }
 
+    function sessionToken(value) {
+      var raw = String(value || 'session');
+      var h = 2166136261;
+      for (var i = 0; i < raw.length; i++) {
+        h ^= raw.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+      }
+      return (h >>> 0).toString(36).padStart(7, '0');
+    }
+
     // The log belongs beside the library rather than beside the reports, so a
     // folder someone keeps documents in does not fill with machine output. When
     // the granted folder is already the library folder, it is used as-is instead
@@ -6315,7 +7040,7 @@
 
     // The path as it will actually read on disk, for saying out loud.
     function where() {
-      if (!dir) return LIB + '/' + DIR_NAME;
+      if (!dir) return ownedStore() ? 'Ryker local storage' : LIB + '/' + DIR_NAME;
       return dir.name.toLowerCase() === LIB
         ? dir.name + '/' + DIR_NAME
         : dir.name + '/' + LIB + '/' + DIR_NAME;
@@ -6335,6 +7060,7 @@
         documentPath: cfg.RYKER_DOCUMENT_PATH,
         documentTitle: document.title,
         savedAt: new Date().toISOString(),
+        sessionId: Ryker.instructions.sessionId ? Ryker.instructions.sessionId() : null,
         // Which document text every FROM in this record is quoting.
         //
         // Records sharing a baseline are cumulative supersets of one another, so
@@ -6355,10 +7081,16 @@
         // but not safely restored after refresh; guessing by position risks
         // applying text to a different element when the source has changed.
         changes: Ryker.instructions.recoveryChanges(),
+        // Block order is structural state: a move changes no block's HTML and is
+        // otherwise invisible to recovery after a browser restart.
+        order: Object.keys(Ryker.blocks.snapshot()),
+        // Move records retain the container-crossing intent that a flat order
+        // cannot express when a paragraph or section changes parent.
+        moves: Ryker.instructions.recoveryMoves ? Ryker.instructions.recoveryMoves() : [],
         // And the pairs behind it, which is the part worth training on.
         edits: edits.map(function (e) {
           return {
-            kind: e.kind, tag: e.tag,
+            id: e.id, kind: e.kind, tag: e.tag,
             beforeTag: e.beforeTag || null,
             afterTag: e.afterTag || e.tag || null,
             before: e.before, after: e.after,
@@ -6371,12 +7103,19 @@
     function record(promptText, saveNote) {
       seq += 1;
       var payload = buildPayload(promptText, saveNote);
+      // The readable timestamp has second precision and saveNumber restarts in
+      // every tab. Milliseconds, session identity and the local queue sequence
+      // prevent both extension records and shared-folder files from overwriting
+      // one another when editors save concurrently.
+      var name = stamp() + '-' + Date.now().toString(36) + '-' +
+        sessionToken(payload.sessionId) + '-' + seq + '-save-' + payload.saveNumber + '.json';
+      if (ownedStore()) return queueOwnedPut(name, payload);
       if (!dir) {
-        pending.push({ name: stamp() + '-save-' + payload.saveNumber + '.json', payload: payload });
+        pending.push({ name: name, payload: payload });
         emit();
         return Promise.resolve(false);
       }
-      return queuePut(stamp() + '-save-' + payload.saveNumber + '.json', payload);
+      return queuePut(name, payload);
     }
 
     // Everything held while the grant was outstanding, oldest first. A failure
@@ -6403,6 +7142,50 @@
       return job;
     }
 
+    function ownedPrefix() {
+      return 'revision:' + documentKey(Ryker.config.load().RYKER_DOCUMENT_ID) + ':';
+    }
+
+    function storageFailure(error) {
+      lastError = error && error.message ? error.message : String(error);
+      emit();
+      return false;
+    }
+
+    function queueOwnedPut(name, payload) {
+      var job = writeTail.then(function () {
+        return ownedStore().set(ownedPrefix() + name, JSON.stringify(payload, null, 2))
+          .then(function () { lastError = null; emit(); checkPressure(); return true; })
+          .catch(storageFailure);
+      });
+      writeTail = job.catch(function () { return false; });
+      return job;
+    }
+
+    // Warned once per session rather than on every save. Somebody who is told
+    // the same thing after each of forty saves stops reading it, which is how a
+    // real quota failure arrives as a surprise.
+    function checkPressure() {
+      if (pressureReported) return;
+      usage().then(function (space) {
+        if (!space || !space.quota || !space.usage) return;
+        if (space.usage / space.quota < PRESSURE) return;
+        pressureReported = true;
+        if (Ryker.pane && Ryker.pane.flash) {
+          Ryker.pane.flash('Ryker local storage is ' + Math.round(space.usage / space.quota * 100) +
+            '% full. Export the saved change requests you want to keep, then clear them.', 'warn');
+        }
+      }).catch(function () { /* usage is a courtesy; a save must not fail on it */ });
+    }
+
+    // Null on the drop-in surface, where records are files in a folder the person
+    // chose and the browser has no allowance to report.
+    function usage() {
+      var store = ownedStore();
+      if (!store || typeof store.usage !== 'function') return Promise.resolve(null);
+      return store.usage();
+    }
+
     function settled() { return writeTail.then(function () { return true; }); }
 
     function put(name, payload) {
@@ -6427,6 +7210,22 @@
     // The folder handle can list its own contents, so the log is browsable from
     // inside the report without going anywhere near the file system dialog again.
     function list() {
+      if (ownedStore()) {
+        var prefix = ownedPrefix();
+        return settled().then(function () { return ownedStore().list(prefix); }).then(function (rows) {
+          lastError = null;
+          return (rows || []).map(function (row) {
+            var text = typeof row.value === 'string' ? row.value : JSON.stringify(row.value);
+            var parsed = null;
+            try { parsed = JSON.parse(text); } catch (e) {}
+            return {
+              name: row.key.slice(prefix.length), storageKey: row.key,
+              size: new TextEncoder().encode(text).length,
+              modified: parsed && parsed.savedAt ? Date.parse(parsed.savedAt) : 0
+            };
+          }).sort(function (a, b) { return b.name.localeCompare(a.name); });
+        }).catch(function (error) { storageFailure(error); throw error; });
+      }
       if (!dir) return Promise.resolve([]);
       return settled().then(function () { return Ryker.fs.list(dir, documentDir()); }).then(function (out) {
         lastError = null;
@@ -6448,6 +7247,12 @@
     }
 
     function read(entry) {
+      if (entry && entry.storageKey && ownedStore()) {
+        return ownedStore().get(entry.storageKey).then(function (value) {
+          if (value == null) throw new Error('That saved change request no longer exists.');
+          return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+        });
+      }
       return Ryker.fs.read(dir, entry.path);
     }
 
@@ -6459,6 +7264,20 @@
     // reporting success over a partial delete, because "cleared" that left half
     // the log behind is worse than an error.
     function clear() {
+      if (ownedStore()) {
+        return list().then(function (files) {
+          return files.reduce(function (chain, file) {
+            return chain.then(function (n) {
+              return ownedStore().remove(file.storageKey).then(function () { return n + 1; });
+            });
+          }, Promise.resolve(0));
+        }).then(function (n) {
+          seq = 0;
+          lastError = null;
+          emit();
+          return n;
+        }).catch(function (error) { storageFailure(error); throw error; });
+      }
       if (!dir) return Promise.resolve(0);
       return list().then(function (files) {
         return files.reduce(function (chain, f) {
@@ -6485,6 +7304,9 @@
     }
 
     function describe() {
+      if (ownedStore()) {
+        return lastError ? 'Local Ryker storage needs attention' : 'Saved in local Ryker storage';
+      }
       if (!supported()) return 'Logging needs Chrome or Edge';
       if (!dir) {
         return pending.length
@@ -6498,7 +7320,7 @@
       supported: supported, isOn: isOn, choose: choose, resume: resume,
       record: record, buildPayload: buildPayload, describe: describe,
       flush: flush, settled: settled, pendingCount: pendingCount, where: where, LIB: LIB,
-      list: list, read: read, clear: clear, folderUrl: folderUrl,
+      list: list, read: read, clear: clear, usage: usage, folderUrl: folderUrl,
       folderName: folderName, error: error,
       count: count, onChange: onChange, DIR_NAME: DIR_NAME, documentKey: documentKey
     };
@@ -6506,12 +7328,7 @@
 
 
   /* ---- instructions/browser.js ----------------------------------- */
-  // Browsing the change requests already written for this document.
-  //
-  // The log is a folder of JSON files. Somebody who wants to look at what they
-  // have sent should not have to leave the report, hunt for the folder and open
-  // files by hand, so this reads them back through the same directory handle the
-  // logging uses.
+  // Browsing the durable change requests already written for this document.
   Ryker.browser = (function () {
     'use strict';
 
@@ -6523,6 +7340,35 @@
 
     function fmtWhen(ms) {
       try { return Ryker.dom.fmtDate(new Date(ms).toISOString()); } catch (e) { return ''; }
+    }
+
+    function extensionOwned() { return Ryker.SURFACE === 'extension'; }
+
+    function storageNote() {
+      if (!extensionOwned()) {
+        return 'Records are JSON files in the folder you granted Ryker.';
+      }
+      return 'Kept in this browser only. The page cannot read them and nothing is sent anywhere. ' +
+        'They stay until you clear them.';
+    }
+
+    function mb(bytes) {
+      if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    // Reported, never enforced. Ryker prunes nothing, so this number exists to
+    // let somebody choose what to export and clear before the browser runs out of
+    // room and chooses for them.
+    function describeUsage(space) {
+      if (!space || typeof space.usage !== 'number') return '';
+      var text = 'Using ' + mb(space.usage);
+      if (typeof space.quota === 'number' && space.quota > 0) {
+        var share = space.usage / space.quota * 100;
+        text += share < 1 ? ', under 1% of this browser\'s allowance'
+          : ', ' + Math.round(share) + '% of this browser\'s allowance';
+      }
+      return text + '. Nothing is removed automatically.';
     }
 
     function open() {
@@ -6537,20 +7383,33 @@
         body.innerHTML = '';
 
         body.appendChild(d().el('div', { class: 'note' }, [
-          d().el('div', { text: 'The instruction sidebar is the live result for this tab. ' +
-            'Change requests are durable JSON records written on each save so work can be ' +
-            'reviewed, merged or exported across sessions.' })
+          d().el('div', { text: 'Each save writes a record of what changed, so work can be ' +
+            'reviewed, merged or exported across sessions.' }),
+          d().el('div', { class: 'muted', text: storageNote() })
         ]));
 
         var url = Ryker.logger.folderUrl();
-        body.appendChild(d().el('div', { class: 'note' }, [
+        var countNote = d().el('div', { class: 'note' }, [
           d().el('div', {
             text: files.length
-              ? files.length + ' change request(s) logged for this document in ' +
-                Ryker.logger.folderName() + '/' + Ryker.logger.DIR_NAME + '.'
-              : 'No durable change-request records exist for this document yet.'
+              ? files.length + (files.length === 1 ? ' change request' : ' change requests') +
+                ' logged for this document' +
+                (extensionOwned() ? '.'
+                  : ' in ' + Ryker.logger.folderName() + '/' + Ryker.logger.DIR_NAME + '.')
+              : 'No change requests logged for this document yet.'
           })
-        ]));
+        ]);
+        body.appendChild(countNote);
+        if (extensionOwned()) {
+          var usageLine = d().el('div', { class: 'muted', text: '' });
+          countNote.appendChild(usageLine);
+          Ryker.logger.usage().then(function (space) {
+            usageLine.textContent = describeUsage(space);
+          }).catch(function (e) {
+            usageLine.textContent = 'Storage use could not be read: ' +
+              (e && e.message ? e.message : String(e));
+          });
+        }
 
         if (url) {
           body.appendChild(d().el('div', { class: 'acts', style: 'margin-bottom:12px' }, [
@@ -6593,7 +7452,7 @@
         });
         body.appendChild(list);
       }).catch(function (e) {
-        body.innerHTML = '<div class="note bad">Could not read the folder: ' +
+        body.innerHTML = '<div class="note bad">Could not read saved change requests: ' +
           Ryker.dom.escapeHtml(e.message) + '</div>';
       });
 
@@ -6732,6 +7591,9 @@
             }
           ]
         });
+      }).catch(function (e) {
+        Ryker.dialog.alert('Could not open change request',
+          Ryker.dom.escapeHtml(e && e.message ? e.message : String(e)), 'bad');
       });
     }
 
@@ -6828,6 +7690,10 @@
 
     function storedWidth() {
       var v;
+      if (Ryker.SURFACE === 'extension') {
+        v = parseInt((Ryker.extensionPreferences || {}).paneWidth, 10);
+        return isNaN(v) ? 430 : v;
+      }
       try { v = parseInt(localStorage.getItem(WIDTH_KEY), 10); } catch (e) { v = NaN; }
       return isNaN(v) ? 430 : v;
     }
@@ -6837,7 +7703,17 @@
     function applyWidth(px, persist) {
       var w = Math.max(MIN_W, Math.min(maxWidth(), Math.round(px)));
       node.style.width = w + 'px';
-      if (persist) { try { localStorage.setItem(WIDTH_KEY, String(w)); } catch (e) {} }
+      if (persist && Ryker.SURFACE === 'extension') {
+        Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+        Ryker.extensionPreferences.paneWidth = w;
+        if (Ryker.extensionStorage) {
+          Ryker.extensionStorage.set('preference:pane-width', w).catch(function (error) {
+            flash('Pane width could not be stored: ' + error.message, 'warn');
+          });
+        }
+      } else if (persist) {
+        try { localStorage.setItem(WIDTH_KEY, String(w)); } catch (e) {}
+      }
       return w;
     }
 
@@ -7051,23 +7927,52 @@
     var timer = null;
     var applying = false;
     var offered = false;
+    var lastStorageError = null;
 
     function documentKey() {
       return Ryker.logger.documentKey(Ryker.config.load().RYKER_DOCUMENT_ID);
     }
 
-    function draftKey() { return 'ryker:draft:' + documentKey(); }
-    function seenKey() { return 'ryker:recovery-seen:' + documentKey(); }
+    function baseDraftKey() { return 'ryker:draft:' + documentKey(); }
+    function baseSeenKey() { return 'ryker:recovery-seen:' + documentKey(); }
+    function sessionSuffix() {
+      var id = Ryker.instructions.sessionId && Ryker.instructions.sessionId();
+      return id ? ':' + String(id).replace(/[^A-Za-z0-9._-]+/g, '-').slice(0, 96) : '';
+    }
+    // The worker scopes extension recovery by sender.tab.id. The drop-in uses a
+    // tab-scoped sessionStorage token so two tabs sharing one file origin cannot
+    // overwrite or consume each other's draft.
+    function draftKey() {
+      return baseDraftKey() + (Ryker.SURFACE === 'extension' ? '' : sessionSuffix());
+    }
+    function seenKey() {
+      return baseSeenKey() + (Ryker.SURFACE === 'extension' ? '' : sessionSuffix());
+    }
     function legacyKey() { return 'ryker:' + Ryker.config.load().RYKER_DOCUMENT_ID + ':journal'; }
 
     function extensionStore() {
-      return Ryker.SURFACE === 'extension' && typeof chrome !== 'undefined' &&
-        chrome.storage && chrome.storage.local;
+      return Ryker.SURFACE === 'extension' && Ryker.extensionStorage;
+    }
+
+    function extensionKey(key) { return 'recovery:' + key; }
+
+    function storageFailure(action, error) {
+      var message = error && error.message ? error.message : String(error);
+      var signature = action + ':' + message;
+      if (signature === lastStorageError) return;
+      lastStorageError = signature;
+      if (Ryker.log) Ryker.log('recovery storage ' + action + ': ' + message);
+      if (Ryker.pane && Ryker.pane.flash) {
+        Ryker.pane.flash('Recovery could not be ' + action + ' in local Ryker storage: ' + message, 'warn');
+      }
     }
 
     function get(key) {
       if (extensionStore()) {
-        return chrome.storage.local.get(key).then(function (out) { return out && out[key] || null; });
+        return Ryker.extensionStorage.get(extensionKey(key)).then(function (out) {
+          lastStorageError = null;
+          return out == null ? null : out;
+        }).catch(function (error) { storageFailure('read', error); return null; });
       }
       try { return Promise.resolve(localStorage.getItem(key)); }
       catch (e) { return Promise.resolve(null); }
@@ -7075,15 +7980,22 @@
 
     function set(key, value) {
       if (extensionStore()) {
-        var item = {}; item[key] = value;
-        return chrome.storage.local.set(item).then(function () { return true; });
+        return Ryker.extensionStorage.set(extensionKey(key), value).then(function () {
+          lastStorageError = null;
+          return true;
+        }).catch(function (error) { storageFailure('saved', error); return false; });
       }
       try { localStorage.setItem(key, value); return Promise.resolve(true); }
       catch (e) { return Promise.resolve(false); }
     }
 
     function remove(key) {
-      if (extensionStore()) return chrome.storage.local.remove(key).then(function () { return true; });
+      if (extensionStore()) {
+        return Ryker.extensionStorage.remove(extensionKey(key)).then(function () {
+          lastStorageError = null;
+          return true;
+        }).catch(function (error) { storageFailure('removed', error); return false; });
+      }
       try { localStorage.removeItem(key); return Promise.resolve(true); }
       catch (e) { return Promise.resolve(false); }
     }
@@ -7095,18 +8007,28 @@
     }
 
     function fingerprint(found) {
-      return found.kind + '@' + found.baselineId + '@' + found.savedAt + '@' + found.changes.length;
+      if (!found) return 'none';
+      var count = Array.isArray(found.changes) ? found.changes.length : 0;
+      var moves = Array.isArray(found.moves) ? found.moves.length : 0;
+      return found.kind + '@' + found.baselineId + '@' + found.savedAt + '@' + count + '@' + moves;
     }
 
     function checkpoint() {
       if (applying) return Promise.resolve(false);
       var changes = Ryker.instructions.recoveryChanges();
-      if (!changes.length) return remove(draftKey());
+      var snapshot = Ryker.blocks.snapshot();
+      // Changes and moves must share the authored baseline. editable.baselineOf()
+      // is rebased after Save, which would otherwise drop a saved move whenever
+      // a later unsaved text edit caused the draft to win recovery selection.
+      var moves = Ryker.instructions.recoveryMoves ? Ryker.instructions.recoveryMoves() : [];
+      if (!changes.length && !moves.length) return remove(draftKey());
       var draft = {
         version: 1, kind: 'draft',
         documentId: Ryker.config.load().RYKER_DOCUMENT_ID,
+        sessionId: Ryker.instructions.sessionId ? Ryker.instructions.sessionId() : null,
         baselineId: Ryker.instructions.baselineId(),
-        savedAt: new Date().toISOString(), changes: changes
+        savedAt: new Date().toISOString(), changes: changes,
+        order: Object.keys(snapshot), moves: moves
       };
       return set(draftKey(), JSON.stringify(draft));
     }
@@ -7128,11 +8050,21 @@
     function compatible(found) {
       return found && found.baselineId &&
         found.baselineId === Ryker.instructions.baselineId() &&
-        Array.isArray(found.changes) && found.changes.length;
+        Array.isArray(found.changes) &&
+        (found.changes.length || (Array.isArray(found.moves) && found.moves.length) ||
+          (Array.isArray(found.order) && found.order.length));
     }
 
     function draft() {
       return get(draftKey()).then(function (raw) {
+        if (!raw && Ryker.SURFACE !== 'extension' && draftKey() !== baseDraftKey()) {
+          return get(baseDraftKey()).then(function (legacyRaw) {
+            var legacyFound = parse(legacyRaw);
+            if (!legacyFound) return null;
+            legacyFound.kind = 'draft';
+            return legacyFound;
+          });
+        }
         var found = parse(raw);
         if (!found) return null;
         found.kind = 'draft';
@@ -7147,7 +8079,11 @@
           if (i >= entries.length) return null;
           return Ryker.logger.read(entries[i]).then(function (raw) {
             var found = parse(raw);
-            if (!found || !Array.isArray(found.changes) || !found.changes.length) return next(i + 1);
+            if (!found || !Array.isArray(found.changes) ||
+                (!found.changes.length && !(Array.isArray(found.moves) && found.moves.length) &&
+                  !(Array.isArray(found.order) && found.order.length))) {
+              return next(i + 1);
+            }
             found.kind = 'saved';
             return found;
           }).catch(function () { return next(i + 1); });
@@ -7157,6 +8093,10 @@
     }
 
     function legacy() {
+      // The retired drop-in journal belonged to the authored page. Reading it
+      // from an injected extension would cross back into the visited origin and
+      // let page-controlled storage impersonate extension recovery state.
+      if (Ryker.SURFACE === 'extension') return null;
       var raw;
       try { raw = localStorage.getItem(legacyKey()); } catch (e) { return null; }
       var old = parse(raw);
@@ -7181,12 +8121,32 @@
     function apply(found) {
       applying = true;
       var before = Ryker.blocks.snapshot();
-      var out = Ryker.blocks.applyRecords([{ changes: found.changes }]);
-      var changes = Ryker.blocks.diffSnapshots(before, Ryker.blocks.snapshot());
-      applying = false;
+      var out, moveOut, changes;
+      try {
+        // New records carry explicit moves so parent changes can be replayed.
+        // Flat order remains the compatibility path for records written during
+        // the short-lived order-only format.
+        out = Ryker.blocks.applyRecords([{
+          changes: found.changes,
+          order: Array.isArray(found.moves) ? null : found.order
+        }]);
+        moveOut = Array.isArray(found.moves) && Ryker.move && Ryker.move.replay
+          ? Ryker.move.replay(found.moves)
+          : { applied: out.moved || 0, missed: out.orderMissed || 0, unchanged: 0 };
+        changes = Ryker.blocks.diffSnapshots(before, Ryker.blocks.snapshot());
+      } finally {
+        applying = false;
+      }
       settle(found);
-      if (!changes.length) {
-        Ryker.dialog.alert('Nothing to restore', 'Those changes are already reflected in this document.', 'ok');
+      if (!changes.length && !moveOut.applied) {
+        if (out.missed + moveOut.missed) {
+          Ryker.dialog.alert('Changes could not be restored',
+            (out.missed + moveOut.missed) +
+            ' saved change(s) did not match a safe element or position in this document.', 'warn');
+        } else {
+          Ryker.dialog.alert('Nothing to restore',
+            'Those changes are already reflected in this document.', 'ok');
+        }
         return false;
       }
       Ryker.instructions.record();
@@ -7196,13 +8156,15 @@
       Ryker.boot.sync();
       checkpoint();
       Ryker.dialog.alert('Changes restored',
-        changes.length + ' block(s) were restored.' +
-        (out.missed ? ' ' + out.missed + ' change(s) could not be placed and were skipped.' : ''),
-        out.missed ? 'warn' : 'ok');
+        changes.length + ' block(s) and ' + moveOut.applied + ' move(s) were restored.' +
+        (out.missed + moveOut.missed ? ' ' + (out.missed + moveOut.missed) +
+          ' change(s) could not be placed and were skipped.' : ''),
+        out.missed + moveOut.missed ? 'warn' : 'ok');
       return true;
     }
 
     function present(found) {
+      if (!found) return Promise.resolve(false);
       return alreadySettled(found).then(function (settled) {
         if (settled) return false;
         if (!compatible(found)) {
@@ -7216,7 +8178,9 @@
         Ryker.dialog.open({
           title: 'Restore earlier changes?',
           body: Ryker.dom.el('div', {}, [
-            Ryker.dom.el('p', { text: found.changes.length + ' change(s) were found' + when + '.' }),
+            Ryker.dom.el('p', { text: found.changes.length + ' content change(s)' +
+              (found.moves && found.moves.length ? ' plus ' + found.moves.length + ' move(s)' :
+                (found.order ? ' plus saved block order' : '')) + ' were found' + when + '.' }),
             Ryker.dom.el('p', { class: 'muted', text: 'The source matches their baseline. Nothing is applied unless you choose Restore.' })
           ]),
           buttons: [
@@ -7276,6 +8240,7 @@
     var started = false, active = false;
     var reopenPane = true, reopenRail = false;
     var saveNotesPreference = null;
+    var syncQueued = false;
     // Whether the folder grant has been offered in this session. One prompt, on
     // the first save that needs it; see the comment in save() for why not more.
     var askedForGrant = false;
@@ -7329,7 +8294,10 @@
       Ryker.menu.attach(els.more, buildMenu);
 
       els.note = d().el('button', { class: 'where', type: 'button',
-        onclick: function () { if (!Ryker.logger.isOn()) startLogging(); } }, [
+        onclick: function () {
+          if (Ryker.logger.isOn()) Ryker.browser.open();
+          else startLogging();
+        } }, [
         d().el('span', { class: 'dot' }),
         d().el('span', { class: 'lbl', text: 'Nothing is saved anywhere' })
       ]);
@@ -7385,24 +8353,27 @@
 
     function saveNotesEnabled() {
       if (saveNotesPreference !== null) return saveNotesPreference;
-      if (Ryker.SURFACE === 'extension' && Ryker.extensionConfig &&
-          typeof Ryker.extensionConfig.RYKER_SAVE_NOTES === 'boolean') {
-        return Ryker.extensionConfig.RYKER_SAVE_NOTES;
+      if (Ryker.SURFACE === 'extension') {
+        var preferences = Ryker.extensionPreferences || {};
+        return typeof preferences.saveNotes === 'boolean' ? preferences.saveNotes : true;
       }
       try { return localStorage.getItem('ryker:save-notes') !== 'off'; } catch (e) { return true; }
     }
 
     function setSaveNotesEnabled(on) {
       saveNotesPreference = !!on;
-      try { localStorage.setItem('ryker:save-notes', on ? 'on' : 'off'); } catch (e) {}
       if (Ryker.SURFACE === 'extension') {
-        Ryker.extensionConfig = Ryker.extensionConfig || {};
-        Ryker.extensionConfig.RYKER_SAVE_NOTES = !!on;
-        try {
-          if (chrome && chrome.storage && chrome.storage.local) {
-            chrome.storage.local.set({ rykerConfig: Ryker.extensionConfig });
-          }
-        } catch (e) {}
+        Ryker.extensionPreferences = Ryker.extensionPreferences || {};
+        Ryker.extensionPreferences.saveNotes = !!on;
+        if (Ryker.extensionStorage) {
+          Ryker.extensionStorage.set('preference:save-notes', !!on).catch(function (error) {
+            if (Ryker.log) Ryker.log('preference storage: ' + error.message);
+            if (Ryker.pane) Ryker.pane.flash('Save-comment preference could not be stored: ' +
+              error.message, 'warn');
+          });
+        }
+      } else {
+        try { localStorage.setItem('ryker:save-notes', on ? 'on' : 'off'); } catch (e) {}
       }
       if (Ryker.pane) Ryker.pane.flash('Save comments ' + (on ? 'enabled.' : 'disabled.'));
       return saveNotesPreference;
@@ -7422,31 +8393,39 @@
     // exportHtml.journalJson() went with the revision journal.
     function exportMenu() {
       var base = Ryker.exportHtml.baseName();
+      var attach = !Ryker.exportHtml.canAttach || Ryker.exportHtml.canAttach();
+      var body = '<p><b>Clean HTML</b> is the report on its own, with Ryker taken out. This is what ' +
+        'you send to someone who should read it rather than edit it.</p>';
+      if (attach) {
+        body += '<p><b>With Ryker</b> keeps the editor attached, so whoever opens it can carry on ' +
+          'editing and leave with their own instruction set.</p>';
+      } else {
+        body += '<p>This extension workspace can export clean HTML only. Install the Ryker drop-in ' +
+          'in the source file when you need a portable editable copy.</p>';
+      }
+      var buttons = [{ label: 'Cancel' }];
+      if (attach) {
+        buttons.push({
+          label: 'With Ryker',
+          action: function () {
+            var o = Ryker.exportHtml.scanned('ryker');
+            if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
+            Ryker.exportHtml.download(o.html, base + '-ryker.html');
+          }
+        });
+      }
+      buttons.push({
+        label: 'Clean HTML', primary: true,
+        action: function () {
+          var o = Ryker.exportHtml.scanned('clean');
+          if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
+          Ryker.exportHtml.download(o.html, base + '.html');
+        }
+      });
       Ryker.dialog.open({
         title: 'Export',
-        body: '<p><b>Clean HTML</b> is the report on its own, with Ryker taken out. This is what ' +
-          'you send to someone who should read it rather than edit it.</p>' +
-          '<p><b>With Ryker</b> keeps the editor attached, so whoever opens it can carry on ' +
-          'editing and leave with their own instruction set.</p>',
-        buttons: [
-          { label: 'Cancel' },
-          {
-            label: 'With Ryker',
-            action: function () {
-              var o = Ryker.exportHtml.scanned('ryker');
-              if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
-              Ryker.exportHtml.download(o.html, base + '-ryker.html');
-            }
-          },
-          {
-            label: 'Clean HTML', primary: true,
-            action: function () {
-              var o = Ryker.exportHtml.scanned('clean');
-              if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
-              Ryker.exportHtml.download(o.html, base + '.html');
-            }
-          }
-        ]
+        body: body,
+        buttons: buttons
       });
     }
 
@@ -7479,19 +8458,6 @@
             } }
         ]
       });
-    }
-
-    // Polls rather than subscribes, because a dialog can be closed by Escape, by
-    // the backdrop or by any of its own buttons, and one timer is cheaper than
-    // teaching every one of those paths to notify.
-    function askWhenClear() {
-      var tries = 0;
-      (function wait() {
-        if (Ryker.logger.isOn()) return;
-        if (!Ryker.dialog.isOpen()) { startLogging(); return; }
-        if (++tries > 240) return;
-        setTimeout(wait, 500);
-      })();
     }
 
     function expand(open) {
@@ -7645,14 +8611,14 @@
 
       var held = Ryker.logger.pendingCount();
       els.note.querySelector('.lbl').textContent = Ryker.logger.isOn()
-        ? 'Writing to ' + Ryker.logger.where()
+        ? 'Saved changes'
         : (held
             ? held + ' save(s) held in this tab only'
             : (edits ? edits + ' edit(s) held in this tab only' : 'Nothing is saved anywhere'));
-      els.note.disabled = Ryker.logger.isOn() || !Ryker.logger.supported();
+      els.note.disabled = !Ryker.logger.isOn() && !Ryker.logger.supported();
       els.note.querySelector('.dot').className = 'dot ' + (edits ? 'warn' : '');
       Ryker.tooltip.attach(els.note, Ryker.logger.isOn()
-        ? 'Every save also writes a copy to ' + Ryker.logger.where() + '.'
+        ? 'Every save writes a copy here. Click to browse them.'
         : 'Nothing has been written to disk yet. Click to choose the folder, ' +
           'and every save held in this tab is written straight away.');
       els.note.querySelector('.dot').classList.toggle('ok', Ryker.logger.isOn());
@@ -7661,6 +8627,23 @@
         edits + ' edit(s) recorded. Show or hide the instructions.');
 
       layout();
+    }
+
+    // Typing can emit several changes before the browser paints. The status and
+    // layout are visual work, so one refresh per frame is both current enough for
+    // the eye and prevents a full document snapshot/style walk per character.
+    function scheduleSync() {
+      // The first dirty transition enables Save immediately. Further keystrokes
+      // arrive while it is already enabled and can share the next paint.
+      if (els.save && els.save.disabled) { sync(); return; }
+      if (syncQueued) return;
+      syncQueued = true;
+      var run = function () {
+        syncQueued = false;
+        sync();
+      };
+      if (typeof requestAnimationFrame === 'function') requestAnimationFrame(run);
+      else setTimeout(run, 0);
     }
 
     function start() {
@@ -7696,7 +8679,7 @@
       guard('tooltip', function () { Ryker.tooltip.init(); });
 
       guard('wire', function () {
-        Ryker.editable.onChange(sync);
+        Ryker.editable.onChange(scheduleSync);
         Ryker.instructions.onChange(function () { Ryker.pane.refresh(); sync(); });
         Ryker.recover.init();
       });

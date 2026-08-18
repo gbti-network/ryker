@@ -34,7 +34,8 @@ body { background: var(--rk-bg2); }
 }
 
 .workspace-brand img { display: block; object-fit: contain; }
-#workspace-document { min-height: calc(100vh - 49px); }
+#workspace-shell { min-height: calc(100vh - 49px); }
+#workspace-document[hidden], #workspace-open[hidden] { display: none; }
 
 .workspace-open {
   width: min(620px, calc(100% - 32px));

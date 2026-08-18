@@ -24,7 +24,7 @@ Ryker.pick = (function () {
   // The scroll band at the window edge, and the most it moves in one frame.
   var EDGE = 90, CAP = 18;
 
-  function inShell(n) { return !!(n && n.closest && n.closest('#ryker-root')); }
+  function inShell(n) { return !!(n && Ryker.shell && Ryker.shell.owns(n)); }
   function onChange(fn) { listeners.push(fn); }
   function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
 

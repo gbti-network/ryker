@@ -1,10 +1,10 @@
 // Writing a copy of the instructions to disk on every save, as training data.
 //
-// "Silently" is achievable, with one honest caveat stated up front: a browser
-// cannot write to a folder it has never been shown. Somebody grants access to
-// the report's folder once, and from then on every save writes without a prompt,
-// a dialog or a download. Chrome remembers the folder between visits, so the
-// most a reload costs is a single click to confirm it again.
+// The extension writes records into its own local IndexedDB through the service
+// worker, so saving never requires a folder grant. The drop-in cannot own a
+// browser origin of its own; there the honest caveat remains that a browser
+// cannot write to a folder it has never been shown. Once granted, later saves
+// write without another dialog or download.
 //
 // Each save writes one JSON file holding the prose prompt AND the structured
 // edits behind it. Training on the prompt alone would lose the before and after
@@ -32,13 +32,22 @@ Ryker.logger = (function () {
   // Change requests dialog immediately after Save used to list the directory
   // while createWritable().close() was still pending and report an empty log.
   var writeTail = Promise.resolve();
+  // Nothing here ever prunes. The corpus is the only durable copy of what
+  // changed across sessions, so the answer to a filling store is to say so and
+  // offer the export, not to delete the oldest thing the user still has.
+  var PRESSURE = 0.8;
+  var pressureReported = false;
 
   function onChange(fn) { listeners.push(fn); }
   function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
 
-  function supported() { return Ryker.fs.supported(); }
-  function isOn() { return !!dir; }
-  function folderName() { return dir ? dir.name : null; }
+  function ownedStore() {
+    return Ryker.SURFACE === 'extension' && Ryker.extensionStorage;
+  }
+
+  function supported() { return !!ownedStore() || Ryker.fs.supported(); }
+  function isOn() { return !!dir || !!ownedStore(); }
+  function folderName() { return dir ? dir.name : (ownedStore() ? 'Ryker local storage' : null); }
   function error() { return lastError; }
   function count() { return seq; }
 
@@ -70,6 +79,7 @@ Ryker.logger = (function () {
   // granted, and stays quiet when it is not: asking on load would be a prompt
   // nobody asked for.
   function resume() {
+    if (ownedStore()) return Promise.resolve(true);
     if (!supported()) return Promise.resolve(false);
     return Ryker.fs.recall(KEY).then(function (handle) {
       if (!handle) return false;
@@ -96,6 +106,16 @@ Ryker.logger = (function () {
       p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
   }
 
+  function sessionToken(value) {
+    var raw = String(value || 'session');
+    var h = 2166136261;
+    for (var i = 0; i < raw.length; i++) {
+      h ^= raw.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0).toString(36).padStart(7, '0');
+  }
+
   // The log belongs beside the library rather than beside the reports, so a
   // folder someone keeps documents in does not fill with machine output. When
   // the granted folder is already the library folder, it is used as-is instead
@@ -120,7 +140,7 @@ Ryker.logger = (function () {
 
   // The path as it will actually read on disk, for saying out loud.
   function where() {
-    if (!dir) return LIB + '/' + DIR_NAME;
+    if (!dir) return ownedStore() ? 'Ryker local storage' : LIB + '/' + DIR_NAME;
     return dir.name.toLowerCase() === LIB
       ? dir.name + '/' + DIR_NAME
       : dir.name + '/' + LIB + '/' + DIR_NAME;
@@ -140,6 +160,7 @@ Ryker.logger = (function () {
       documentPath: cfg.RYKER_DOCUMENT_PATH,
       documentTitle: document.title,
       savedAt: new Date().toISOString(),
+      sessionId: Ryker.instructions.sessionId ? Ryker.instructions.sessionId() : null,
       // Which document text every FROM in this record is quoting.
       //
       // Records sharing a baseline are cumulative supersets of one another, so
@@ -160,10 +181,16 @@ Ryker.logger = (function () {
       // but not safely restored after refresh; guessing by position risks
       // applying text to a different element when the source has changed.
       changes: Ryker.instructions.recoveryChanges(),
+      // Block order is structural state: a move changes no block's HTML and is
+      // otherwise invisible to recovery after a browser restart.
+      order: Object.keys(Ryker.blocks.snapshot()),
+      // Move records retain the container-crossing intent that a flat order
+      // cannot express when a paragraph or section changes parent.
+      moves: Ryker.instructions.recoveryMoves ? Ryker.instructions.recoveryMoves() : [],
       // And the pairs behind it, which is the part worth training on.
       edits: edits.map(function (e) {
         return {
-          kind: e.kind, tag: e.tag,
+          id: e.id, kind: e.kind, tag: e.tag,
           beforeTag: e.beforeTag || null,
           afterTag: e.afterTag || e.tag || null,
           before: e.before, after: e.after,
@@ -176,12 +203,19 @@ Ryker.logger = (function () {
   function record(promptText, saveNote) {
     seq += 1;
     var payload = buildPayload(promptText, saveNote);
+    // The readable timestamp has second precision and saveNumber restarts in
+    // every tab. Milliseconds, session identity and the local queue sequence
+    // prevent both extension records and shared-folder files from overwriting
+    // one another when editors save concurrently.
+    var name = stamp() + '-' + Date.now().toString(36) + '-' +
+      sessionToken(payload.sessionId) + '-' + seq + '-save-' + payload.saveNumber + '.json';
+    if (ownedStore()) return queueOwnedPut(name, payload);
     if (!dir) {
-      pending.push({ name: stamp() + '-save-' + payload.saveNumber + '.json', payload: payload });
+      pending.push({ name: name, payload: payload });
       emit();
       return Promise.resolve(false);
     }
-    return queuePut(stamp() + '-save-' + payload.saveNumber + '.json', payload);
+    return queuePut(name, payload);
   }
 
   // Everything held while the grant was outstanding, oldest first. A failure
@@ -208,6 +242,50 @@ Ryker.logger = (function () {
     return job;
   }
 
+  function ownedPrefix() {
+    return 'revision:' + documentKey(Ryker.config.load().RYKER_DOCUMENT_ID) + ':';
+  }
+
+  function storageFailure(error) {
+    lastError = error && error.message ? error.message : String(error);
+    emit();
+    return false;
+  }
+
+  function queueOwnedPut(name, payload) {
+    var job = writeTail.then(function () {
+      return ownedStore().set(ownedPrefix() + name, JSON.stringify(payload, null, 2))
+        .then(function () { lastError = null; emit(); checkPressure(); return true; })
+        .catch(storageFailure);
+    });
+    writeTail = job.catch(function () { return false; });
+    return job;
+  }
+
+  // Warned once per session rather than on every save. Somebody who is told
+  // the same thing after each of forty saves stops reading it, which is how a
+  // real quota failure arrives as a surprise.
+  function checkPressure() {
+    if (pressureReported) return;
+    usage().then(function (space) {
+      if (!space || !space.quota || !space.usage) return;
+      if (space.usage / space.quota < PRESSURE) return;
+      pressureReported = true;
+      if (Ryker.pane && Ryker.pane.flash) {
+        Ryker.pane.flash('Ryker local storage is ' + Math.round(space.usage / space.quota * 100) +
+          '% full. Export the saved change requests you want to keep, then clear them.', 'warn');
+      }
+    }).catch(function () { /* usage is a courtesy; a save must not fail on it */ });
+  }
+
+  // Null on the drop-in surface, where records are files in a folder the person
+  // chose and the browser has no allowance to report.
+  function usage() {
+    var store = ownedStore();
+    if (!store || typeof store.usage !== 'function') return Promise.resolve(null);
+    return store.usage();
+  }
+
   function settled() { return writeTail.then(function () { return true; }); }
 
   function put(name, payload) {
@@ -232,6 +310,22 @@ Ryker.logger = (function () {
   // The folder handle can list its own contents, so the log is browsable from
   // inside the report without going anywhere near the file system dialog again.
   function list() {
+    if (ownedStore()) {
+      var prefix = ownedPrefix();
+      return settled().then(function () { return ownedStore().list(prefix); }).then(function (rows) {
+        lastError = null;
+        return (rows || []).map(function (row) {
+          var text = typeof row.value === 'string' ? row.value : JSON.stringify(row.value);
+          var parsed = null;
+          try { parsed = JSON.parse(text); } catch (e) {}
+          return {
+            name: row.key.slice(prefix.length), storageKey: row.key,
+            size: new TextEncoder().encode(text).length,
+            modified: parsed && parsed.savedAt ? Date.parse(parsed.savedAt) : 0
+          };
+        }).sort(function (a, b) { return b.name.localeCompare(a.name); });
+      }).catch(function (error) { storageFailure(error); throw error; });
+    }
     if (!dir) return Promise.resolve([]);
     return settled().then(function () { return Ryker.fs.list(dir, documentDir()); }).then(function (out) {
       lastError = null;
@@ -253,6 +347,12 @@ Ryker.logger = (function () {
   }
 
   function read(entry) {
+    if (entry && entry.storageKey && ownedStore()) {
+      return ownedStore().get(entry.storageKey).then(function (value) {
+        if (value == null) throw new Error('That saved change request no longer exists.');
+        return typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+      });
+    }
     return Ryker.fs.read(dir, entry.path);
   }
 
@@ -264,6 +364,20 @@ Ryker.logger = (function () {
   // reporting success over a partial delete, because "cleared" that left half
   // the log behind is worse than an error.
   function clear() {
+    if (ownedStore()) {
+      return list().then(function (files) {
+        return files.reduce(function (chain, file) {
+          return chain.then(function (n) {
+            return ownedStore().remove(file.storageKey).then(function () { return n + 1; });
+          });
+        }, Promise.resolve(0));
+      }).then(function (n) {
+        seq = 0;
+        lastError = null;
+        emit();
+        return n;
+      }).catch(function (error) { storageFailure(error); throw error; });
+    }
     if (!dir) return Promise.resolve(0);
     return list().then(function (files) {
       return files.reduce(function (chain, f) {
@@ -290,6 +404,9 @@ Ryker.logger = (function () {
   }
 
   function describe() {
+    if (ownedStore()) {
+      return lastError ? 'Local Ryker storage needs attention' : 'Saved in local Ryker storage';
+    }
     if (!supported()) return 'Logging needs Chrome or Edge';
     if (!dir) {
       return pending.length
@@ -303,7 +420,7 @@ Ryker.logger = (function () {
     supported: supported, isOn: isOn, choose: choose, resume: resume,
     record: record, buildPayload: buildPayload, describe: describe,
     flush: flush, settled: settled, pendingCount: pendingCount, where: where, LIB: LIB,
-    list: list, read: read, clear: clear, folderUrl: folderUrl,
+    list: list, read: read, clear: clear, usage: usage, folderUrl: folderUrl,
     folderName: folderName, error: error,
     count: count, onChange: onChange, DIR_NAME: DIR_NAME, documentKey: documentKey
   };

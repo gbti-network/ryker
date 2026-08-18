@@ -7,14 +7,51 @@
 Ryker.shell = (function () {
   'use strict';
 
-  var host = null, shadow = null, layer = null;
+  var host = null, shadow = null, layer = null, documentStyle = null;
   var shifted = [];
+  var bodyPadding = {};
+  var owner = Ryker.dom.uid('owner');
+
+  function owns(node) {
+    if (!host || !node) return false;
+    if (node === host) return true;
+    return !!(shadow && node.getRootNode && node.getRootNode() === shadow);
+  }
+
+  function rememberBodyPadding(prop) {
+    if (Object.prototype.hasOwnProperty.call(bodyPadding, prop)) return;
+    bodyPadding[prop] = {
+      value: document.body.style.getPropertyValue(prop),
+      priority: document.body.style.getPropertyPriority(prop)
+    };
+  }
+
+  function restoreBodyPadding(prop) {
+    if (!Object.prototype.hasOwnProperty.call(bodyPadding, prop)) return;
+    var was = bodyPadding[prop];
+    if (was.value) document.body.style.setProperty(prop, was.value, was.priority || '');
+    else document.body.style.removeProperty(prop);
+    delete bodyPadding[prop];
+  }
+
+  // Export works from a clone while the live shell may still be claiming
+  // space. Return a copy of the authored inline value so the clone can remove
+  // Ryker's temporary padding without deleting the page's own declaration.
+  function originalBodyPadding(prop) {
+    if (!Object.prototype.hasOwnProperty.call(bodyPadding, prop)) return null;
+    return {
+      value: bodyPadding[prop].value,
+      priority: bodyPadding[prop].priority
+    };
+  }
 
   function mount() {
     if (host) return shadow;
 
     host = document.createElement('div');
     host.id = 'ryker-root';
+    host.setAttribute('data-ryker-host', '');
+    host.setAttribute('data-ryker-owner', owner);
     // The host element itself must not affect layout at all.
     host.style.cssText = 'all:initial;position:static;display:block;width:0;height:0;overflow:visible';
     host.setAttribute('data-ryker-lock', '');
@@ -36,10 +73,12 @@ Ryker.shell = (function () {
     // comment highlight pseudo-elements too, and those were the reason it was
     // first justified; they went with comments on 2026-08-16 and the rest of it
     // is still load-bearing.
-    var doc = document.createElement('style');
-    doc.id = 'ryker-document-css';
-    doc.textContent = Ryker.styles.documentCss;
-    document.head.appendChild(doc);
+    documentStyle = document.createElement('style');
+    documentStyle.id = 'ryker-document-css';
+    documentStyle.setAttribute('data-ryker-document-css', '');
+    documentStyle.setAttribute('data-ryker-owner', owner);
+    documentStyle.textContent = Ryker.styles.documentCss;
+    document.head.appendChild(documentStyle);
 
     return shadow;
   }
@@ -53,7 +92,7 @@ Ryker.shell = (function () {
   function stickyCandidates() {
     var out = [];
     Array.prototype.forEach.call(document.querySelectorAll('body *'), function (n) {
-      if (n.id === 'ryker-root' || n.closest('#ryker-root')) return;
+      if (owns(n)) return;
       var cs = getComputedStyle(n);
       if ((cs.position === 'sticky' || cs.position === 'fixed') && cs.top === '0px') out.push(n);
     });
@@ -72,6 +111,7 @@ Ryker.shell = (function () {
     // The bar is fixed, so without this the top of the document sits underneath
     // it. Recorded on an attribute as well as in the style, so the print rules
     // can undo it without having to guess whether the padding was Ryker's.
+    rememberBodyPadding('padding-top');
     document.body.style.paddingTop = px + 'px';
     document.body.setAttribute('data-ryker-pushed', '');
     document.documentElement.style.scrollPaddingTop = px + 'px';
@@ -87,7 +127,7 @@ Ryker.shell = (function () {
       if (!n.getAttribute('style')) n.removeAttribute('style');
     });
     shifted = [];
-    document.body.style.removeProperty('padding-top');
+    restoreBodyPadding('padding-top');
     if (!spaces.left && !spaces.right) document.body.removeAttribute('data-ryker-pushed');
     if (!document.body.getAttribute('style')) document.body.removeAttribute('style');
     document.documentElement.style.removeProperty('scroll-padding-top');
@@ -117,13 +157,19 @@ Ryker.shell = (function () {
   // measuring against it would surrender 250px for a list the rail duplicates.
   function setEdgeSpace(node, side) {
     var prop = side === 'left' ? 'padding-left' : 'padding-right';
+    // Every reflow starts from the host page's real value, then measures the
+    // additional room Ryker needs. Releasing the panel restores that exact
+    // inline value, including its !important priority.
+    restoreBodyPadding(prop);
     spaces[side] = node || null;
-    document.body.style.removeProperty(prop);
     if (!node) {
       if (!spaces.left && !spaces.right) document.body.removeAttribute('data-ryker-pushed');
       if (!document.body.getAttribute('style')) document.body.removeAttribute('style');
       return;
     }
+
+    rememberBodyPadding(prop);
+    document.body.style.removeProperty(prop);
 
     var ceiling = Math.floor(document.documentElement.clientWidth * 0.55);
     var applied = 0;
@@ -176,10 +222,9 @@ Ryker.shell = (function () {
     releasePanelSpace();
     releaseOffset();
     document.documentElement.style.removeProperty('--ryker-offset');
-    var doc = document.getElementById('ryker-document-css');
-    if (doc && doc.parentNode) doc.parentNode.removeChild(doc);
+    if (documentStyle && documentStyle.parentNode) documentStyle.parentNode.removeChild(documentStyle);
     if (host && host.parentNode) host.parentNode.removeChild(host);
-    host = shadow = layer = null;
+    host = shadow = layer = documentStyle = null;
   }
 
   return {
@@ -187,6 +232,8 @@ Ryker.shell = (function () {
     setOffset: setOffset, releaseOffset: releaseOffset,
     setPanelSpace: setPanelSpace, releasePanelSpace: releasePanelSpace,
     setEdgeSpace: setEdgeSpace, releaseEdgeSpace: releaseEdgeSpace,
+    originalBodyPadding: originalBodyPadding,
+    owns: owns, owner: function () { return owner; },
     shadow: function () { return shadow; },
     host: function () { return host; }
   };

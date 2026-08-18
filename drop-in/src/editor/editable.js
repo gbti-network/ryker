@@ -1,29 +1,42 @@
-// Edit Mode. Per-block contenteditable over prose only, with sanitising on
-// paste and on input, and a baseline snapshot so a save knows exactly which
-// blocks moved.
+// Edit Mode. Per-block contenteditable over prose only, with sanitising at
+// explicit markup-entry boundaries and a baseline snapshot so a save knows
+// exactly which blocks moved.
 Ryker.editable = (function () {
   'use strict';
 
   var on = false;
   var baseline = null;
   var bound = [];
+  var resumable = [];
   var listeners = [];
   var pendingListSpace = new WeakSet();
 
   function onChange(fn) { listeners.push(fn); }
   function emit() { listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
 
+  function arm(node, id) {
+    if (!node || !node.isConnected || Ryker.blocks.excluded(node)) return;
+    if (bound.some(function (b) { return b.node === node; })) return;
+    node.setAttribute('contenteditable', 'true');
+    node.setAttribute('spellcheck', 'true');
+    node.classList.add('ryker-editing');
+    bindOne(node, id || Ryker.blocks.blockId(node));
+  }
+
   function enable() {
     if (on) return;
     // No stamping here. Block ids come from the document's own content and are
     // already correct, so the baseline taken at boot stays valid.
-    baseline = baseline || Ryker.blocks.snapshot();
-    Ryker.blocks.all().forEach(function (b) {
-      b.node.setAttribute('contenteditable', 'true');
-      b.node.setAttribute('spellcheck', 'true');
-      b.node.classList.add('ryker-editing');
-      bindOne(b.node, b.id);
-    });
+    if (!baseline) {
+      baseline = Ryker.blocks.snapshot();
+      Ryker.history.captureBaseline(baseline);
+    }
+    Ryker.blocks.all().forEach(function (b) { arm(b.node, b.id); });
+    // all() deliberately omits empty authored blocks because they have no stable
+    // content identity. A block that Ryker already armed can later become empty,
+    // though, and Hide must not make it permanently inert when Ryker reopens.
+    resumable.forEach(function (node) { arm(node); });
+    resumable = [];
     on = true;
     emit();
   }
@@ -47,9 +60,6 @@ Ryker.editable = (function () {
           if (consumeListSpace(n)) return;
           if (autoList(n, id)) return;
           Ryker.history.text(n); mark(n, id);
-        },
-        blur: function () {
-          if (Ryker.sanitize.element(n)) mark(n, id);
         },
         keydown: function (e) {
           // Backspace at the very start of a block joins it to the one before,
@@ -169,6 +179,9 @@ Ryker.editable = (function () {
     if (!node.textContent.trim()) node.innerHTML = '<br>';
 
     var nodeBefore = beforeSplit;
+    // Per history entry. A module-level value made an older split's redo read
+    // the most recent split's HTML and silently transplant the wrong paragraph.
+    var nodeAfter = node.innerHTML;
     node.parentNode.insertBefore(clone, node.nextSibling);
     Ryker.history.record({
       label: 'split',
@@ -178,7 +191,7 @@ Ryker.editable = (function () {
         place(node, 'end');
       },
       redo: function () {
-        node.innerHTML = nodeAfterSplit;
+        node.innerHTML = nodeAfter;
         node.parentNode.insertBefore(clone, node.nextSibling);
         rebind(clone);
         place(clone, 'start');
@@ -202,11 +215,8 @@ Ryker.editable = (function () {
     sel.addRange(caret);
     clone.focus();
 
-    nodeAfterSplit = node.innerHTML;
     emit();
   }
-
-  var nodeAfterSplit = '';
 
   // A detached element keeps its listeners, classes and attributes, so putting
   // one back needs no rebinding in the ordinary case. This exists for the case
@@ -475,6 +485,7 @@ Ryker.editable = (function () {
 
   function disable() {
     if (!on) return;
+    resumable = bound.map(function (b) { return b.node; });
     bound.forEach(function (b) {
       Object.keys(b.handlers).forEach(function (k) {
         b.node.removeEventListener(k, b.handlers[k]);
@@ -486,6 +497,17 @@ Ryker.editable = (function () {
     bound = [];
     on = false;
     emit();
+  }
+
+  function forgetDetachedBindings() {
+    bound = bound.filter(function (b) {
+      if (b.node.isConnected) return true;
+      Object.keys(b.handlers).forEach(function (k) {
+        b.node.removeEventListener(k, b.handlers[k]);
+      });
+      return false;
+    });
+    resumable = resumable.filter(function (node) { return node.isConnected; });
   }
 
   function isOn() { return on; }
@@ -513,6 +535,7 @@ Ryker.editable = (function () {
   // against what was on screen when the tab opened.
   function rebase() {
     baseline = Ryker.blocks.snapshot();
+    Ryker.history.captureBaseline(baseline);
     Array.prototype.forEach.call(document.querySelectorAll('.ryker-dirty'), function (n) {
       n.classList.remove('ryker-dirty');
     });
@@ -521,11 +544,8 @@ Ryker.editable = (function () {
 
   function revertAll() {
     if (!baseline) return;
-    Object.keys(baseline).forEach(function (id) {
-      var node = Ryker.blocks.byId(id);
-      var was = Ryker.blocks.htmlOf(baseline[id]);
-      if (node && node.innerHTML !== was) node.innerHTML = was;
-    });
+    Ryker.history.restoreBaseline(baseline, bound.map(function (b) { return b.node; }));
+    forgetDetachedBindings();
     Array.prototype.forEach.call(document.querySelectorAll('.ryker-dirty'), function (n) {
       n.classList.remove('ryker-dirty');
     });

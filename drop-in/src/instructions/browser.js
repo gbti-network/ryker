@@ -1,9 +1,4 @@
-// Browsing the change requests already written for this document.
-//
-// The log is a folder of JSON files. Somebody who wants to look at what they
-// have sent should not have to leave the report, hunt for the folder and open
-// files by hand, so this reads them back through the same directory handle the
-// logging uses.
+// Browsing the durable change requests already written for this document.
 Ryker.browser = (function () {
   'use strict';
 
@@ -15,6 +10,35 @@ Ryker.browser = (function () {
 
   function fmtWhen(ms) {
     try { return Ryker.dom.fmtDate(new Date(ms).toISOString()); } catch (e) { return ''; }
+  }
+
+  function extensionOwned() { return Ryker.SURFACE === 'extension'; }
+
+  function storageNote() {
+    if (!extensionOwned()) {
+      return 'Records are JSON files in the folder you granted Ryker.';
+    }
+    return 'Kept in this browser only. The page cannot read them and nothing is sent anywhere. ' +
+      'They stay until you clear them.';
+  }
+
+  function mb(bytes) {
+    if (bytes < 1024 * 1024) return Math.max(1, Math.round(bytes / 1024)) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  // Reported, never enforced. Ryker prunes nothing, so this number exists to
+  // let somebody choose what to export and clear before the browser runs out of
+  // room and chooses for them.
+  function describeUsage(space) {
+    if (!space || typeof space.usage !== 'number') return '';
+    var text = 'Using ' + mb(space.usage);
+    if (typeof space.quota === 'number' && space.quota > 0) {
+      var share = space.usage / space.quota * 100;
+      text += share < 1 ? ', under 1% of this browser\'s allowance'
+        : ', ' + Math.round(share) + '% of this browser\'s allowance';
+    }
+    return text + '. Nothing is removed automatically.';
   }
 
   function open() {
@@ -29,20 +53,33 @@ Ryker.browser = (function () {
       body.innerHTML = '';
 
       body.appendChild(d().el('div', { class: 'note' }, [
-        d().el('div', { text: 'The instruction sidebar is the live result for this tab. ' +
-          'Change requests are durable JSON records written on each save so work can be ' +
-          'reviewed, merged or exported across sessions.' })
+        d().el('div', { text: 'Each save writes a record of what changed, so work can be ' +
+          'reviewed, merged or exported across sessions.' }),
+        d().el('div', { class: 'muted', text: storageNote() })
       ]));
 
       var url = Ryker.logger.folderUrl();
-      body.appendChild(d().el('div', { class: 'note' }, [
+      var countNote = d().el('div', { class: 'note' }, [
         d().el('div', {
           text: files.length
-            ? files.length + ' change request(s) logged for this document in ' +
-              Ryker.logger.folderName() + '/' + Ryker.logger.DIR_NAME + '.'
-            : 'No durable change-request records exist for this document yet.'
+            ? files.length + (files.length === 1 ? ' change request' : ' change requests') +
+              ' logged for this document' +
+              (extensionOwned() ? '.'
+                : ' in ' + Ryker.logger.folderName() + '/' + Ryker.logger.DIR_NAME + '.')
+            : 'No change requests logged for this document yet.'
         })
-      ]));
+      ]);
+      body.appendChild(countNote);
+      if (extensionOwned()) {
+        var usageLine = d().el('div', { class: 'muted', text: '' });
+        countNote.appendChild(usageLine);
+        Ryker.logger.usage().then(function (space) {
+          usageLine.textContent = describeUsage(space);
+        }).catch(function (e) {
+          usageLine.textContent = 'Storage use could not be read: ' +
+            (e && e.message ? e.message : String(e));
+        });
+      }
 
       if (url) {
         body.appendChild(d().el('div', { class: 'acts', style: 'margin-bottom:12px' }, [
@@ -85,7 +122,7 @@ Ryker.browser = (function () {
       });
       body.appendChild(list);
     }).catch(function (e) {
-      body.innerHTML = '<div class="note bad">Could not read the folder: ' +
+      body.innerHTML = '<div class="note bad">Could not read saved change requests: ' +
         Ryker.dom.escapeHtml(e.message) + '</div>';
     });
 
@@ -224,6 +261,9 @@ Ryker.browser = (function () {
           }
         ]
       });
+    }).catch(function (e) {
+      Ryker.dialog.alert('Could not open change request',
+        Ryker.dom.escapeHtml(e && e.message ? e.message : String(e)), 'bad');
     });
   }
 

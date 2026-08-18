@@ -57,8 +57,7 @@ Ryker.styles = (function () {
     'body[data-ryker-rail] nav.toc{display:none}',
     // Ryker must leave no trace in print. The PDF is the regression check, so
     // this rule is load-bearing rather than cosmetic.
-    '@media print{#ryker-root{display:none !important}' +
-      '[contenteditable]{outline:none !important;background:none !important}' +
+    '@media print{[contenteditable]{outline:none !important;background:none !important}' +
       '.ryker-pick{background:none !important;box-shadow:none !important}' +
       // Only ever matches padding Ryker itself applied, so a report with body
       // padding of its own keeps it.
@@ -68,6 +67,7 @@ Ryker.styles = (function () {
 
   var shadowCss = [
     ':host{all:initial}',
+    '@media print{:host{display:none !important}}',
     '*,*::before,*::after{box-sizing:border-box}',
 
     // One palette. Ryker is chrome around a document, and a toolbar that changes
@@ -148,8 +148,6 @@ Ryker.styles = (function () {
     '.where:disabled{cursor:default}',
     '.where:not(:disabled):hover{background:var(--rk-bg3);border-color:var(--rk-line2);color:var(--rk-fg2)}',
     '.where:focus-visible{outline:2px solid transparent;box-shadow:0 0 0 3px var(--rk-ring)}',
-
-    '.hint{font-size:11px;color:var(--rk-muted)}',
 
     // ---- instant tooltip ---------------------------------------------------
     // White on black regardless of the palette, so it reads the same over the
@@ -291,7 +289,6 @@ Ryker.styles = (function () {
     'button.rk.iconbtn.danger{color:var(--rk-danger);opacity:.75}',
     'button.rk.iconbtn.danger:hover:not(:disabled){color:var(--rk-danger);opacity:1;',
     '  background:var(--rk-danger-soft);border-color:transparent}',
-    '.danger-lead{font-size:12.5px;font-weight:600;border-left-width:4px}',
     '@media (max-width:820px){.pane{width:100%}}',
 
     // A row of buttons. This was '.card .acts' until 2026-08-16, and .card was

@@ -315,6 +315,44 @@ Ryker.move = (function () {
     return null;
   }
 
+  // Reapply recorded structural moves without adding them to the current
+  // tab's undo stack. Recovery starts from the authored DOM, resolves block
+  // ids back to their smallest complete units, then uses the saved predecessor
+  // to place those units even when the move crossed container boundaries.
+  function replay(records) {
+    var applied = 0, missed = 0, unchanged = 0;
+    (records || []).forEach(function (record) {
+      var ids = Array.isArray(record && record.ids) ? record.ids : [];
+      var nodes = nodesOf({ ids: ids });
+      if (!ids.length || nodes.length !== ids.length) { missed += 1; return; }
+      var elements = cover(nodes);
+      if (!elements.length) { missed += 1; return; }
+
+      var target = record.prev ? Ryker.blocks.byId(record.prev) : null;
+      var where = record.prev ? 'after' : 'before';
+      if (!target) {
+        target = Ryker.blocks.sequence().filter(function (candidate) {
+          return !elements.some(function (element) {
+            return element === candidate || element.contains(candidate);
+          });
+        })[0] || null;
+      }
+      if (!target) { missed += 1; return; }
+
+      var why = check(elements, target, where);
+      if (why === 'It is already there.') { unchanged += 1; return; }
+      if (why) { missed += 1; return; }
+
+      var landingTarget = landing(elements, target);
+      var host = landingTarget.parentNode;
+      var anchor = where === 'before' ? landingTarget : landingTarget.nextSibling;
+      elements.forEach(function (element) { host.insertBefore(element, anchor); });
+      applied += 1;
+    });
+    if (applied) syncNav();
+    return { applied: applied, missed: missed, unchanged: unchanged };
+  }
+
   // One step up or down, for the keyboard and for the context menu. Drag is not
   // the only way to reorder a document and should not be the only way here.
   function nudge(nodes, dir) {
@@ -330,7 +368,7 @@ Ryker.move = (function () {
 
   return {
     between: between, count: count, describe: describe, cover: cover,
-    apply: apply, check: check, nudge: nudge, landing: landing,
+    apply: apply, replay: replay, check: check, nudge: nudge, landing: landing,
     movable: movable, syncNav: syncNav
   };
 })();

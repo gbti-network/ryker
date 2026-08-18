@@ -1,17 +1,8 @@
 // Turns a session's edits into a prompt an AI can act on.
 //
-// This is what Ryker exists for. Nothing durable is recorded anywhere; what is
-// produced instead is a description of the difference between the document as
-// authored and the document as it now stands, in terms someone can apply to the
-// source file. On a report with a known source that description can be applied
-// for you, and on a page whose source Ryker cannot reach it is the only output
-// there could be, which is why it is the product rather than a fallback.
-//
-// Two rules govern the output. Everything is expressed against the ORIGINAL
-// document, so five edits to one paragraph read as one change from the text
-// that is actually in the file. And nothing refers to Ryker's own machinery:
-// the source HTML has never heard of a block id, so an instruction that cites
-// one cannot be followed.
+// The prompt describes authored-to-current differences in source terms. Saved
+// rounds may also persist the same data for recovery and explicit export, but
+// instructions never rely on Ryker's runtime-only block ids as user locators.
 Ryker.instructions = (function () {
   'use strict';
 
@@ -20,42 +11,53 @@ Ryker.instructions = (function () {
   var saves = 0;
   var saveNotes = [];
   var baseline = null;
+  var session = null;  // one page load; scopes cumulative revision records
+  var recovery = null; // stable in one tab so a refresh can find its draft
+  var pristinePositions = {};
   var listeners = [];
+
+  function tabSession() {
+    var fresh = Ryker.dom.uid('session');
+    if (Ryker.SURFACE === 'extension') return fresh;
+    var key = 'ryker:session:' + Ryker.config.load().RYKER_DOCUMENT_ID;
+    try {
+      var saved = sessionStorage.getItem(key);
+      if (saved) return saved;
+      sessionStorage.setItem(key, fresh);
+    } catch (e) { /* an in-memory id still keeps this page load safe */ }
+    return fresh;
+  }
 
   function captureOrigin() {
     pristine = Ryker.blocks.snapshot();
     baseline = null;
+    pristinePositions = {};
+    Object.keys(pristine).forEach(function (id) {
+      pristinePositions[id] = placeOf(Ryker.blocks.byId(id));
+    });
+    recovery = tabSession();
+    session = Ryker.dom.uid('edit');
     return Object.keys(pristine).length;
   }
 
-  // What the instructions in this session are measured against.
-  //
-  // Every record written from one page load quotes the same pristine document,
-  // so all of them are cumulative supersets of each other and only the last is
-  // worth keeping. A reload re-runs captureOrigin() against the document as it
-  // then stands, and from that point the records quote a different starting
-  // text, so they have to be COMPOSED with the earlier ones rather than
-  // deduplicated against them.
-  //
-  // Nothing written before 2026-08-16 recorded which of those two cases it was
-  // in. saveNumber resets on reload and is not it: the 17 records in the corpus
-  // run to 5, reset to 2, reset to 1, then continue at 6.
-  //
-  // Derived from the content rather than minted at random on purpose. Two loads
-  // of an unmodified document produce the same id and their records correctly
-  // deduplicate; a load after edits produces a different one and its records
-  // correctly compose. The grouping falls out of what the document was instead
-  // of being asserted by whoever happened to be running.
+  // Content-derived identity for the authored FROM state. Session identity is
+  // separate because independent tabs can start from identical content.
   function baselineId() {
     if (baseline) return baseline;
     if (!pristine) return null;
-    var keys = Object.keys(pristine).sort();
-    var parts = keys.map(function (k) {
-      return k + '\u0000' + Ryker.blocks.htmlOf(pristine[k]);
+    var keys = Object.keys(pristine);
+    var parts = keys.map(function (k, i) {
+      var p = pristine[k] || {};
+      return [i, k, String(p.tag || '').toUpperCase(), p.prev || '',
+        String(p.boxTag || '').toUpperCase(), p.atomic ? '1' : '0',
+        Ryker.blocks.htmlOf(p)].join('\u0000');
     });
     baseline = Ryker.blocks.hash(parts.join('\u0001'));
     return baseline;
   }
+
+  function sessionId() { return recovery; }
+  function editingSessionId() { return session; }
 
   function pristineHtml(id) {
     if (!pristine || !Object.prototype.hasOwnProperty.call(pristine, id)) return undefined;
@@ -117,6 +119,16 @@ Ryker.instructions = (function () {
     return Ryker.blocks.diffSnapshots(pristine, Ryker.blocks.snapshot());
   }
 
+  function recoveryMoves() {
+    if (!pristine) return [];
+    return Ryker.move.between(pristine, Ryker.blocks.snapshot()).map(function (move) {
+      return {
+        kind: 'move', ids: move.ids.slice(),
+        prev: move.prev || null, wasAfter: move.wasAfter || null
+      };
+    });
+  }
+
   // A table holds no blocks of its own: every cell is one. Deleting a table of
   // ten cells therefore reads as ten instructions to remove a word each, which
   // is both unfollowable and hides what actually happened. Where every block
@@ -153,8 +165,10 @@ Ryker.instructions = (function () {
       if (!e.box || !whole[e.box]) { out.push(e); return; }
       if (done[e.box]) return;
       done[e.box] = true;
+      var first = list[whole[e.box][0]];
       out.push({
         kind: 'deletebox', tag: 'TABLE',
+        position: first && first.id && where(first.id),
         cells: whole[e.box].map(function (j) { return list[j].before; })
       });
     });
@@ -172,21 +186,36 @@ Ryker.instructions = (function () {
     return n + (s[(v - 20) % 10] || s[v] || s[0]);
   }
 
+  // Host-authored metadata lives outside the literal FROM/TO fences. Keep it
+  // on one line and JSON-quote it so an id, title or path containing Markdown
+  // cannot manufacture a new instruction section.
+  function oneLine(value) {
+    return String(value == null ? '' : value).replace(/[\r\n\u2028\u2029]+/g, ' ')
+      .replace(/\s+/g, ' ').trim();
+  }
+
+  function quoted(value) { return JSON.stringify(oneLine(value)); }
+
   // Where a block is, said in terms the source file actually contains.
   //
   // Ryker's own ids are derived from content or stamped at runtime, so neither
   // appears in the HTML being edited and neither can be used to find anything.
   // A real id attribute is used when the element has one; otherwise the block is
   // located by its position inside the nearest section that does.
-  function where(id) { return placeOf(Ryker.blocks.byId(id)); }
+  function where(id) {
+    if (Object.prototype.hasOwnProperty.call(pristinePositions, id)) {
+      return pristinePositions[id];
+    }
+    return placeOf(Ryker.blocks.byId(id));
+  }
 
   function placeOf(node) {
     if (!node) return null;
-    if (node.id) return 'the element with id="' + node.id + '"';
+    if (node.id) return 'the element with id=' + quoted(node.id);
 
     var scope = node.parentElement;
     while (scope && !scope.id && scope !== document.body) scope = scope.parentElement;
-    var scopeName = scope && scope.id ? 'the section with id="' + scope.id + '"' : 'the document body';
+    var scopeName = scope && scope.id ? 'the section with id=' + quoted(scope.id) : 'the document body';
     var within = (scope && scope.id) ? scope : Ryker.blocks.root();
 
     var tag = node.tagName.toLowerCase();
@@ -275,7 +304,7 @@ Ryker.instructions = (function () {
       return t ? 'That element begins: "' + t + '"' : null;
     }
     var label = Ryker.outline.label(node);
-    return label ? 'That element is a ' + label.charAt(0).toLowerCase() + label.slice(1) : null;
+    return label ? 'That element is described as ' + quoted(label) + '.' : null;
   }
 
   // One move, written so it can be followed without knowing anything about
@@ -331,7 +360,7 @@ Ryker.instructions = (function () {
       out.push('The contents list links into what moved. Move ' +
         (at.nav.length > 1 ? 'these entries' : 'the entry') + ' to match, so the list');
       out.push('stays in document order:');
-      at.nav.forEach(function (t2) { out.push('  - "' + t2 + '"'); });
+      at.nav.forEach(function (t2) { out.push('  - ' + quoted(t2)); });
     }
   }
 
@@ -355,8 +384,8 @@ Ryker.instructions = (function () {
 
     out.push('# Document edit instructions');
     out.push('');
-    out.push('Document: ' + (document.title || cfg.RYKER_DOCUMENT_ID));
-    out.push('File: ' + cfg.RYKER_DOCUMENT_PATH);
+    out.push('Document: ' + quoted(document.title || cfg.RYKER_DOCUMENT_ID));
+    out.push('File: ' + quoted(cfg.RYKER_DOCUMENT_PATH));
     out.push('Edits: ' + list.length + ' change(s)' +
       (mv.length ? ' and ' + mv.length + ' move(s)' : '') +
       ' across ' + saves + ' save(s) this session');
@@ -399,8 +428,9 @@ Ryker.instructions = (function () {
     out.push('authored. Every FROM below is the original text, so this applies cleanly');
     out.push('to a fresh copy of the file even where a block was edited several times.');
     out.push('');
-    out.push('Locate each element by the quoted FROM text, which is exact and unique.');
-    out.push('The position given alongside it is a cross-check, not a selector. Replace');
+    out.push('Locate each element using both its quoted FROM text and its Position.');
+    out.push('The FROM text is exact but may also occur in another element. Position is');
+    out.push('therefore part of the selector, not merely a cross-check. Replace');
     out.push('only the inner HTML, leaving the tag and its attributes alone. Add no');
     out.push('attributes of your own. Text between <<< and >>> is literal and includes');
     out.push('markup. Change nothing that is not named here.');
@@ -512,6 +542,10 @@ Ryker.instructions = (function () {
       } else if (e.kind === 'deletebox') {
         out.push('## ' + n + '. Delete a whole <table>');
         out.push('');
+        if (e.position) {
+          out.push('Position: the <table> containing ' + e.position + '.');
+          out.push('');
+        }
         out.push('Remove the entire <table> element, its rows and its cells. Leave any');
         out.push('caption, heading or paragraph around it alone unless another step names');
         out.push('it. The table is the one whose cells read, in order:');
@@ -524,6 +558,8 @@ Ryker.instructions = (function () {
       } else if (e.kind === 'delete' && e.atomic && String(e.tag).toUpperCase() === 'SVG') {
         out.push('## ' + n + '. Delete the whole <svg>');
         out.push('');
+        var sw = where(e.id);
+        if (sw) { out.push('Position: ' + sw); out.push(''); }
         out.push('Remove the entire SVG element, including all paths, shapes, labels and attributes.');
         out.push('Leave its surrounding container and adjacent content unchanged. Match this exact element:');
         out.push('<<<'); out.push(e.before); out.push('>>>');
@@ -531,6 +567,11 @@ Ryker.instructions = (function () {
       } else {
         out.push('## ' + n + '. Delete a block');
         out.push('');
+        var dw = where(e.id);
+        if (dw) {
+          out.push('Position: ' + dw);
+          out.push('');
+        }
         out.push('Remove the element whose exact contents are:');
         out.push('<<<'); out.push(e.before); out.push('>>>');
         out.push('');
@@ -550,7 +591,8 @@ Ryker.instructions = (function () {
   return {
     record: record, build: build, edits: edits, moves: moves, reset: reset,
     captureOrigin: captureOrigin, originalOf: originalOf, baselineId: baselineId,
-    recoveryChanges: recoveryChanges,
+    sessionId: sessionId, editingSessionId: editingSessionId,
+    recoveryChanges: recoveryChanges, recoveryMoves: recoveryMoves,
     saveCount: saveCount, saveNotes: notes,
     onChange: onChange, where: where, suspicious: suspicious
   };
