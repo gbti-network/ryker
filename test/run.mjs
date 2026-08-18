@@ -2291,7 +2291,7 @@ async function runExtension(sess) {
   assert(manifest.manifest_version === 3,
     'the unpacked extension uses Manifest V3');
   assert(manifest.description ===
-    'Ryker adds inline editing to HTML and Markdown and exports prompt-ready, machine-readable change requests.' &&
+    'Inline editing for HTML and Markdown. Export your corrections as agent-ready instructions a model can learn from.' &&
     manifest.description.length <= 132,
   'the manifest carries the product description within Chrome\'s 132-character limit',
   `${manifest.description.length} characters: ${manifest.description}`);
