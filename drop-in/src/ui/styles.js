@@ -49,6 +49,21 @@ Ryker.styles = (function () {
     // which is backwards.
     '.ryker-pick,.ryker-pick[contenteditable="true"]:focus{background:none;border-radius:4px;',
     '  box-shadow:inset 0 0 0 2px rgba(79,70,229,.55)}',
+    // The unsaved bar sits in the margin, not against the prose.
+    //
+    // Drawn as an inset shadow it inherited the block's 4px radius, so a 3px
+    // bar came to a point at each end and read as a smudge rather than as a
+    // deliberate edge, and with no padding the first letter of every line
+    // touched it. Square ends and a gutter of its own fix both.
+    //
+    // The negative margin pays for the padding, so a block does not jump
+    // sideways the moment it becomes dirty. Carried past .ryker-pick on
+    // specificity as well as on order, because a block that is picked AND
+    // unsaved must not get its rounded ends back.
+    '[contenteditable="true"].ryker-dirty,[contenteditable="true"].ryker-dirty:focus,',
+    '[contenteditable="true"].ryker-dirty.ryker-pick,',
+    '[contenteditable="true"].ryker-dirty.ryker-pick:focus{',
+    '  border-radius:0;margin-left:-12px;padding-left:12px}',
     // While a cross-block drag is live, the browser must not also be painting a
     // text selection underneath it.
     'body.ryker-picking, body.ryker-picking *{-webkit-user-select:none;user-select:none}',

@@ -2211,6 +2211,71 @@ async function runMove(sess, file) {
         : `${roundTrip.afterCount} phantom move(s): the derivation accumulated instead ` +
           'of comparing, which is the bug the module was written to avoid');
   }
+
+  // A heading moves past a whole unit, not past one element.
+  //
+  // This was live and reachable from the outline rail's own Move up and Move
+  // down. In a document whose headings and paragraphs are flat siblings, which
+  // is most exported HTML, the sibling above a heading is the previous
+  // section's LAST paragraph. Landing there wedged the moved section between
+  // the heading and body above it and left that body stranded at the end,
+  // under a heading it had nothing to do with. Moving down did the mirror
+  // image of it.
+  const units = await evaluate(sess, `(function () {
+    var host = document.createElement('div');
+    var SEED = '<h3>Alpha head</h3><p>Alpha body</p>' +
+      '<h3>Beta head</h3><p>Beta body</p>' +
+      '<h3>Gamma head</h3><p>Gamma body</p>';
+    host.innerHTML = SEED;
+    document.body.appendChild(host);
+
+    function shape() {
+      return Array.prototype.map.call(host.children, function (e) {
+        return e.textContent.replace(' ', '.');
+      }).join(' ');
+    }
+    function unitFor(text) {
+      var head = Array.prototype.filter.call(host.children, function (e) {
+        return e.textContent === text;
+      })[0];
+      return head ? Ryker.outline.unitOf(head) : null;
+    }
+
+    var out = {};
+    var gamma = unitFor('Gamma head');
+    out.unit = gamma ? gamma.map(function (n) { return n.tagName; }).join(',') : 'none';
+    out.upSaid = Ryker.move.nudge(gamma, 'up');
+    out.up = shape();
+
+    host.innerHTML = SEED;
+    out.downSaid = Ryker.move.nudge(unitFor('Alpha head'), 'down');
+    out.down = shape();
+
+    // The first unit under its own parent heading still reports the edge
+    // rather than silently doing nothing.
+    host.innerHTML = SEED;
+    out.firstSaid = Ryker.move.nudge(unitFor('Alpha head'), 'up');
+    out.first = shape();
+
+    host.parentNode.removeChild(host);
+    return out;
+  })()`);
+
+  assert(units.unit === 'H3,P',
+    'the outline treats a heading and the body under it as one unit',
+    units.unit);
+  assert(units.upSaid === null && units.up ===
+    'Alpha.head Alpha.body Gamma.head Gamma.body Beta.head Beta.body',
+  'moving a section up carries it over the whole section above, not over one paragraph',
+  `${units.upSaid || 'moved'}: ${units.up}`);
+  assert(units.downSaid === null && units.down ===
+    'Beta.head Beta.body Alpha.head Alpha.body Gamma.head Gamma.body',
+  'moving a section down carries it over the whole section below',
+  `${units.downSaid || 'moved'}: ${units.down}`);
+  assert(units.first ===
+    'Alpha.head Alpha.body Beta.head Beta.body Gamma.head Gamma.body',
+  'moving the first section up leaves the document alone',
+  `${units.firstSaid || 'moved'}: ${units.first}`);
 }
 
 // The extension bundle shares every source module with the drop-in but has the

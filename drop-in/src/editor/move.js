@@ -355,6 +355,57 @@ Ryker.move = (function () {
 
   // One step up or down, for the keyboard and for the context menu. Drag is not
   // the only way to reorder a document and should not be the only way here.
+  // A heading unit moves past a whole SECTION of the document, not past one
+  // element.
+  //
+  // The sibling immediately above a heading is the LAST paragraph of the
+  // section above it, and the sibling immediately below a unit is the NEXT
+  // section's heading. Landing against either of those stranded a paragraph:
+  // moving "Stop blocking on verification" up put it between the heading and
+  // the body of the section above, and left that section's paragraph at the
+  // end of the document under someone else's heading. Reproduced on a flat
+  // heading-and-paragraph document, 2026-08-18. This is the outline rail's own
+  // Move up and Move down, so it was reachable in any document that does not
+  // wrap every subsection in its own container.
+  //
+  // So a move has to land against the far edge of the neighbouring unit: the
+  // FIRST element of the unit above going up, the LAST element of the unit
+  // below going down.
+
+  // Where one unit stops and the next begins. A SECTION is a unit on its own,
+  // and so is a heading at or above the rank being moved. A deeper heading is
+  // part of the unit it sits inside and does not open a new one.
+  function opensUnit(el, rank) {
+    if (!el) return true;
+    if (el.tagName === 'SECTION') return true;
+    var r = Ryker.outline.rankOf(el);
+    return !!r && r <= rank;
+  }
+
+  function unitEdge(from, dir, rank) {
+    if (!rank) return from;
+    var edge = from, n;
+
+    if (dir === 'up') {
+      n = from;
+      while (n && !opensUnit(n, rank)) {
+        if (movable(n)) edge = n;
+        n = n.previousElementSibling;
+      }
+      // A heading opens the unit, so it IS the landing point. A SECTION or the
+      // top of the container does not, and the earliest block seen is.
+      if (n && n.tagName !== 'SECTION') return n;
+      return edge;
+    }
+
+    n = from.nextElementSibling;
+    while (n && !opensUnit(n, rank)) {
+      if (movable(n)) edge = n;
+      n = n.nextElementSibling;
+    }
+    return edge;
+  }
+
   function nudge(nodes, dir) {
     if (!nodes || !nodes.length) return 'There is nothing to move.';
     var n = dir === 'up' ? nodes[0].previousElementSibling
@@ -363,6 +414,7 @@ Ryker.move = (function () {
       n = dir === 'up' ? n.previousElementSibling : n.nextElementSibling;
     }
     if (!n) return dir === 'up' ? 'It is already first.' : 'It is already last.';
+    n = unitEdge(n, dir, Ryker.outline.rankOf(nodes[0]));
     return apply(nodes, n, dir === 'up' ? 'before' : 'after');
   }
 
