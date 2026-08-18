@@ -18,8 +18,8 @@
  *   ui/tooltip.js  (82 lines)
  *   ui/dialog.js  (138 lines)
  *   ui/menu.js  (104 lines)
- *   editor/editable.js  (585 lines)
- *   editor/history.js  (243 lines)
+ *   editor/editable.js  (591 lines)
+ *   editor/history.js  (248 lines)
  *   editor/formatbar.js  (252 lines)
  *   editor/links.js  (173 lines)
  *   editor/pick.js  (228 lines)
@@ -27,7 +27,7 @@
  *   editor/table.js  (345 lines)
  *   editor/outline.js  (289 lines)
  *   editor/move.js  (427 lines)
- *   editor/units.js  (311 lines)
+ *   editor/units.js  (328 lines)
  *   ui/rail.js  (530 lines)
  *   instructions/steps.js  (375 lines)
  *   instructions/instructions.js  (501 lines)
@@ -2884,6 +2884,7 @@
       if (!baseline) {
         baseline = Ryker.blocks.snapshot();
         Ryker.history.captureBaseline(baseline);
+        Ryker.units.capture();
       }
       Ryker.blocks.all().forEach(function (b) { arm(b.node, b.id); });
       // Apart from table cells, all() omits empty authored blocks because they
@@ -3389,7 +3390,11 @@
       if (!baseline) return false;
       var now = Ryker.blocks.snapshot();
       if (Ryker.blocks.diffSnapshots(baseline, now).length) return true;
-      return !!(Ryker.move && Ryker.move.between(baseline, now).length);
+      // Container membership, which block order cannot see. Moving a table to
+      // the front of another section leaves the flat sequence of blocks
+      // untouched, so this used to report clean with the table in the wrong
+      // place, and Discard then cleared the dirty flag without putting it back.
+      return !!(Ryker.units && Ryker.units.moves().length);
     }
 
     function baselineOf() { return baseline; }
@@ -3400,6 +3405,7 @@
     function rebase() {
       baseline = Ryker.blocks.snapshot();
       Ryker.history.captureBaseline(baseline);
+      Ryker.units.rebase();
       Array.prototype.forEach.call(document.querySelectorAll('.ryker-dirty'), function (n) {
         n.classList.remove('ryker-dirty');
       });
@@ -3594,6 +3600,11 @@
       Object.keys(baselineRows).reverse().forEach(function (id) {
         if (!baselineRows[id].node.isConnected) restore(baselineRows[id]);
       });
+      // Then position. A move never detaches anything, so nothing above sees it
+      // and the block restore below works from each block's own parent, which is
+      // unchanged when the parent is the thing that moved. Without this a moved
+      // section, table or list stayed where it was dropped.
+      if (Ryker.units) Ryker.units.restore();
 
       var current = Ryker.blocks.snapshot();
       var extras = [];
@@ -5871,21 +5882,38 @@
     function baselineOf() { return baseline; }
     function moves() { return baseline ? diff(baseline, snapshot()) : []; }
 
-    // Reverse order, so a unit's recorded next sibling is back where it belongs
+    // Two passes, because the two things being fixed want opposite orders.
+    //
+    // Forward first, parents before children, so a unit that was deleted along
+    // with its container is put back into a container that is in the document
+    // again rather than into a detached one, which is how a restored block
+    // vanished from the report while Discard reported success.
+    //
+    // Reverse second, so a unit's recorded next sibling is back where it belongs
     // before it is used as an insertion point. Same reasoning as move.js's own
     // undo, and the same failure without it: the run comes back inside out.
     //
-    // No isConnected guard. A unit that MOVED is still in the document, which is
-    // exactly the case this exists for, and skipping it was why Discard restored
-    // a moved paragraph and left a moved table where it was dropped.
+    // No isConnected guard on the second pass. A unit that MOVED is still in the
+    // document, which is exactly the case this exists for, and skipping it was
+    // why Discard restored a moved paragraph and left a moved table where it was
+    // dropped.
+    function put(ref) {
+      if (!ref.parent || !ref.parent.isConnected) return false;
+      var at = ref.next && ref.next.parentNode === ref.parent ? ref.next : null;
+      if (ref.node.parentNode === ref.parent && ref.node.nextSibling === at) return false;
+      ref.parent.insertBefore(ref.node, at);
+      return true;
+    }
+
     function restore() {
-      marks.slice().reverse().forEach(function (ref) {
-        if (!ref.parent || !ref.parent.isConnected) return;
-        var at = ref.next && ref.next.parentNode === ref.parent ? ref.next : null;
-        if (ref.node.parentNode === ref.parent && ref.node.nextSibling === at) return;
-        ref.parent.insertBefore(ref.node, at);
+      var touched = false;
+      marks.forEach(function (ref) {
+        if (!ref.node.isConnected && put(ref)) touched = true;
       });
-      if (marks.length) Ryker.move.syncNav();
+      marks.slice().reverse().forEach(function (ref) {
+        if (put(ref)) touched = true;
+      });
+      if (touched) Ryker.move.syncNav();
     }
 
     return {

@@ -2472,7 +2472,7 @@ async function runUnits(sess, file) {
   for (const [what, tag, mover] of SHAPES) {
     await navigate(sess, FIXTURE);
     await evaluate(sess, code);
-    await waitInPage(sess, `!!(window.Ryker && Ryker.units)`, 10000, 'the unit module');
+    await waitInPage(sess, `!!(window.Ryker && Ryker.units && Ryker.editable.baselineOf())`, 10000, 'the unit baseline');
     const out = await evaluate(sess, `(function () {
       while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
       Ryker.units.capture();
@@ -2508,7 +2508,7 @@ async function runUnits(sess, file) {
   // that made deriving moves worth keeping over recording them.
   await navigate(sess, FIXTURE);
   await evaluate(sess, code);
-  await waitInPage(sess, `!!(window.Ryker && Ryker.units)`, 10000, 'the unit module');
+  await waitInPage(sess, `!!(window.Ryker && Ryker.units && Ryker.editable.baselineOf())`, 10000, 'the unit baseline');
   const several = await evaluate(sess, `(function () {
     while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
     Ryker.units.capture();
@@ -2537,11 +2537,43 @@ async function runUnits(sess, file) {
   'two moves are two records, and a unit moved out and back reports nothing at all',
   JSON.stringify(several));
 
+  // The same shapes through the real toolbar path rather than through
+  // units.restore() directly. Every one of these failed before: three left the
+  // document changed and told the truth about it, and the table left the
+  // document changed and reported clean, because moving it to the front of
+  // another section leaves the flat block sequence untouched.
+  for (const [what, mover] of [
+    ['a section', `Ryker.move.apply([document.querySelector('#media')], document.querySelector('#intro'), 'before')`],
+    ['a table', `Ryker.move.apply([document.querySelector('#data table')], document.querySelector('#grid h3'), 'after')`],
+    ['a list', `Ryker.move.apply([document.querySelector('#intro ul')], document.querySelector('#intro h2'), 'before')`],
+    ['a heading', `Ryker.move.apply([document.querySelector('#intro h2')], document.querySelector('#intro ul'), 'after')`],
+    ['a list item', `Ryker.move.apply([document.querySelector('#intro ul li')], document.querySelector('#intro ul li:last-child'), 'after')`]
+  ]) {
+    await navigate(sess, FIXTURE);
+    await evaluate(sess, code);
+    await waitInPage(sess, `!!(window.Ryker && Ryker.units && Ryker.editable.baselineOf())`, 10000, 'the unit baseline');
+    const discard = await evaluate(sess, `(function () {
+      while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+      var authored = ${SHAPE};
+      var refused = ${mover};
+      var moved = ${SHAPE};
+      var dirty = Ryker.editable.isDirty();
+      Ryker.editable.revertAll();
+      return { refused: refused, changed: moved !== authored, dirty: dirty,
+        restored: ${SHAPE} === authored, settled: !Ryker.editable.isDirty(),
+        after: ${SHAPE} };
+    })()`);
+    assert(!discard.refused && discard.changed && discard.dirty &&
+      discard.restored && discard.settled,
+    `moving ${what} marks the document dirty, and Discard puts it back`,
+    JSON.stringify(discard));
+  }
+
   // A record naming something the document no longer has is a miss, not a
   // guess. Placing it anywhere is how a restore damages a document.
   await navigate(sess, FIXTURE);
   await evaluate(sess, code);
-  await waitInPage(sess, `!!(window.Ryker && Ryker.units)`, 10000, 'the unit module');
+  await waitInPage(sess, `!!(window.Ryker && Ryker.units && Ryker.editable.baselineOf())`, 10000, 'the unit baseline');
   const unresolved = await evaluate(sess, `(function () {
     while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
     Ryker.units.capture();

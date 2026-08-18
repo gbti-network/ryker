@@ -153,6 +153,11 @@ Ryker.history = (function () {
     Object.keys(baselineRows).reverse().forEach(function (id) {
       if (!baselineRows[id].node.isConnected) restore(baselineRows[id]);
     });
+    // Then position. A move never detaches anything, so nothing above sees it
+    // and the block restore below works from each block's own parent, which is
+    // unchanged when the parent is the thing that moved. Without this a moved
+    // section, table or list stayed where it was dropped.
+    if (Ryker.units) Ryker.units.restore();
 
     var current = Ryker.blocks.snapshot();
     var extras = [];

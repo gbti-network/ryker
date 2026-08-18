@@ -285,21 +285,38 @@ Ryker.units = (function () {
   function baselineOf() { return baseline; }
   function moves() { return baseline ? diff(baseline, snapshot()) : []; }
 
-  // Reverse order, so a unit's recorded next sibling is back where it belongs
+  // Two passes, because the two things being fixed want opposite orders.
+  //
+  // Forward first, parents before children, so a unit that was deleted along
+  // with its container is put back into a container that is in the document
+  // again rather than into a detached one, which is how a restored block
+  // vanished from the report while Discard reported success.
+  //
+  // Reverse second, so a unit's recorded next sibling is back where it belongs
   // before it is used as an insertion point. Same reasoning as move.js's own
   // undo, and the same failure without it: the run comes back inside out.
   //
-  // No isConnected guard. A unit that MOVED is still in the document, which is
-  // exactly the case this exists for, and skipping it was why Discard restored
-  // a moved paragraph and left a moved table where it was dropped.
+  // No isConnected guard on the second pass. A unit that MOVED is still in the
+  // document, which is exactly the case this exists for, and skipping it was
+  // why Discard restored a moved paragraph and left a moved table where it was
+  // dropped.
+  function put(ref) {
+    if (!ref.parent || !ref.parent.isConnected) return false;
+    var at = ref.next && ref.next.parentNode === ref.parent ? ref.next : null;
+    if (ref.node.parentNode === ref.parent && ref.node.nextSibling === at) return false;
+    ref.parent.insertBefore(ref.node, at);
+    return true;
+  }
+
   function restore() {
-    marks.slice().reverse().forEach(function (ref) {
-      if (!ref.parent || !ref.parent.isConnected) return;
-      var at = ref.next && ref.next.parentNode === ref.parent ? ref.next : null;
-      if (ref.node.parentNode === ref.parent && ref.node.nextSibling === at) return;
-      ref.parent.insertBefore(ref.node, at);
+    var touched = false;
+    marks.forEach(function (ref) {
+      if (!ref.node.isConnected && put(ref)) touched = true;
     });
-    if (marks.length) Ryker.move.syncNav();
+    marks.slice().reverse().forEach(function (ref) {
+      if (put(ref)) touched = true;
+    });
+    if (touched) Ryker.move.syncNav();
   }
 
   return {

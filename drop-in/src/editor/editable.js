@@ -30,6 +30,7 @@ Ryker.editable = (function () {
     if (!baseline) {
       baseline = Ryker.blocks.snapshot();
       Ryker.history.captureBaseline(baseline);
+      Ryker.units.capture();
     }
     Ryker.blocks.all().forEach(function (b) { arm(b.node, b.id); });
     // Apart from table cells, all() omits empty authored blocks because they
@@ -535,7 +536,11 @@ Ryker.editable = (function () {
     if (!baseline) return false;
     var now = Ryker.blocks.snapshot();
     if (Ryker.blocks.diffSnapshots(baseline, now).length) return true;
-    return !!(Ryker.move && Ryker.move.between(baseline, now).length);
+    // Container membership, which block order cannot see. Moving a table to
+    // the front of another section leaves the flat sequence of blocks
+    // untouched, so this used to report clean with the table in the wrong
+    // place, and Discard then cleared the dirty flag without putting it back.
+    return !!(Ryker.units && Ryker.units.moves().length);
   }
 
   function baselineOf() { return baseline; }
@@ -546,6 +551,7 @@ Ryker.editable = (function () {
   function rebase() {
     baseline = Ryker.blocks.snapshot();
     Ryker.history.captureBaseline(baseline);
+    Ryker.units.rebase();
     Array.prototype.forEach.call(document.querySelectorAll('.ryker-dirty'), function (n) {
       n.classList.remove('ryker-dirty');
     });
