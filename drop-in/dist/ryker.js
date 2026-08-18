@@ -30,7 +30,7 @@
  *   instructions/instructions.js  (600 lines)
  *   instructions/merge.js  (405 lines)
  *   storage/fs.js  (336 lines)
- *   storage/logger.js  (428 lines)
+ *   storage/logger.js  (433 lines)
  *   instructions/browser.js  (296 lines)
  *   ui/pane.js  (292 lines)
  *   storage/recover.js  (298 lines)
@@ -7364,6 +7364,11 @@
     // report is being read from disk, is open the folder as a directory listing
     // in a new tab, which is the closest thing available and is genuinely useful.
     function folderUrl() {
+      // There is no folder when the records live in extension storage, so there
+      // is nothing to open. Without this the browser offered "Open the folder in
+      // a new tab" on the extension surface whenever the page happened to be a
+      // file:// one, pointing at a directory that was never created.
+      if (ownedStore()) return null;
       if (location.protocol !== 'file:') return null;
       var base = location.href.replace(/[^/]*$/, '');
       return base + LIB + '/' + DIR_NAME + '/' +

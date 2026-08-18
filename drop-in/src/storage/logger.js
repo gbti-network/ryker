@@ -397,6 +397,11 @@ Ryker.logger = (function () {
   // report is being read from disk, is open the folder as a directory listing
   // in a new tab, which is the closest thing available and is genuinely useful.
   function folderUrl() {
+    // There is no folder when the records live in extension storage, so there
+    // is nothing to open. Without this the browser offered "Open the folder in
+    // a new tab" on the extension surface whenever the page happened to be a
+    // file:// one, pointing at a directory that was never created.
+    if (ownedStore()) return null;
     if (location.protocol !== 'file:') return null;
     var base = location.href.replace(/[^/]*$/, '');
     return base + LIB + '/' + DIR_NAME + '/' +
