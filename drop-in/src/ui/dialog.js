@@ -29,16 +29,22 @@ Ryker.dialog = (function () {
       }
     };
 
+    // Handed back in the order they were declared, so a caller can enable,
+    // disable or hide one as the dialog's own fields change. Without this the
+    // only way to reach a button was to guess at its position in the footer.
+    api.buttons = [];
     (opts.buttons || []).forEach(function (b) {
-      foot.appendChild(d.el('button', {
-        class: 'rk' + (b.primary ? ' on' : '') + (b.danger ? ' danger' : ''),
+      var node = d.el('button', {
+        class: 'rk' + (b.primary ? ' primary' : '') + (b.danger ? ' danger' : ''),
         text: b.label,
         onclick: function () {
           if (!b.action) { api.close(); return; }
           var r = b.action(api);
           if (r !== false && !b.keepOpen) api.close();
         }
-      }));
+      });
+      api.buttons.push(node);
+      foot.appendChild(node);
     });
     if (!opts.buttons || !opts.buttons.length) {
       foot.appendChild(d.el('button', { class: 'rk', text: 'Close', onclick: api.close }));

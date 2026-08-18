@@ -11,12 +11,12 @@
  *   export/zip.js  (193 lines)
  *   export/html.js  (186 lines)
  *   export/packager.js  (277 lines)
- *   ui/theme.js  (56 lines)
- *   ui/styles.js  (386 lines)
+ *   ui/theme.js  (61 lines)
+ *   ui/styles.js  (405 lines)
  *   ui/shell.js  (241 lines)
  *   ui/icons.js  (67 lines)
  *   ui/tooltip.js  (82 lines)
- *   ui/dialog.js  (132 lines)
+ *   ui/dialog.js  (138 lines)
  *   ui/menu.js  (104 lines)
  *   editor/editable.js  (585 lines)
  *   editor/history.js  (213 lines)
@@ -35,7 +35,7 @@
  *   instructions/browser.js  (296 lines)
  *   ui/pane.js  (292 lines)
  *   storage/recover.js  (298 lines)
- *   bootstrap/boot.js  (567 lines)
+ *   bootstrap/boot.js  (575 lines)
  *
  * Classic script by design: module scripts do not load from file:// URLs,
  * and a report handed over as a ZIP is opened from disk.
@@ -1744,7 +1744,11 @@
       warn: '#b45309', onwarn: '#ffffff', warnSoft: 'rgba(180,83,9,.10)',
       ok: '#15803d', onok: '#ffffff', okSoft: 'rgba(21,128,61,.10)',
       danger: '#be123c', dangerSoft: 'rgba(190,18,60,.09)',
-      brand: '#e5383b', ring: 'rgba(79,70,229,.35)',
+      // The brand red is the primary action colour. brandInk is what reads on
+      // top of it and brandStrong is its pressed and hovered shade, so a primary
+      // button is the brand rather than an approximation of it.
+      brand: '#e5383b', brandInk: '#ffffff', brandStrong: '#c42b2e',
+      ring: 'rgba(79,70,229,.35)',
       shadowMd: '0 1px 2px rgba(16,20,30,.06),0 4px 12px rgba(16,20,30,.08)',
       shadowXl: '0 8px 24px rgba(16,20,30,.12),0 24px 56px rgba(16,20,30,.16)',
       font: 'system-ui,sans-serif', mono: 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace',
@@ -1761,7 +1765,8 @@
       accentSoft: 'accent-soft', active: 'active', activeLine: 'active-line',
       onactive: 'onactive', warn: 'warn', onwarn: 'onwarn', warnSoft: 'warn-soft',
       ok: 'ok', onok: 'onok', okSoft: 'ok-soft', danger: 'danger', dangerSoft: 'danger-soft',
-      brand: 'brand-color', ring: 'ring', shadowMd: 'sh-md', shadowXl: 'sh-xl',
+      brand: 'brand-color', brandInk: 'brand-ink', brandStrong: 'brand-strong',
+      ring: 'ring', shadowMd: 'sh-md', shadowXl: 'sh-xl',
       font: 'font', mono: 'mono', rSm: 'r-sm', rMd: 'r-md', rLg: 'r-lg', rXl: 'r-xl',
       s1: 's1', s2: 's2', s3: 's3', s4: 's4', s5: 's5', s6: 's6'
     };
@@ -1905,6 +1910,10 @@
       'button.rk:hover:not(:disabled){background:var(--rk-bg2);border-color:var(--rk-muted);color:var(--rk-fg)}',
       'button.rk:active:not(:disabled){background:var(--rk-bg3)}',
       'button.rk:disabled{opacity:.45;cursor:not-allowed}',
+      // display:inline-flex on the base rule outranks the user agent's
+      // [hidden]{display:none}, so a button hidden by the attribute stayed on
+      // screen. Author display beats user agent display; this restores it.
+      'button.rk[hidden]{display:none}',
       'button.rk.ghost{border-color:transparent;background:transparent}',
       'button.rk.ghost:hover:not(:disabled){background:var(--rk-bg2);border-color:var(--rk-line)}',
       'button.rk.danger:hover:not(:disabled){background:var(--rk-danger-soft);',
@@ -1916,6 +1925,21 @@
       'button.rk.on{background:var(--rk-active);border-color:var(--rk-active-line);color:var(--rk-onactive);font-weight:600}',
       'button.rk.on:hover:not(:disabled){background:var(--rk-bg3);border-color:var(--rk-active-line);',
       '  color:var(--rk-onactive)}',
+      // Primary is the brand, and it is not the same thing as active. A dialog's
+      // confirming action used to borrow .on, which is the grey a toggled
+      // toolbar button wears, so the one button meant to be reached for looked
+      // like a switch that happened to be on. It comes after .on for the same
+      // specificity reason .on comes after .ghost.
+      'button.rk.primary{background:var(--rk-brand-color);border-color:var(--rk-brand-color);',
+      '  color:var(--rk-brand-ink);font-weight:600}',
+      'button.rk.primary:hover:not(:disabled),button.rk.primary:active:not(:disabled){',
+      '  background:var(--rk-brand-strong);border-color:var(--rk-brand-strong);',
+      '  color:var(--rk-brand-ink)}',
+      // A destructive confirm is primary by weight and danger by meaning. Danger
+      // wins the colour, because brand red on a Delete reads as encouragement.
+      'button.rk.primary.danger,button.rk.primary.danger:hover:not(:disabled),',
+      'button.rk.primary.danger:active:not(:disabled){background:var(--rk-danger);',
+      '  border-color:var(--rk-danger);color:var(--rk-brand-ink)}',
 
       ':is(button.rk,.handle,input.rk,textarea.rk):focus-visible{',
       '  outline:2px solid transparent;box-shadow:0 0 0 3px var(--rk-ring);',
@@ -2603,16 +2627,22 @@
         }
       };
 
+      // Handed back in the order they were declared, so a caller can enable,
+      // disable or hide one as the dialog's own fields change. Without this the
+      // only way to reach a button was to guess at its position in the footer.
+      api.buttons = [];
       (opts.buttons || []).forEach(function (b) {
-        foot.appendChild(d.el('button', {
-          class: 'rk' + (b.primary ? ' on' : '') + (b.danger ? ' danger' : ''),
+        var node = d.el('button', {
+          class: 'rk' + (b.primary ? ' primary' : '') + (b.danger ? ' danger' : ''),
           text: b.label,
           onclick: function () {
             if (!b.action) { api.close(); return; }
             var r = b.action(api);
             if (r !== false && !b.keepOpen) api.close();
           }
-        }));
+        });
+        api.buttons.push(node);
+        foot.appendChild(node);
       });
       if (!opts.buttons || !opts.buttons.length) {
         foot.appendChild(d.el('button', { class: 'rk', text: 'Close', onclick: api.close }));
@@ -8726,7 +8756,7 @@
         d().el('p', { text: 'Add optional context for this round of changes. It will travel with the instructions and revision record.' }),
         field
       ]);
-      Ryker.dialog.open({
+      var dialog = Ryker.dialog.open({
         title: 'Add context to this save', body: body,
         buttons: [
           { label: 'Cancel' },
@@ -8735,6 +8765,14 @@
             action: function () { save(quiet, field.value); } }
         ]
       });
+
+      // Offered only once there is a comment to save. An empty field makes the
+      // two save buttons do exactly the same thing, and a person choosing
+      // between them has to read both to discover that.
+      var withComment = dialog.buttons[2];
+      function offerComment() { withComment.hidden = !field.value.trim(); }
+      field.addEventListener('input', offerComment);
+      offerComment();
     }
 
     // A save writes nothing. It takes the edits made since the last one,

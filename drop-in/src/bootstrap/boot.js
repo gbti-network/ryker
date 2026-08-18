@@ -292,7 +292,7 @@ Ryker.boot = (function () {
       d().el('p', { text: 'Add optional context for this round of changes. It will travel with the instructions and revision record.' }),
       field
     ]);
-    Ryker.dialog.open({
+    var dialog = Ryker.dialog.open({
       title: 'Add context to this save', body: body,
       buttons: [
         { label: 'Cancel' },
@@ -301,6 +301,14 @@ Ryker.boot = (function () {
           action: function () { save(quiet, field.value); } }
       ]
     });
+
+    // Offered only once there is a comment to save. An empty field makes the
+    // two save buttons do exactly the same thing, and a person choosing
+    // between them has to read both to discover that.
+    var withComment = dialog.buttons[2];
+    function offerComment() { withComment.hidden = !field.value.trim(); }
+    field.addEventListener('input', offerComment);
+    offerComment();
   }
 
   // A save writes nothing. It takes the edits made since the last one,

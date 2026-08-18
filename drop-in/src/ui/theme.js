@@ -12,7 +12,11 @@ Ryker.theme = (function () {
     warn: '#b45309', onwarn: '#ffffff', warnSoft: 'rgba(180,83,9,.10)',
     ok: '#15803d', onok: '#ffffff', okSoft: 'rgba(21,128,61,.10)',
     danger: '#be123c', dangerSoft: 'rgba(190,18,60,.09)',
-    brand: '#e5383b', ring: 'rgba(79,70,229,.35)',
+    // The brand red is the primary action colour. brandInk is what reads on
+    // top of it and brandStrong is its pressed and hovered shade, so a primary
+    // button is the brand rather than an approximation of it.
+    brand: '#e5383b', brandInk: '#ffffff', brandStrong: '#c42b2e',
+    ring: 'rgba(79,70,229,.35)',
     shadowMd: '0 1px 2px rgba(16,20,30,.06),0 4px 12px rgba(16,20,30,.08)',
     shadowXl: '0 8px 24px rgba(16,20,30,.12),0 24px 56px rgba(16,20,30,.16)',
     font: 'system-ui,sans-serif', mono: 'ui-monospace,SFMono-Regular,Menlo,Consolas,monospace',
@@ -29,7 +33,8 @@ Ryker.theme = (function () {
     accentSoft: 'accent-soft', active: 'active', activeLine: 'active-line',
     onactive: 'onactive', warn: 'warn', onwarn: 'onwarn', warnSoft: 'warn-soft',
     ok: 'ok', onok: 'onok', okSoft: 'ok-soft', danger: 'danger', dangerSoft: 'danger-soft',
-    brand: 'brand-color', ring: 'ring', shadowMd: 'sh-md', shadowXl: 'sh-xl',
+    brand: 'brand-color', brandInk: 'brand-ink', brandStrong: 'brand-strong',
+    ring: 'ring', shadowMd: 'sh-md', shadowXl: 'sh-xl',
     font: 'font', mono: 'mono', rSm: 'r-sm', rMd: 'r-md', rLg: 'r-lg', rXl: 'r-xl',
     s1: 's1', s2: 's2', s3: 's3', s4: 's4', s5: 's5', s6: 's6'
   };

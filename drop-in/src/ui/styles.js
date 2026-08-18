@@ -115,6 +115,10 @@ Ryker.styles = (function () {
     'button.rk:hover:not(:disabled){background:var(--rk-bg2);border-color:var(--rk-muted);color:var(--rk-fg)}',
     'button.rk:active:not(:disabled){background:var(--rk-bg3)}',
     'button.rk:disabled{opacity:.45;cursor:not-allowed}',
+    // display:inline-flex on the base rule outranks the user agent's
+    // [hidden]{display:none}, so a button hidden by the attribute stayed on
+    // screen. Author display beats user agent display; this restores it.
+    'button.rk[hidden]{display:none}',
     'button.rk.ghost{border-color:transparent;background:transparent}',
     'button.rk.ghost:hover:not(:disabled){background:var(--rk-bg2);border-color:var(--rk-line)}',
     'button.rk.danger:hover:not(:disabled){background:var(--rk-danger-soft);',
@@ -126,6 +130,21 @@ Ryker.styles = (function () {
     'button.rk.on{background:var(--rk-active);border-color:var(--rk-active-line);color:var(--rk-onactive);font-weight:600}',
     'button.rk.on:hover:not(:disabled){background:var(--rk-bg3);border-color:var(--rk-active-line);',
     '  color:var(--rk-onactive)}',
+    // Primary is the brand, and it is not the same thing as active. A dialog's
+    // confirming action used to borrow .on, which is the grey a toggled
+    // toolbar button wears, so the one button meant to be reached for looked
+    // like a switch that happened to be on. It comes after .on for the same
+    // specificity reason .on comes after .ghost.
+    'button.rk.primary{background:var(--rk-brand-color);border-color:var(--rk-brand-color);',
+    '  color:var(--rk-brand-ink);font-weight:600}',
+    'button.rk.primary:hover:not(:disabled),button.rk.primary:active:not(:disabled){',
+    '  background:var(--rk-brand-strong);border-color:var(--rk-brand-strong);',
+    '  color:var(--rk-brand-ink)}',
+    // A destructive confirm is primary by weight and danger by meaning. Danger
+    // wins the colour, because brand red on a Delete reads as encouragement.
+    'button.rk.primary.danger,button.rk.primary.danger:hover:not(:disabled),',
+    'button.rk.primary.danger:active:not(:disabled){background:var(--rk-danger);',
+    '  border-color:var(--rk-danger);color:var(--rk-brand-ink)}',
 
     ':is(button.rk,.handle,input.rk,textarea.rk):focus-visible{',
     '  outline:2px solid transparent;box-shadow:0 0 0 3px var(--rk-ring);',

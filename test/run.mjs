@@ -1816,6 +1816,37 @@ async function runSaveNotes(sess, file) {
   'Save offers an optional context field without making a comment mandatory',
   JSON.stringify(prompted));
 
+  // With an empty field the two save buttons do exactly the same thing, and a
+  // person choosing between them has to read both to discover that. The one
+  // that needs a comment appears once there is one, and it wears the brand
+  // rather than the grey a toggled toolbar button wears.
+  const commentButton = await evaluate(sess, `(function () {
+    var root = document.getElementById('ryker-root').shadowRoot;
+    var button = Array.prototype.filter.call(root.querySelectorAll('.modal .foot button'), function (b) {
+      return b.textContent.trim() === 'Save with comment';
+    })[0];
+    var field = root.querySelector('textarea.save-note');
+    var hiddenWhenEmpty = button.hidden &&
+      getComputedStyle(button).display === 'none';
+    field.value = '   ';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    var hiddenOnSpaces = button.hidden;
+    field.value = 'Worth saying.';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    var shown = !button.hidden && getComputedStyle(button).display !== 'none';
+    var brand = getComputedStyle(button).backgroundColor;
+    field.value = '';
+    field.dispatchEvent(new Event('input', { bubbles: true }));
+    return { hiddenWhenEmpty: hiddenWhenEmpty, hiddenOnSpaces: hiddenOnSpaces,
+      shown: shown, primary: button.classList.contains('primary'), brand: brand,
+      again: button.hidden };
+  })()`);
+  assert(commentButton.hiddenWhenEmpty && commentButton.hiddenOnSpaces &&
+    commentButton.shown && commentButton.again && commentButton.primary &&
+    commentButton.brand === 'rgb(229, 56, 59)',
+  'Save with comment is offered only once there is a comment, in the brand colour',
+  JSON.stringify(commentButton));
+
   const saved = await evaluate(sess, `(function () {
     var root = document.getElementById('ryker-root').shadowRoot;
     root.querySelector('textarea.save-note').value =
