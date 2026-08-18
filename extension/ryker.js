@@ -36,7 +36,7 @@
  *   storage/logger.js  (433 lines)
  *   instructions/browser.js  (296 lines)
  *   ui/pane.js  (292 lines)
- *   storage/recover.js  (319 lines)
+ *   storage/recover.js  (335 lines)
  *   bootstrap/boot.js  (575 lines)
  *
  * Classic script by design: module scripts do not load from file:// URLs,
@@ -9206,6 +9206,7 @@
     var timer = null;
     var applying = false;
     var offered = false;
+    var wrote = false;      // this page has put a draft of its own in storage
     var lastStorageError = null;
 
     function documentKey() {
@@ -9300,7 +9301,19 @@
       // is rebased after Save, which would otherwise drop a saved move whenever
       // a later unsaved text edit caused the draft to win recovery selection.
       var moves = Ryker.instructions.recoveryMoves ? Ryker.instructions.recoveryMoves() : [];
-      if (!changes.length && !moves.length) return remove(draftKey());
+      if (!changes.length && !moves.length) {
+        // Nothing of this page's own to record. Removing here used to be
+        // unconditional, and boot arms this timer before anyone has edited
+        // anything: editable.enable() fires onChange, schedule() sets it, and
+        // 180ms later a page that had done nothing deleted the draft the
+        // previous page left behind. Whether recover.offer() got there first was
+        // a race against logger.resume(), so on a slow load the work was gone
+        // with nothing shown, and after any load a second refresh found nothing
+        // left to offer. A checkpoint may only supersede what it wrote itself.
+        if (!wrote) return Promise.resolve(false);
+        wrote = false;
+        return remove(draftKey());
+      }
       var draft = {
         version: 1, kind: 'draft',
         documentId: Ryker.config.load().RYKER_DOCUMENT_ID,
@@ -9309,7 +9322,10 @@
         savedAt: new Date().toISOString(), changes: changes,
         order: Object.keys(snapshot), moves: moves
       };
-      return set(draftKey(), JSON.stringify(draft));
+      return set(draftKey(), JSON.stringify(draft)).then(function (ok) {
+        if (ok) wrote = true;
+        return ok;
+      });
     }
 
     function schedule() {

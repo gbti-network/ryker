@@ -627,6 +627,14 @@ async function runEditorHardening(sess, file) {
   const code = readFileSync(join(DIST, file), 'utf8');
 
   await navigate(sess, FIXTURE);
+  // Earlier sections edit the fixture, and the checkpoint they leave behind is
+  // a real draft on this origin. Ryker will rightly offer it on the next boot,
+  // and a stale modal on top of the stack is not this section's subject.
+  await evaluate(sess, `(function () {
+    Object.keys(localStorage).filter(function (key) {
+      return key.indexOf('ryker:') === 0;
+    }).forEach(function (key) { localStorage.removeItem(key); });
+  })()`);
   await evaluate(sess, code);
   await waitInPage(sess, `!!(window.Ryker && document.getElementById('ryker-root'))`,
     10000, 'Ryker to boot for split history checks');
@@ -817,6 +825,7 @@ async function runEditorHardening(sess, file) {
     JSON.stringify(batched));
 
   const readFailure = await evaluate(sess, `(async function () {
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
     Ryker.logger.read = function () { return Promise.reject(new Error('disk denied <unsafe>')); };
     Ryker.browser.view({ name: 'revision.json' });
     await new Promise(function (resolve) { setTimeout(resolve, 0); });
@@ -1201,6 +1210,48 @@ async function runRecovery(sess, file) {
   assert(!containers.missedApplied && containers.missedTitle === 'Changes could not be restored',
     'an all-missed recovery record warns instead of claiming the edits were already present',
     JSON.stringify(containers));
+
+  // A page that has changed nothing must keep the draft an earlier page left.
+  // Boot arms the 180ms checkpoint timer before anyone has edited anything,
+  // because editable.enable() fires onChange, and the empty checkpoint used to
+  // delete the draft unconditionally. Whether the restore prompt got there
+  // first was a race against logger.resume(), so this failed once in CI and
+  // passed on rerun; the user-facing version is a refresh that silently throws
+  // away the work since the last save. The wait is the point of the test.
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, `(function () {
+    Object.keys(localStorage).filter(function (key) {
+      return key.indexOf('ryker:draft:') === 0 || key.indexOf('ryker:recovery-seen:') === 0;
+    }).forEach(function (key) { localStorage.removeItem(key); });
+  })()`);
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && Ryker.editable.baselineOf())`,
+    10000, 'the baseline before the draft is written');
+  const wroteDraft = await evaluate(sess, `(async function () {
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    var paragraph = document.querySelector('#intro p');
+    paragraph.textContent = 'Edited after the last save.';
+    paragraph.dispatchEvent(new Event('input', { bubbles: true }));
+    Ryker.instructions.record();
+    await Ryker.recover.checkpoint();
+    return !!localStorage.getItem(Ryker.recover.draftKey());
+  })()`);
+
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && Ryker.editable.baselineOf())`,
+    10000, 'the baseline on the reloaded page');
+  const survived = await evaluate(sess, `(async function () {
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    await new Promise(function (resolve) { setTimeout(resolve, 600); });
+    var draft = await Ryker.recover.draft();
+    return { stored: !!localStorage.getItem(Ryker.recover.draftKey()),
+      found: !!draft,
+      changes: draft && draft.changes ? draft.changes.length : 0 };
+  })()`);
+  assert(wroteDraft && survived.stored && survived.found && survived.changes > 0,
+    'a reloaded page that has changed nothing keeps the draft waiting to be restored',
+    JSON.stringify({ wroteDraft, survived }));
 
   await evaluate(sess, `(function () {
     Object.keys(localStorage).filter(function (key) {
