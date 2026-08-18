@@ -2689,6 +2689,50 @@ async function runUnits(sess, file) {
     'the move count follows the element tree, so a relocated table is one move',
     JSON.stringify(counted));
 
+  // Minimality, which the block-order model already owes the reader and which
+  // this model owes in the only terms it has. Swapping two neighbours has two
+  // equally correct descriptions, "this one moved up" and "that one moved
+  // down", and they land the document in the same place. Only one is readable.
+  //
+  // The fixture's four sections carry 5, 6, 8 and 5 blocks, so every adjacent
+  // swap is asymmetric and the answer is never a coin toss. An unweighted
+  // longest common subsequence broke its ties by position, which named the
+  // section holding the table often enough to tell a reader to move a table
+  // they had no reason to touch, and to call the change eight blocks when five
+  // would do. Same rule as feb3cde, stated in units rather than in blocks.
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && Ryker.units && Ryker.editable.baselineOf())`,
+    10000, 'the unit baseline');
+  const minimal = await evaluate(sess, `(function () {
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    var weights = {};
+    var snap = Ryker.units.snapshot();
+    Object.keys(snap).forEach(function (k) {
+      if (snap[k].parent === null) weights[k] = snap[k].blocks;
+    });
+    var out = [];
+    [['#data', 'up', '#intro'], ['#grid', 'up', '#data'], ['#media', 'up', '#grid'],
+     ['#intro', 'down', '#data'], ['#data', 'down', '#grid'], ['#grid', 'down', '#media']
+    ].forEach(function (pair) {
+      var said = Ryker.move.nudge(Ryker.outline.unitOf(document.querySelector(pair[0])), pair[1]);
+      var recs = Ryker.units.moves();
+      out.push({
+        swap: pair[0] + ' ' + pair[1] + ' past ' + pair[2], said: said,
+        named: recs.map(function (r) { return r.key; }),
+        total: recs.reduce(function (n, r) { return n + r.blocks; }, 0),
+        least: Math.min(weights[pair[0]], weights[pair[2]])
+      });
+      Ryker.editable.revertAll();
+    });
+    return { weights: weights, swaps: out };
+  })()`);
+  assert(JSON.stringify(minimal.weights) ===
+      JSON.stringify({ '#intro': 5, '#data': 6, '#grid': 8, '#media': 5 }) &&
+    minimal.swaps.every((s) => !s.said && s.named.length === 1 && s.total === s.least),
+  'a swap is reported as the lighter of its two descriptions, never the heavier',
+  JSON.stringify(minimal));
+
   // A record naming something the document no longer has is a miss, not a
   // guess. Placing it anywhere is how a restore damages a document.
   await navigate(sess, FIXTURE);

@@ -104,8 +104,25 @@ Ryker.units = (function () {
 
   // ---- the tree ------------------------------------------------------------
 
+  // How many blocks each unit carries. Counted by walking the document's blocks
+  // once and climbing from each to the units above it, rather than by asking
+  // every unit for its own subtree: the second is quadratic on a report whose
+  // sections hold hundreds of table cells, and this runs on every dirty check.
+  function weigh(list, of) {
+    Ryker.blocks.sequence().forEach(function (block) {
+      var el = block;
+      while (el && el !== document.body) {
+        var u = of.get(el);
+        if (u) u.blocks += 1;
+        el = el.parentElement;
+      }
+    });
+    return list;
+  }
+
   function walk() {
     var list = [];
+    var of = new WeakMap();
     var seen = {};
 
     function visit(parent, parentKey, depth, path) {
@@ -127,19 +144,22 @@ Ryker.units = (function () {
         }
         seen[key] = 1;
         var lead = leadOf(el);
-        list.push({
+        var entry = {
           el: el, key: key, parent: parentKey, prev: prev, at: i,
           depth: depth, tag: el.tagName, kind: Ryker.outline.kindOf(el),
-          // The block whose authored markup names this unit in an instruction.
-          lead: lead ? Ryker.blocks.blockId(lead) : null
-        });
+          // The block whose authored markup names this unit in an instruction,
+          // and how many blocks travel with it. weigh() fills the count in.
+          lead: lead ? Ryker.blocks.blockId(lead) : null, blocks: 0
+        };
+        list.push(entry);
+        of.set(el, entry);
         prev = key;
         if (!OPAQUE[el.tagName]) visit(el, key, depth + 1, here);
       });
     }
 
     visit(root(), null, 0, '');
-    return list;
+    return weigh(list, of);
   }
 
   // What a diff compares: no element references, so it survives a reload and
@@ -147,8 +167,8 @@ Ryker.units = (function () {
   function snapshot() {
     var out = {};
     walk().forEach(function (u) {
-      out[u.key] = { parent: u.parent, prev: u.prev, at: u.at,
-                     depth: u.depth, tag: u.tag, kind: u.kind, lead: u.lead };
+      out[u.key] = { parent: u.parent, prev: u.prev, at: u.at, depth: u.depth,
+                     tag: u.tag, kind: u.kind, lead: u.lead, blocks: u.blocks };
     });
     return out;
   }
@@ -164,23 +184,41 @@ Ryker.units = (function () {
   // The elements that kept their place, so the ones that did not can be named.
   // Without it, moving one unit reports every unit after it as moved too,
   // because each of them genuinely does have a new neighbour.
-  function common(before, after) {
+  //
+  // Weighted by the blocks each unit carries, because a swap of two neighbours
+  // has two equally correct descriptions and only one of them is readable.
+  // Dragging a six-block section above a section holding a twenty-four block
+  // table can be reported as either one moving up or the other moving down;
+  // counting elements alone made that a coin toss, and it came down on
+  // "the table moved" often enough to tell a reader to move a table they had
+  // no reason to touch. Keeping the most blocks in place moves the fewest,
+  // which is the rule feb3cde established for the block-order model and the
+  // same rule stated in the only terms this model has.
+  //
+  // A unit carrying nothing still costs one, or an empty paragraph would be
+  // free to move and the choice between two descriptions could turn on it.
+  function common(before, after, weight) {
     var m = before.length, n = after.length;
     var grid = [];
     var i, j;
     for (i = 0; i <= m; i++) grid.push(new Array(n + 1).fill(0));
     for (i = m - 1; i >= 0; i--) {
       for (j = n - 1; j >= 0; j--) {
+        var skip = Math.max(grid[i + 1][j], grid[i][j + 1]);
+        // Not "a match is always worth taking": with weights it can be worth
+        // giving one up to keep something heavier further along.
         grid[i][j] = before[i] === after[j]
-          ? grid[i + 1][j + 1] + 1
-          : Math.max(grid[i + 1][j], grid[i][j + 1]);
+          ? Math.max(skip, grid[i + 1][j + 1] + weight(before[i]))
+          : skip;
       }
     }
     var keep = {};
     i = 0; j = 0;
     while (i < m && j < n) {
-      if (before[i] === after[j]) { keep[before[i]] = 1; i++; j++; }
-      else if (grid[i + 1][j] >= grid[i][j + 1]) i++;
+      if (before[i] === after[j] &&
+          grid[i][j] === grid[i + 1][j + 1] + weight(before[i])) {
+        keep[before[i]] = 1; i++; j++;
+      } else if (grid[i + 1][j] >= grid[i][j + 1]) i++;
       else j++;
     }
     return keep;
@@ -223,7 +261,9 @@ Ryker.units = (function () {
     parents.forEach(function (parent) {
       var was = siblings(before, settled, parent);
       var now = siblings(after, settled, parent);
-      var keep = common(was, now);
+      var keep = common(was, now, function (key) {
+        return Math.max(1, (after[key] && after[key].blocks) || 0);
+      });
       now.forEach(function (k) { if (!keep[k]) moved[k] = 1; });
     });
 
@@ -236,7 +276,7 @@ Ryker.units = (function () {
       .map(function (k) {
         return { kind: 'unit', key: k, parent: after[k].parent,
                  prev: after[k].prev, tag: after[k].tag, unit: after[k].kind,
-                 lead: after[k].lead,
+                 lead: after[k].lead, blocks: after[k].blocks,
                  // Where it sits in the file as authored, which is what an
                  // instruction has to quote: the reader is looking at the
                  // source, not at the screen.

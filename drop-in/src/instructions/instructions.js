@@ -103,11 +103,7 @@ Ryker.instructions = (function () {
       var el = live[rec.key];
       if (!el) return null;
       return { rec: rec, at: {
-        elements: [el], tag: rec.tag,
-        blocks: Array.prototype.filter.call(
-          el.querySelectorAll(Ryker.blocks.SELECTOR), function (n) {
-            return !Ryker.blocks.excluded(n) && !n.querySelector(Ryker.blocks.SELECTOR);
-          }).length || (el.matches(Ryker.blocks.SELECTOR) ? 1 : 0),
+        elements: [el], tag: rec.tag, blocks: rec.blocks,
         nav: Ryker.move.navFor ? Ryker.move.navFor([el]) : []
       } };
     }).filter(Boolean);
