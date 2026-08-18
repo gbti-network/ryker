@@ -60,5 +60,12 @@ jobs:
       - name: Run the package release gate
         run: npm run package:check
 
+      # The store artifact has its own boundary: what is inside the zip, whether
+      # the manifest a reviewer reads matches the code, and whether the
+      # permission set grew. A permission added in a refactor is the change most
+      # likely to cost a review round trip, so it fails here rather than there.
+      - name: Run the Chrome Web Store package gate
+        run: npm run check:extension
+
       - name: Inspect the npm package boundary
         run: npm run package:preview

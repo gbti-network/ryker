@@ -1,0 +1,79 @@
+name: Publish extension to the Chrome Web Store
+
+# Push a new extension BUILD to the store through the Publish API, so a release
+# does not depend on someone being at the dashboard. MANUAL by design: a code
+# change re-enters review, so publishing is a decision rather than a side effect
+# of merging.
+#
+# INERT until the OAuth credentials exist as Actions secrets (CWS_CLIENT_ID,
+# CWS_CLIENT_SECRET, CWS_REFRESH_TOKEN) and the item id is set as the CWS_APP_ID
+# variable. Without them the script skips cleanly and the job stays green.
+#
+# The API ships the CODE PACKAGE only. Screenshots, promo tiles, the description
+# and the privacy answers are dashboard-only. Setup and the current status:
+# .data/ops/extension-ops/chrome-web-store.md
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'check (verify credentials only), upload-only (draft for dashboard review), or publish (upload and go live)'
+        type: choice
+        # The default is `check` on purpose and must stay the safe one. `publish`
+        # ships executable code into every installed browser, so a default of
+        # `publish` would make "open the workflow, click Run" a live release.
+        # The safe action has to be the lazy action. Choosing to publish should
+        # require choosing it.
+        default: check
+        options: [check, upload-only, publish]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-extension
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Rebuild from source so what ships is what is committed, rather than an
+      # archive somebody built on a stale tree. The bundle build comes first
+      # because the extension package contains its output.
+      - name: Build the bundles
+        run: node drop-in/build/bundle.mjs
+
+      - name: Fail if the committed bundle is stale
+        run: |
+          if ! git diff --quiet -- drop-in/dist extension/ryker.js; then
+            echo "A generated Ryker bundle is out of date with drop-in/src."
+            echo "Run: node drop-in/build/bundle.mjs, and commit the result."
+            git diff --stat -- drop-in/dist extension/ryker.js
+            exit 1
+          fi
+
+      - name: Run the store package gate
+        run: node test/extension-package.mjs
+
+      - name: Publish to the Chrome Web Store
+        run: |
+          case "${{ inputs.mode }}" in
+            check) node extension/build/publish.mjs --check ;;
+            upload-only) node extension/build/publish.mjs --upload-only ;;
+            *) node extension/build/publish.mjs ;;
+          esac
+        env:
+          CWS_CLIENT_ID: ${{ secrets.CWS_CLIENT_ID }}
+          CWS_CLIENT_SECRET: ${{ secrets.CWS_CLIENT_SECRET }}
+          CWS_REFRESH_TOKEN: ${{ secrets.CWS_REFRESH_TOKEN }}
+          # The item id is not a secret. It is a repository variable so it can be
+          # set once the item exists without touching this file.
+          CWS_APP_ID: ${{ vars.CWS_APP_ID }}

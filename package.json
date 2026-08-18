@@ -28,7 +28,11 @@
     "package:preview": "npm pack --dry-run --ignore-scripts --cache .npm-cache",
     "package:tarball": "npm pack --cache .npm-cache",
     "prepack": "npm run build && npm run test:cli && npm run package:check",
-    "prepublishOnly": "npm run build && npm test && npm run test:cli && npm run package:check"
+    "prepublishOnly": "npm run build && npm test && npm run test:cli && npm run package:check",
+    "package:extension": "node extension/build/package.mjs",
+    "check:extension": "node test/extension-package.mjs",
+    "publish:extension": "node --env-file-if-exists=.env extension/build/publish.mjs",
+    "release": "node scripts/release.mjs"
   },
   "repository": {
     "type": "git",
