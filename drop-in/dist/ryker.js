@@ -26,11 +26,11 @@
  *   editor/multi.js  (172 lines)
  *   editor/table.js  (345 lines)
  *   editor/outline.js  (289 lines)
- *   editor/move.js  (427 lines)
- *   editor/units.js  (346 lines)
+ *   editor/move.js  (436 lines)
+ *   editor/units.js  (353 lines)
  *   ui/rail.js  (530 lines)
  *   instructions/steps.js  (375 lines)
- *   instructions/instructions.js  (503 lines)
+ *   instructions/instructions.js  (521 lines)
  *   instructions/merge.js  (405 lines)
  *   storage/fs.js  (336 lines)
  *   storage/logger.js  (433 lines)
@@ -5209,6 +5209,11 @@
     //
     // Weighting also makes the tie-break meaningful where it used to be arbitrary:
     // the set left alone is the one covering the most of the document.
+    // between(), cover() and describe() below are the flat block-order model.
+    // They no longer decide what moved: editor/units.js does, because a move is a
+    // change to the element tree and flat order cannot see one. What is left here
+    // serves replay() alone, so a recovery draft written before the unit model
+    // still replays through the reader that wrote it.
     function longestRun(vals, weights) {
       var n = vals.length, best = [], from = [], top = -1, i, j;
       for (i = 0; i < n; i++) {
@@ -5269,7 +5274,11 @@
       return out;
     }
 
+    // What the toolbar and the save dialog put a number on. Asked of the unit
+    // tree, so a table dragged into another section counts as the one move it is
+    // rather than as nothing at all.
     function count() {
+      if (Ryker.units) return Ryker.units.moves().length;
       var base = Ryker.editable.baselineOf();
       if (!base) return 0;
       return between(base, Ryker.blocks.snapshot()).length;
@@ -5589,7 +5598,7 @@
     return {
       between: between, count: count, describe: describe, cover: cover,
       apply: apply, replay: replay, check: check, nudge: nudge, landing: landing,
-      movable: movable, syncNav: syncNav
+      movable: movable, syncNav: syncNav, navFor: navLabels
     };
   })();
 
@@ -5663,13 +5672,23 @@
 
     var names = new WeakMap();
 
+    function usable(n) {
+      return !!n && !Ryker.blocks.excluded(n) && !n.querySelector(Ryker.blocks.SELECTOR);
+    }
+
+    // Runs on every snapshot, and a snapshot runs on every dirty check, so the
+    // common case asks for one match rather than materialising a list of every
+    // block in the subtree. Only a first match that turns out to be locked pays
+    // for the full walk.
     function leadOf(el) {
       var sel = Ryker.blocks.SELECTOR;
-      if (el.matches && el.matches(sel) && !Ryker.blocks.excluded(el) &&
-          !el.querySelector(sel)) return el;
+      if (el.matches && el.matches(sel) && usable(el)) return el;
+      var first = el.querySelector(sel);
+      if (!first) return null;
+      if (usable(first)) return first;
       var found = null;
       Array.prototype.some.call(el.querySelectorAll(sel), function (n) {
-        if (Ryker.blocks.excluded(n) || n.querySelector(sel)) return false;
+        if (!usable(n)) return false;
         found = n;
         return true;
       });
@@ -5717,11 +5736,8 @@
           list.push({
             el: el, key: key, parent: parentKey, prev: prev, at: i,
             depth: depth, tag: el.tagName, kind: Ryker.outline.kindOf(el),
-            // The block whose authored markup names this unit in an instruction,
-            // and how many blocks travel with it.
-            lead: lead ? Ryker.blocks.blockId(lead) : null,
-            blocks: el.querySelectorAll(Ryker.blocks.SELECTOR).length ||
-              (lead === el ? 1 : 0)
+            // The block whose authored markup names this unit in an instruction.
+            lead: lead ? Ryker.blocks.blockId(lead) : null
           });
           prev = key;
           if (!OPAQUE[el.tagName]) visit(el, key, depth + 1, here);
@@ -5738,8 +5754,7 @@
       var out = {};
       walk().forEach(function (u) {
         out[u.key] = { parent: u.parent, prev: u.prev, at: u.at,
-                       depth: u.depth, tag: u.tag, kind: u.kind,
-                       lead: u.lead, blocks: u.blocks };
+                       depth: u.depth, tag: u.tag, kind: u.kind, lead: u.lead };
       });
       return out;
     }
@@ -5827,12 +5842,13 @@
         .map(function (k) {
           return { kind: 'unit', key: k, parent: after[k].parent,
                    prev: after[k].prev, tag: after[k].tag, unit: after[k].kind,
-                   lead: after[k].lead, blocks: after[k].blocks,
+                   lead: after[k].lead,
                    // Where it sits in the file as authored, which is what an
                    // instruction has to quote: the reader is looking at the
                    // source, not at the screen.
-                   was: before[k].prev, wasLead: before[k].prev &&
-                     before[before[k].prev] ? before[before[k].prev].lead : null };
+                   wasParent: before[k].parent, was: before[k].prev,
+                   wasLead: before[k].prev && before[before[k].prev]
+                     ? before[before[k].prev].lead : null };
         });
     }
 
@@ -6946,11 +6962,24 @@
     // Reordering, which no block-by-block comparison can see. Derived the same
     // way edits are, against the document as authored, so a section dragged out
     // and dragged back again reports nothing.
+    //
+    // One record is one element. The old block-run form could not name a section
+    // at all and emitted "move 3 elements" listing the section's children, which
+    // told the reader to put them where they already were.
     function moves() {
-      if (!pristine || !saved) return [];
-      return Ryker.move.between(pristine, saved).map(function (m) {
-        var d = Ryker.move.describe(m);
-        return d ? { rec: m, at: d } : null;
+      if (!pristineTree || !savedTree) return [];
+      var live = Ryker.units.index();
+      return Ryker.units.diff(pristineTree, savedTree).map(function (rec) {
+        var el = live[rec.key];
+        if (!el) return null;
+        return { rec: rec, at: {
+          elements: [el], tag: rec.tag,
+          blocks: Array.prototype.filter.call(
+            el.querySelectorAll(Ryker.blocks.SELECTOR), function (n) {
+              return !Ryker.blocks.excluded(n) && !n.querySelector(Ryker.blocks.SELECTOR);
+            }).length || (el.matches(Ryker.blocks.SELECTOR) ? 1 : 0),
+          nav: Ryker.move.navFor ? Ryker.move.navFor([el]) : []
+        } };
       }).filter(Boolean);
     }
 
@@ -7172,17 +7201,16 @@
       var el = at.elements[0];
       var tag = at.tag ? '<' + at.tag.toLowerCase() + '>' : null;
 
-      out.push('## ' + n + '. Move ' + (tag ? 'a ' + tag : at.elements.length + ' elements'));
+      out.push('## ' + n + '. Move ' + (tag ? 'a ' + tag : 'an element'));
       out.push('');
-      if (at.elements.length === 1) {
-        out.push('Move this one ' + (tag || 'element') + ' and everything inside it. Change nothing');
-        out.push('about its contents. It is the element whose first block reads, exactly:');
+      out.push('Move this one ' + (tag || 'element') + ' and everything inside it. Change nothing');
+      if (el.id) {
+        out.push('about its contents. It is the one with id=' + quoted(el.id) + '.');
       } else {
-        out.push('Move these ' + at.elements.length + ' consecutive elements together, keeping their');
-        out.push('order and changing nothing inside them. The first of them contains:');
+        out.push('about its contents. It is the element whose first block reads, exactly:');
+        out.push('<<<'); out.push(pristineHtml(rec.lead) != null
+          ? pristineHtml(rec.lead) : ''); out.push('>>>');
       }
-      out.push('<<<'); out.push(pristineHtml(rec.ids[0]) != null
-        ? pristineHtml(rec.ids[0]) : ''); out.push('>>>');
       out.push('');
 
       var anchor = anchorOf(el);
@@ -7202,12 +7230,18 @@
       }
       out.push('');
 
-      if (rec.wasAfter) {
-        var w = text(pristineHtml(rec.wasAfter) != null ? pristineHtml(rec.wasAfter) : '');
+      var wasAfter = rec.was ? Ryker.units.index()[rec.was] : null;
+      if (wasAfter && wasAfter.id) {
+        out.push('In the file it currently sits just after the element with id=' +
+          quoted(wasAfter.id) + '.');
+      } else if (rec.wasLead) {
+        var w = text(pristineHtml(rec.wasLead) != null ? pristineHtml(rec.wasLead) : '');
         if (w) out.push('In the file it currently sits just after this text: "' +
           clipText(w) + '"');
       } else {
-        out.push('In the file it is currently the first thing in the document body.');
+        var from = rec.wasParent ? Ryker.units.index()[rec.wasParent] : null;
+        out.push('In the file it is currently the first thing inside ' +
+          (from ? (placeOf(from) || 'its container') : 'the document body') + '.');
       }
       out.push('');
       out.push('Blocks carried along: ' + at.blocks);

@@ -92,11 +92,24 @@ Ryker.instructions = (function () {
   // Reordering, which no block-by-block comparison can see. Derived the same
   // way edits are, against the document as authored, so a section dragged out
   // and dragged back again reports nothing.
+  //
+  // One record is one element. The old block-run form could not name a section
+  // at all and emitted "move 3 elements" listing the section's children, which
+  // told the reader to put them where they already were.
   function moves() {
-    if (!pristine || !saved) return [];
-    return Ryker.move.between(pristine, saved).map(function (m) {
-      var d = Ryker.move.describe(m);
-      return d ? { rec: m, at: d } : null;
+    if (!pristineTree || !savedTree) return [];
+    var live = Ryker.units.index();
+    return Ryker.units.diff(pristineTree, savedTree).map(function (rec) {
+      var el = live[rec.key];
+      if (!el) return null;
+      return { rec: rec, at: {
+        elements: [el], tag: rec.tag,
+        blocks: Array.prototype.filter.call(
+          el.querySelectorAll(Ryker.blocks.SELECTOR), function (n) {
+            return !Ryker.blocks.excluded(n) && !n.querySelector(Ryker.blocks.SELECTOR);
+          }).length || (el.matches(Ryker.blocks.SELECTOR) ? 1 : 0),
+        nav: Ryker.move.navFor ? Ryker.move.navFor([el]) : []
+      } };
     }).filter(Boolean);
   }
 
@@ -318,17 +331,16 @@ Ryker.instructions = (function () {
     var el = at.elements[0];
     var tag = at.tag ? '<' + at.tag.toLowerCase() + '>' : null;
 
-    out.push('## ' + n + '. Move ' + (tag ? 'a ' + tag : at.elements.length + ' elements'));
+    out.push('## ' + n + '. Move ' + (tag ? 'a ' + tag : 'an element'));
     out.push('');
-    if (at.elements.length === 1) {
-      out.push('Move this one ' + (tag || 'element') + ' and everything inside it. Change nothing');
-      out.push('about its contents. It is the element whose first block reads, exactly:');
+    out.push('Move this one ' + (tag || 'element') + ' and everything inside it. Change nothing');
+    if (el.id) {
+      out.push('about its contents. It is the one with id=' + quoted(el.id) + '.');
     } else {
-      out.push('Move these ' + at.elements.length + ' consecutive elements together, keeping their');
-      out.push('order and changing nothing inside them. The first of them contains:');
+      out.push('about its contents. It is the element whose first block reads, exactly:');
+      out.push('<<<'); out.push(pristineHtml(rec.lead) != null
+        ? pristineHtml(rec.lead) : ''); out.push('>>>');
     }
-    out.push('<<<'); out.push(pristineHtml(rec.ids[0]) != null
-      ? pristineHtml(rec.ids[0]) : ''); out.push('>>>');
     out.push('');
 
     var anchor = anchorOf(el);
@@ -348,12 +360,18 @@ Ryker.instructions = (function () {
     }
     out.push('');
 
-    if (rec.wasAfter) {
-      var w = text(pristineHtml(rec.wasAfter) != null ? pristineHtml(rec.wasAfter) : '');
+    var wasAfter = rec.was ? Ryker.units.index()[rec.was] : null;
+    if (wasAfter && wasAfter.id) {
+      out.push('In the file it currently sits just after the element with id=' +
+        quoted(wasAfter.id) + '.');
+    } else if (rec.wasLead) {
+      var w = text(pristineHtml(rec.wasLead) != null ? pristineHtml(rec.wasLead) : '');
       if (w) out.push('In the file it currently sits just after this text: "' +
         clipText(w) + '"');
     } else {
-      out.push('In the file it is currently the first thing in the document body.');
+      var from = rec.wasParent ? Ryker.units.index()[rec.wasParent] : null;
+      out.push('In the file it is currently the first thing inside ' +
+        (from ? (placeOf(from) || 'its container') : 'the document body') + '.');
     }
     out.push('');
     out.push('Blocks carried along: ' + at.blocks);

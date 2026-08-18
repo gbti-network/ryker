@@ -2629,6 +2629,59 @@ async function runUnits(sess, file) {
     JSON.stringify({ drafted, restored }));
   }
 
+  // The instructions, which are the product. A section move used to emit "Move
+  // 3 elements ... Put it first inside the element with id=media", listing the
+  // section's own children and telling the reader to put them where they
+  // already were. A table move used to emit "Move a <h3>".
+  for (const [what, mover, wants] of [
+    ['a section', `Ryker.move.apply([document.querySelector('#media')], document.querySelector('#intro'), 'before')`,
+      ['Move a <section>', 'It is the one with id="media"',
+       'Put it immediately after the 1st <header> inside the document body',
+       'as a sibling of it, not inside it']],
+    ['a table', `Ryker.move.apply([document.querySelector('#data table')], document.querySelector('#grid h3'), 'after')`,
+      ['Move a <table>', 'Put it immediately after the 1st <h3> inside the section with id="grid"',
+       'In the file it currently sits just after this text: "The table"']],
+    ['a heading', `Ryker.move.apply([document.querySelector('#intro h2')], document.querySelector('#intro ul'), 'after')`,
+      ['Move a <h2>', 'Put it immediately after the 1st <ul> inside the section with id="intro"',
+       'In the file it is currently the first thing inside the element with id="intro"']]
+  ]) {
+    await navigate(sess, FIXTURE);
+    await evaluate(sess, code);
+    await waitInPage(sess, `!!(window.Ryker && Ryker.units && Ryker.editable.baselineOf())`,
+      10000, 'the unit baseline');
+    const prompt = await evaluate(sess, `(function () {
+      while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+      var refused = ${mover};
+      Ryker.instructions.record();
+      return { refused: refused, text: Ryker.instructions.build() };
+    })()`);
+    const missing = wants.filter((line) => !prompt.text.includes(line));
+    assert(!prompt.refused && !missing.length &&
+      prompt.text.includes('1 move(s)') && !/Move \d+ elements/.test(prompt.text),
+    `the instruction for moving ${what} names that element and where it ends up`,
+    missing.length ? 'missing: ' + JSON.stringify(missing) : JSON.stringify(prompt.refused));
+  }
+
+  // The number the toolbar and the save dialog show. A table dragged into
+  // another section used to count as no moves at all.
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && Ryker.units && Ryker.editable.baselineOf())`,
+    10000, 'the unit baseline');
+  const counted = await evaluate(sess, `(function () {
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    var idle = Ryker.move.count();
+    Ryker.move.apply([document.querySelector('#data table')], document.querySelector('#grid h3'), 'after');
+    var one = Ryker.move.count();
+    Ryker.move.apply([document.querySelector('#media')], document.querySelector('#intro'), 'before');
+    var two = Ryker.move.count();
+    Ryker.editable.revertAll();
+    return { idle: idle, one: one, two: two, back: Ryker.move.count() };
+  })()`);
+  assert(counted.idle === 0 && counted.one === 1 && counted.two === 2 && counted.back === 0,
+    'the move count follows the element tree, so a relocated table is one move',
+    JSON.stringify(counted));
+
   // A record naming something the document no longer has is a miss, not a
   // guess. Placing it anywhere is how a restore damages a document.
   await navigate(sess, FIXTURE);

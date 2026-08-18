@@ -41,6 +41,11 @@ Ryker.move = (function () {
   //
   // Weighting also makes the tie-break meaningful where it used to be arbitrary:
   // the set left alone is the one covering the most of the document.
+  // between(), cover() and describe() below are the flat block-order model.
+  // They no longer decide what moved: editor/units.js does, because a move is a
+  // change to the element tree and flat order cannot see one. What is left here
+  // serves replay() alone, so a recovery draft written before the unit model
+  // still replays through the reader that wrote it.
   function longestRun(vals, weights) {
     var n = vals.length, best = [], from = [], top = -1, i, j;
     for (i = 0; i < n; i++) {
@@ -101,7 +106,11 @@ Ryker.move = (function () {
     return out;
   }
 
+  // What the toolbar and the save dialog put a number on. Asked of the unit
+  // tree, so a table dragged into another section counts as the one move it is
+  // rather than as nothing at all.
   function count() {
+    if (Ryker.units) return Ryker.units.moves().length;
     var base = Ryker.editable.baselineOf();
     if (!base) return 0;
     return between(base, Ryker.blocks.snapshot()).length;
@@ -421,6 +430,6 @@ Ryker.move = (function () {
   return {
     between: between, count: count, describe: describe, cover: cover,
     apply: apply, replay: replay, check: check, nudge: nudge, landing: landing,
-    movable: movable, syncNav: syncNav
+    movable: movable, syncNav: syncNav, navFor: navLabels
   };
 })();

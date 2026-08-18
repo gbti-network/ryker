@@ -66,13 +66,23 @@ Ryker.units = (function () {
 
   var names = new WeakMap();
 
+  function usable(n) {
+    return !!n && !Ryker.blocks.excluded(n) && !n.querySelector(Ryker.blocks.SELECTOR);
+  }
+
+  // Runs on every snapshot, and a snapshot runs on every dirty check, so the
+  // common case asks for one match rather than materialising a list of every
+  // block in the subtree. Only a first match that turns out to be locked pays
+  // for the full walk.
   function leadOf(el) {
     var sel = Ryker.blocks.SELECTOR;
-    if (el.matches && el.matches(sel) && !Ryker.blocks.excluded(el) &&
-        !el.querySelector(sel)) return el;
+    if (el.matches && el.matches(sel) && usable(el)) return el;
+    var first = el.querySelector(sel);
+    if (!first) return null;
+    if (usable(first)) return first;
     var found = null;
     Array.prototype.some.call(el.querySelectorAll(sel), function (n) {
-      if (Ryker.blocks.excluded(n) || n.querySelector(sel)) return false;
+      if (!usable(n)) return false;
       found = n;
       return true;
     });
@@ -120,11 +130,8 @@ Ryker.units = (function () {
         list.push({
           el: el, key: key, parent: parentKey, prev: prev, at: i,
           depth: depth, tag: el.tagName, kind: Ryker.outline.kindOf(el),
-          // The block whose authored markup names this unit in an instruction,
-          // and how many blocks travel with it.
-          lead: lead ? Ryker.blocks.blockId(lead) : null,
-          blocks: el.querySelectorAll(Ryker.blocks.SELECTOR).length ||
-            (lead === el ? 1 : 0)
+          // The block whose authored markup names this unit in an instruction.
+          lead: lead ? Ryker.blocks.blockId(lead) : null
         });
         prev = key;
         if (!OPAQUE[el.tagName]) visit(el, key, depth + 1, here);
@@ -141,8 +148,7 @@ Ryker.units = (function () {
     var out = {};
     walk().forEach(function (u) {
       out[u.key] = { parent: u.parent, prev: u.prev, at: u.at,
-                     depth: u.depth, tag: u.tag, kind: u.kind,
-                     lead: u.lead, blocks: u.blocks };
+                     depth: u.depth, tag: u.tag, kind: u.kind, lead: u.lead };
     });
     return out;
   }
@@ -230,12 +236,13 @@ Ryker.units = (function () {
       .map(function (k) {
         return { kind: 'unit', key: k, parent: after[k].parent,
                  prev: after[k].prev, tag: after[k].tag, unit: after[k].kind,
-                 lead: after[k].lead, blocks: after[k].blocks,
+                 lead: after[k].lead,
                  // Where it sits in the file as authored, which is what an
                  // instruction has to quote: the reader is looking at the
                  // source, not at the screen.
-                 was: before[k].prev, wasLead: before[k].prev &&
-                   before[before[k].prev] ? before[before[k].prev].lead : null };
+                 wasParent: before[k].parent, was: before[k].prev,
+                 wasLead: before[k].prev && before[before[k].prev]
+                   ? before[before[k].prev].lead : null };
       });
   }
 
