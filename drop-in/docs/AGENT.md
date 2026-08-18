@@ -68,6 +68,15 @@ for anything authoring one: do not hard-code a row or column count in the
 report's own script, and avoid `colspan` and `rowspan` where the table is meant
 to be edited, since Ryker declines to reshape a table that merges cells.
 
+**Wrap a table in its scroller, not the other way round.** Where a table needs
+horizontal scrolling, put it inside a wrapper element and leave the wrapper as
+the section's direct child. Ryker moves the wrapper, so the table never leaves
+the scroller that makes it usable.
+
+**Give a movable section an id.** An element with one is named by it in the
+instructions, which is a far better locator than the opening text of whatever
+block happens to sit first inside it.
+
 **Keep report UI out of editable regions.** If the report has its own controls,
 filters or navigation inside `main`, give them `data-ryker-lock`.
 

@@ -99,12 +99,21 @@ it is the case Ryker most needs to work in.
   every section, heading, table, figure, quote and paragraph, collapsed below
   the second level. Clicking a row selects what it covers, right-clicking offers
   to move or delete it, and a row can be dragged to a new place.
-- **Moving** is derived rather than recorded. Block identity comes from content,
-  so a moved paragraph keeps its id and its markup and a block by block
-  comparison sees nothing at all. What changes is order, which a snapshot
-  already holds, so a move is found by comparing the order the document was
-  authored in against the order it is in now. Move something out and back and
-  Ryker correctly reports nothing.
+- **Moving** is derived rather than recorded, and derived from the element tree
+  rather than from a flat list of blocks. Block identity comes from content, so
+  a moved paragraph keeps its id and its markup and a block by block comparison
+  sees nothing at all. Order alone is not enough either: moving a table to the
+  front of another section leaves the sequence of blocks completely unchanged,
+  because the same cells still follow the same heading. So a move is a change of
+  container or of position among siblings, which is what a move actually is in
+  the file someone has to edit. One move is one element, whether that element is
+  a paragraph or a whole section. Move something out and back and Ryker
+  correctly reports nothing.
+- **A move survives a refresh.** Save, reload and confirm the restore, and
+  everything is where you left it. A position Ryker cannot resolve in the
+  reloaded document is left alone and named in the confirmation, pointing at the
+  saved change request that still describes it, because a guessed position
+  damages a document and an honest gap does not.
 - **A formatting row** floats over the selection while editing: Paragraph and
   H1 to H5 block types, bold, italic, strikethrough, link and clear formatting.
   Block-type changes support undo/redo and are emitted as element-name changes,
@@ -198,7 +207,7 @@ operations or `-SkipBuild` when `dist/ryker.js` is already current.
 src/
   bootstrap/     boot, failure isolation, toolbar
   config/        configuration intake and detection states
-  editor/        blocks, sanitiser, contenteditable, outline, move
+  editor/        blocks, sanitiser, contenteditable, tables, outline, move, units
   instructions/  the instruction set and the change-request browser
   export/        html, zip, packager
   storage/       shared filesystem access, the change-request log, recovery
