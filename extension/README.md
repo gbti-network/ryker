@@ -118,10 +118,16 @@ Three facts about where it lives:
   sit in an IndexedDB database owned by Ryker's own extension origin. The page
   cannot read them, and Ryker creates no database, no localStorage key and no
   sessionStorage key on the site you visit.
-- **Nothing leaves the machine.** Ryker makes no network request. Nothing is
-  sent to GETHSEMANE LLC or to any third party, and there is no account, no
-  telemetry and no sync. An export happens only when you ask for one, and it is
-  a download to your own disk.
+- **Nothing is uploaded.** Ryker has no server. There is no account, no
+  telemetry and no sync, and nothing is sent to GETHSEMANE LLC or to any third
+  party. An export happens only when you ask for one, and it is a download to
+  your own disk.
+
+  Ryker makes exactly one kind of network request, and only when you ask it to
+  package a report: it reads that page's own assets, such as its images and
+  stylesheets, by their existing URLs so it can put them inside the ZIP you are
+  downloading. Those are requests the page itself already makes. Nothing is sent
+  out, and no request goes anywhere the page does not already go.
 - **You decide when it goes.** Nothing is pruned automatically, because the
   records are often the only durable copy of what changed. The saved change
   request browser reports how much of the browser's local allowance Ryker is
