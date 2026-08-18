@@ -8,7 +8,7 @@ Ryker is not the report. Ryker travels with the report. Add one script tag and
 the document becomes editable in place, while staying a valid HTML file that
 anyone can open years later with Ryker gone.
 
-Version 0.1.1. Built against the Phase 1 specification in
+Version 0.1.2. Built against the Phase 1 specification in
 `../.data/sow/0_queue/sow-004-assets/phase-1-spec.md`.
 
 ## What you leave with
