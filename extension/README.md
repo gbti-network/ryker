@@ -171,3 +171,9 @@ This remains a development build. It now includes reversible toolbar
 activation, article/full-page outline scopes, revision logging and optional
 save-round context, but arbitrary pages can still expose site-specific editing
 edge cases. Use disposable or recoverable content for manual editing tests.
+
+## Credits
+
+Wing icon by [prasong tadoungsorn](https://thenounproject.com/creator/layersky/) from
+[Noun Project](https://thenounproject.com/icon/wing-1382909/), licensed
+[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).

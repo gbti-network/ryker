@@ -37,3 +37,9 @@ license and copyright notice must remain intact.
 This repository is at version `0.2.0`. npm's default `latest` tag still
 serves `0.1.1-rc.1`, because nothing newer has been published yet, so a plain
 install gets the candidate rather than this code.
+
+## Credits
+
+Wing icon by [prasong tadoungsorn](https://thenounproject.com/creator/layersky/) from
+[Noun Project](https://thenounproject.com/icon/wing-1382909/), licensed
+[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).

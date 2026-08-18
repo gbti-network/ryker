@@ -79,6 +79,14 @@ body { background: var(--rk-bg2); }
 .workspace-status { min-height: 20px; margin: 12px 0 0; }
 .workspace-status.error { color: var(--rk-danger); }
 
+/* The mark is licensed CC BY 3.0 and the credit is a condition of using it,
+   not a courtesy, so it ships wherever the mark ships. It sits inside
+   #workspace-open rather than in the page footer so it goes away with the
+   open screen: once a document loads, the page belongs to that document and
+   Ryker's own chrome gets out of the way. */
+.workspace-credit { margin: 32px 0 0; color: var(--rk-muted); font-size: 12px; }
+.workspace-credit a { color: inherit; }
+
 body.workspace-dragging .workspace-open {
   outline: 3px dashed var(--rk-active-line);
   outline-offset: -12px;
