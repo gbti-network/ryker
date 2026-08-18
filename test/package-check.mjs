@@ -38,6 +38,34 @@ if (!license.includes('must remain intact')) problems.push('LICENSE must preserv
 if (!license.includes('internal teams') || !license.includes('commercial endeavors')) problems.push('LICENSE must permit internal commercial use');
 if (!license.includes('client') || !license.includes('are also permitted')) problems.push('LICENSE must permit use with client deliverables');
 
+// The shipped icons against the brand library they are supposed to be a copy
+// of. This is the check whose absence let the extension ship the OLD wing for a
+// full day after the icon was replaced: build-icons.mjs writes into the tree
+// named by RYKER_ROOT, every run that day pointed it at a release worktree, and
+// nothing anywhere compared what the manifest reads against what the brand
+// library holds. Every gate stayed green because none of them looked.
+//
+// SKIPPED when the brand library is absent, which is the normal case in CI:
+// .product/ is a local working directory and is never committed. So this
+// catches the mismatch on the machine that creates it, which is the only
+// machine that can. A check that cannot run everywhere still earns its place
+// when it runs where the mistake is made.
+const brandIcons = new URL('../.product/brand/ryker/icons/chrome/', import.meta.url);
+if (existsSync(brandIcons)) {
+  for (const size of [16, 32, 48, 128]) {
+    const shipped = new URL(`../extension/icons/ryker-${size}.png`, import.meta.url);
+    const master = new URL(`ryker-${size}.png`, brandIcons);
+    if (!existsSync(shipped)) {
+      problems.push(`extension/icons/ryker-${size}.png is missing`);
+    } else if (!readFileSync(shipped).equals(readFileSync(master))) {
+      problems.push(
+        `extension/icons/ryker-${size}.png differs from the brand library. ` +
+        'Run `node .product/brand/ryker/build-icons.mjs` with RYKER_ROOT unset, ' +
+        'then rebuild the bundles: BRAND_MARK is stale too.');
+    }
+  }
+}
+
 if (problems.length) {
   console.error('Package release gate failed:');
   problems.forEach((problem) => console.error('  - ' + problem));
