@@ -6,6 +6,7 @@ const cli = readFileSync(new URL('../bin/ryker.js', import.meta.url), 'utf8');
 const manifest = JSON.parse(readFileSync(new URL('../extension/manifest.json', import.meta.url), 'utf8'));
 const extensionReadme = readFileSync(new URL('../extension/README.md', import.meta.url), 'utf8');
 const dropInReadme = readFileSync(new URL('../drop-in/README.md', import.meta.url), 'utf8');
+const rootReadme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const license = existsSync(new URL('../LICENSE', import.meta.url))
   ? readFileSync(new URL('../LICENSE', import.meta.url), 'utf8')
   : '';
@@ -21,6 +22,7 @@ if (/saving changes directly/i.test(manifest.description) || /saved directly to 
 }
 if (extensionReadme.includes('\u2014')) problems.push('extension README violates the no-em-dash writing convention');
 if (!dropInReadme.includes(`Version ${pkg.version}.`)) problems.push('drop-in README version differs from package version');
+if (!rootReadme.includes(`This repository is at version \`${pkg.version}\``)) problems.push('root README version differs from package version');
 const prepublish = pkg.scripts.prepublishOnly || '';
 const prepublishBuild = prepublish.indexOf('npm run build');
 const prepublishTest = prepublish.indexOf('npm test');

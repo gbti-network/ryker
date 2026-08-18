@@ -4,7 +4,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeF
 import { basename, dirname, extname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const VERSION = '0.1.2';
+const VERSION = '0.2.0';
 const BEGIN = '<!-- ryker:begin -->';
 const END = '<!-- ryker:end -->';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');

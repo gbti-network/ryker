@@ -34,6 +34,6 @@ sold or shipped or featured as part of a commercial product or software as a
 service offering without prior written permission from GETHSEMANE LLC. The
 license and copyright notice must remain intact.
 
-This repository is at version `0.1.2`. npm's default `latest` tag still
+This repository is at version `0.2.0`. npm's default `latest` tag still
 serves `0.1.1-rc.1`, because nothing newer has been published yet, so a plain
 install gets the candidate rather than this code.

@@ -50,7 +50,8 @@ export const STAMPS = [
   { file: 'bin/ryker.js', re: /(const VERSION = ')([^']+)(')/ },
   { file: 'drop-in/build/bundle.mjs', re: /(const VERSION = ')([^']+)(')/ },
   { file: 'drop-in/README.md', re: /(Version )(\d[^.]*(?:\.[^.\s]+)*)(\.)/ },
-  { file: 'extension/manifest.json', re: /("version"\s*:\s*")([^"]+)(")/, numericOnly: true }
+  { file: 'extension/manifest.json', re: /("version"\s*:\s*")([^"]+)(")/, numericOnly: true },
+  { file: 'README.md', re: /(This repository is at version `)([^`]+)(`)/ }
 ];
 
 /** Swap the version inside one blob. Pure, so the substitution is testable. */
