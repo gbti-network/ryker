@@ -2425,6 +2425,140 @@ async function runMove(sess, file) {
   `${units.firstSaid || 'moved'}: ${units.first}`);
 }
 
+// A move is a change to the ELEMENT tree, and this is the module that says so.
+//
+// Every shape here was measured failing before units.js existed. Three of them
+// damaged the document rather than merely failing to restore: a section move
+// hoisted the section's children into the page header, a heading move put the
+// <h2> inside the <ul>, and a table move relocated a different section's <h3>.
+// All three were invisible to a flat block-order diff, which is why they
+// survived so long.
+async function runUnits(sess, file) {
+  console.log(`\n${file} (the unit tree)`);
+  const code = readFileSync(join(DIST, file), 'utf8');
+
+  // Structure AND text, three levels deep. Two list items are identical as
+  // tags, so a shape that only recorded tag names could not see them swap.
+  const SHAPE = `(function () {
+    var out = [];
+    (function walk(el, depth) {
+      Array.prototype.forEach.call(el.children, function (c) {
+        if (c.id === 'ryker-root' || c.tagName === 'SCRIPT' || c.tagName === 'STYLE') return;
+        out.push(depth + ':' + c.tagName + (c.id ? '#' + c.id : '') +
+          '(' + (c.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 14) + ')');
+        if (depth < 3) walk(c, depth + 1);
+      });
+    })(document.querySelector('main'), 0);
+    return out.join(' | ');
+  })()`;
+
+  const SHAPES = [
+    ['a section moved above another section', 'SECTION',
+      `Ryker.move.apply([document.querySelector('#media')], document.querySelector('#intro'), 'before')`],
+    ['a table moved into a different section', 'TABLE',
+      `Ryker.move.apply([document.querySelector('#data table')], document.querySelector('#grid h3'), 'after')`],
+    ['a list moved above the heading that introduces it', 'UL',
+      `Ryker.move.apply([document.querySelector('#intro ul')], document.querySelector('#intro h2'), 'before')`],
+    ['a heading moved below the list', 'H2',
+      `Ryker.move.apply([document.querySelector('#intro h2')], document.querySelector('#intro ul'), 'after')`],
+    ['a paragraph moved across a section boundary', 'P',
+      `Ryker.move.apply([document.querySelector('#intro p')], document.querySelector('#media dl'), 'after')`],
+    ['two list items swapped inside their list', 'LI',
+      `Ryker.move.apply([document.querySelector('#intro ul li')], document.querySelector('#intro ul li:last-child'), 'after')`],
+    ['a figure moved to the end of its section', 'FIGURE',
+      `Ryker.move.apply([document.querySelector('#media figure')], document.querySelector('#media dl'), 'after')`]
+  ];
+
+  for (const [what, tag, mover] of SHAPES) {
+    await navigate(sess, FIXTURE);
+    await evaluate(sess, code);
+    await waitInPage(sess, `!!(window.Ryker && Ryker.units)`, 10000, 'the unit module');
+    const out = await evaluate(sess, `(function () {
+      while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+      Ryker.units.capture();
+      var authored = ${SHAPE};
+      var refused = ${mover};
+      var moved = ${SHAPE};
+      var records = Ryker.units.moves();
+      // Discard: the authored tree, exactly, comments and locked blocks included.
+      Ryker.units.restore();
+      var restored = ${SHAPE};
+      var quiet = Ryker.units.moves().length;
+      // Recovery: the records alone rebuild what was on screen.
+      var replay = Ryker.units.replay(records);
+      var replayed = ${SHAPE};
+      // And out-and-back is not a move at all.
+      Ryker.units.restore();
+      return {
+        refused: refused, changed: moved !== authored, records: records,
+        restores: restored === authored, quiet: quiet, replay: replay,
+        replays: replayed === moved, outAndBack: Ryker.units.moves().length
+      };
+    })()`);
+
+    assert(!out.refused && out.changed && out.records.length === 1 &&
+      out.records[0].tag === tag && out.restores && out.quiet === 0 &&
+      out.replays && out.replay.applied === 1 && out.replay.missed === 0 &&
+      out.outAndBack === 0,
+    `${what} is one move: named by element, restored by Discard, replayed by recovery`,
+    JSON.stringify(out));
+  }
+
+  // Two moves at once, and a move that is undone by hand, which is the property
+  // that made deriving moves worth keeping over recording them.
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && Ryker.units)`, 10000, 'the unit module');
+  const several = await evaluate(sess, `(function () {
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    Ryker.units.capture();
+    var authored = ${SHAPE};
+    Ryker.move.apply([document.querySelector('#media')], document.querySelector('#intro'), 'before');
+    Ryker.move.apply([document.querySelector('#data table')], document.querySelector('#grid h3'), 'after');
+    var both = Ryker.units.moves();
+    var moved = ${SHAPE};
+    Ryker.units.restore();
+    Ryker.units.replay(both);
+    var rebuilt = ${SHAPE} === moved;
+    Ryker.units.restore();
+
+    // Out and back by hand.
+    var media = document.querySelector('#media');
+    var home = media.nextSibling;
+    document.querySelector('main').insertBefore(media, document.querySelector('#intro'));
+    var away = Ryker.units.moves().length;
+    document.querySelector('main').insertBefore(media, home);
+    return { both: both.length, tags: both.map(function (r) { return r.tag; }),
+      rebuilt: rebuilt, away: away, home: Ryker.units.moves().length,
+      settled: ${SHAPE} === authored };
+  })()`);
+  assert(several.both === 2 && several.tags.join(',') === 'SECTION,TABLE' &&
+    several.rebuilt && several.away === 1 && several.home === 0 && several.settled,
+  'two moves are two records, and a unit moved out and back reports nothing at all',
+  JSON.stringify(several));
+
+  // A record naming something the document no longer has is a miss, not a
+  // guess. Placing it anywhere is how a restore damages a document.
+  await navigate(sess, FIXTURE);
+  await evaluate(sess, code);
+  await waitInPage(sess, `!!(window.Ryker && Ryker.units)`, 10000, 'the unit module');
+  const unresolved = await evaluate(sess, `(function () {
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    Ryker.units.capture();
+    var before = ${SHAPE};
+    var out = Ryker.units.replay([
+      { kind: 'unit', key: 'SECTION:~nothing', parent: null, prev: null, tag: 'SECTION', unit: 'section' },
+      { kind: 'unit', key: '#media', parent: '#nowhere', prev: null, tag: 'SECTION', unit: 'section' },
+      { kind: 'unit', key: '#media', parent: null, prev: 'H9:~gone', tag: 'SECTION', unit: 'section' }
+    ]);
+    return { out: out, untouched: ${SHAPE} === before };
+  })()`);
+  assert(unresolved.out.applied === 0 && unresolved.out.missed === 3 &&
+    unresolved.out.skipped.length === 3 && unresolved.untouched,
+  'a move whose element, container or anchor is missing is reported, never guessed',
+  JSON.stringify(unresolved));
+}
+
 // The extension bundle shares every source module with the drop-in but has the
 // opposite activation rule: loading the file must do nothing until a toolbar
 // click explicitly calls start(). This exercises that boundary in real Chrome
@@ -3247,7 +3381,7 @@ if (!bundles.length) {
 
 const sess = await launch();
 try {
-  for (const file of bundles) { await runBuild(sess, file); await runBlockTypes(sess, file); await runSanitizer(sess, file); await runEditorHardening(sess, file); await runAutoLists(sess, file); await runAtomicSvg(sess, file); await runRecovery(sess, file); await runMerge(sess, file); await runSaveNotes(sess, file); await runMove(sess, file); await runPackager(sess, file); await runLogging(sess, file); await runFailureIsolation(sess, file); }
+  for (const file of bundles) { await runBuild(sess, file); await runBlockTypes(sess, file); await runSanitizer(sess, file); await runEditorHardening(sess, file); await runAutoLists(sess, file); await runAtomicSvg(sess, file); await runRecovery(sess, file); await runMerge(sess, file); await runSaveNotes(sess, file); await runMove(sess, file); await runUnits(sess, file); await runPackager(sess, file); await runLogging(sess, file); await runFailureIsolation(sess, file); }
   await runExtension(sess);
   await runWorkspace(sess);
 } finally {

@@ -53,6 +53,7 @@ const MODULES = [
   'editor/table.js',
   'editor/outline.js',
   'editor/move.js',
+  'editor/units.js',
   'ui/rail.js',
   'instructions/steps.js',
   'instructions/instructions.js',
