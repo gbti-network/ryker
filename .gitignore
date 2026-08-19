@@ -5,3 +5,4 @@
 .product/
 extension/dist/
 /scripts/
+.playwright-mcp/
