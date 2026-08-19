@@ -16,11 +16,11 @@
 // The extension manifest takes the NUMERIC version only. npm accepts
 // `1.2.3-rc.1`; Chrome does not, and the package gate encodes that difference.
 //
-//   node scripts/release.mjs patch          0.1.1 -> 0.1.2
-//   node scripts/release.mjs minor          0.1.1 -> 0.2.0
-//   node scripts/release.mjs major          0.1.1 -> 1.0.0
-//   node scripts/release.mjs 0.2.0-rc.1     an explicit version
-//   node scripts/release.mjs patch --no-build   bump the files, skip the rebuild
+//   node tools/release.mjs patch          0.1.1 -> 0.1.2
+//   node tools/release.mjs minor          0.1.1 -> 0.2.0
+//   node tools/release.mjs major          0.1.1 -> 1.0.0
+//   node tools/release.mjs 0.2.0-rc.1     an explicit version
+//   node tools/release.mjs patch --no-build   bump the files, skip the rebuild
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';

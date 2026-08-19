@@ -180,27 +180,6 @@ block stamps and the offsets it sets on the root element. The fixture also pins
 which elements are editable, so a change to the exclusion rules cannot pass by
 restoring the count through some other route.
 
-## Placement Audits mirror
-
-The repository's `drop-in/` directory is the source of truth for the deployed
-copy under Codeable Placement Audits. From Windows, build and sync it through
-WSL with the repository-only script:
-
-```powershell
-wsl.exe -d Ubuntu -- bash ./scripts/sync-placement-audits.sh
-```
-
-The underlying PowerShell alternative is:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\sync-placement-audits.ps1
-```
-
-The command mirrors only `README.md`, `build/`, `dist/`, `docs/`, and `src/`.
-It removes retired files inside those managed paths, but deliberately preserves
-`revisions/` and any other deployment data. Use `-WhatIf` to preview the file
-operations or `-SkipBuild` when `dist/ryker.js` is already current.
-
 ## Layout
 
 ```

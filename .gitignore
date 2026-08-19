@@ -4,7 +4,4 @@
 /gbti-ryker-*.tgz
 .product/
 extension/dist/
-/scripts/*
-!/scripts/sync-placement-audits.ps1
-!/scripts/sync-placement-audits.sh
-!/scripts/release.mjs
+/scripts/

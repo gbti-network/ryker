@@ -32,8 +32,7 @@
     "package:extension": "node extension/build/package.mjs",
     "check:extension": "node test/extension-package.mjs",
     "publish:extension": "node --env-file-if-exists=.env extension/build/publish.mjs",
-    "release": "node scripts/release.mjs",
-    "sync:placement-audits": "bash scripts/sync-placement-audits.sh"
+    "release": "node tools/release.mjs"
   },
   "repository": {
     "type": "git",

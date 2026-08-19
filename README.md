@@ -25,6 +25,13 @@ bundle because other documents in the same folder may share it.
 Ryker requires Node.js 20 or newer for installation. The resulting HTML and
 classic browser script work offline and from `file://` without Node.js.
 
+## Privacy
+
+The Chrome extension keeps its editing history in your own browser and sends
+nothing anywhere: no server, no account, no sync, no telemetry.
+[privacy.md](privacy.md) is the full policy, and is the URL the Chrome Web Store
+listing points at.
+
 ## License
 
 Ryker is source-available under the custom license included with the package.

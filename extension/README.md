@@ -148,6 +148,10 @@ that is sometimes recording is worse than one that always is: you would find out
 which mode you were in only when you needed a record that was never written.
 Per-document clear is the control.
 
+The same ground, written as a policy rather than as documentation, is in
+[privacy.md](../privacy.md) at the root of this repository. That file is what the
+Chrome Web Store listing points at.
+
 ## Clearing data from development builds
 
 Builds before the extension-owned store wrote some Ryker state into the visited
