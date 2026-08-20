@@ -7,7 +7,7 @@
  *   config/config.js  (131 lines)
  *   security/scan.js  (86 lines)
  *   editor/sanitize.js  (218 lines)
- *   editor/blocks.js  (552 lines)
+ *   editor/blocks.js  (580 lines)
  *   export/zip.js  (193 lines)
  *   export/html.js  (217 lines)
  *   export/markdown.js  (246 lines)
@@ -20,7 +20,7 @@
  *   ui/dialog.js  (138 lines)
  *   ui/menu.js  (104 lines)
  *   export/dialog.js  (99 lines)
- *   editor/editable.js  (591 lines)
+ *   editor/editable.js  (596 lines)
  *   editor/history.js  (248 lines)
  *   editor/formatbar.js  (252 lines)
  *   editor/links.js  (173 lines)
@@ -677,6 +677,34 @@
       return out;
     }
 
+    // Whether two blocks that are adjacent IN sequence() are also adjacent in the
+    // document. They very often are not. sequence() lists prose, so a code block,
+    // a rule, an image or a figure standing between two paragraphs is invisible
+    // to it, and the two paragraphs come back next to each other in the list with
+    // the element still sitting between them on the page.
+    //
+    // A merge that trusts the list therefore jumps whatever is in the gap: the
+    // text lands in the wrong paragraph and the element stays where it was. One
+    // Backspace, no selection. Anything walking pairs out of sequence() has to
+    // ask this first.
+    //
+    // Walking forward from the end of the first block, an element that does not
+    // contain the second is genuinely in between; one that does is an ancestor of
+    // it, so descend. An element in between that held prose of its own could not
+    // arise, because its prose would be in sequence() and the two would not have
+    // been adjacent.
+    function nothingBetween(first, second) {
+      if (!first || !second || first === second) return false;
+      var n = first;
+      while (n && !n.nextElementSibling) n = n.parentElement;
+      n = n ? n.nextElementSibling : null;
+      while (n && n !== second) {
+        if (!n.contains(second)) return false;
+        n = n.firstElementChild;
+      }
+      return n === second;
+    }
+
     function all() {
       var nodes = candidates();
       var counts = {};
@@ -1093,7 +1121,7 @@
       byId: byId, hash: hash,
       excluded: excluded, snapshot: snapshot, diffSnapshots: diffSnapshots, label: label,
       seedIds: seedIds, stamp: stamp, htmlOf: htmlOf, sequence: sequence,
-      boxOf: boxOf, boxKey: boxKey,
+      boxOf: boxOf, boxKey: boxKey, nothingBetween: nothingBetween,
       applyChange: applyChange, applyRecords: applyRecords, applyOrder: applyOrder
     };
   })();
@@ -3605,6 +3633,11 @@
 
       var keep = dir === 'previous' ? other : node;
       var drop = dir === 'previous' ? node : other;
+
+      // Adjacent in sequence() is not adjacent on the page: see nothingBetween.
+      // Merging across a code block, rule or image jumps it, and deleting what
+      // is in the gap belongs to the outline rail, not to one Backspace.
+      if (!Ryker.blocks.nothingBetween(keep, drop)) return false;
 
       // Headings are structure. Merging one into a paragraph destroys a section
       // title and desyncs the table of contents, and merging a paragraph into a

@@ -349,6 +349,11 @@ Ryker.editable = (function () {
     var keep = dir === 'previous' ? other : node;
     var drop = dir === 'previous' ? node : other;
 
+    // Adjacent in sequence() is not adjacent on the page: see nothingBetween.
+    // Merging across a code block, rule or image jumps it, and deleting what
+    // is in the gap belongs to the outline rail, not to one Backspace.
+    if (!Ryker.blocks.nothingBetween(keep, drop)) return false;
+
     // Headings are structure. Merging one into a paragraph destroys a section
     // title and desyncs the table of contents, and merging a paragraph into a
     // heading silently promotes body text. The earlier guard only covered the

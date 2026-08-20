@@ -3758,6 +3758,65 @@ async function runWorkspace(sess) {
     'inlineOf accepts a detached container, which instructions.js depends on for every Markdown TO',
     JSON.stringify(detached));
 
+  // Backspace at the start of a block joins it to the one before, and
+  // neighbour() finds that one through blocks.sequence(), which lists prose and
+  // nothing else. So a code block, a rule or an image between two paragraphs is
+  // invisible to it and the merge jumped straight over: the text arrived in the
+  // wrong paragraph and the element stayed where it was. One keystroke, nothing
+  // selected. Verified against the build before the guard, where all three of
+  // these merge.
+  await navigate(sess, WORKSPACE_FIXTURE);
+  await waitInPage(sess, `!!window.RykerWorkspace`, 10000, 'Ryker workspace to reset');
+  const across = await evaluate(sess, `RykerWorkspace.openText('page.html',
+    '<!doctype html><html><body><h1>Title</h1>' +
+    '<p>One.</p><pre>a = 1</pre><p>Two.</p>' +
+    '<p>Three.</p><hr><p>Four.</p>' +
+    '<p>Five.</p><img src="x.png" alt="a"><p>Six.</p>' +
+    '<p>Seven.</p><p>Eight.</p></body></html>').then(function () {
+      var doc = document.getElementById('workspace-document');
+      function press(node) {
+        var range = document.createRange();
+        range.selectNodeContents(node); range.collapse(true);
+        var s = window.getSelection();
+        s.removeAllRanges(); s.addRange(range); node.focus();
+        node.dispatchEvent(new KeyboardEvent('keydown',
+          { key: 'Backspace', bubbles: true, cancelable: true }));
+      }
+      function find(t) {
+        return Array.prototype.filter.call(doc.querySelectorAll('p'), function (p) {
+          return p.textContent.indexOf(t) === 0;
+        })[0] || null;
+      }
+      var out = { refused: {}, order: null, control: null };
+      ['Two.', 'Four.', 'Six.'].forEach(function (t) {
+        var target = find(t);
+        out.refused[t] = target
+          ? { blocker: target.previousElementSibling.tagName, survived: (press(target), target.isConnected) }
+          : { blocker: 'missing', survived: false };
+      });
+      // The control matters as much as the guard: two paragraphs with nothing
+      // between them must still merge, or this has simply turned Backspace off.
+      var eight = find('Eight.');
+      press(eight);
+      out.control = { merged: !eight.isConnected, text: (find('Seven.') || {}).textContent };
+      out.order = doc.textContent.replace(/\s+/g, ' ').trim();
+      return out;
+    })`);
+
+  assert(across.refused['Two.'].blocker === 'PRE' && across.refused['Two.'].survived &&
+    across.refused['Four.'].blocker === 'HR' && across.refused['Four.'].survived &&
+    across.refused['Six.'].blocker === 'IMG' && across.refused['Six.'].survived,
+    'Backspace refuses to merge a paragraph across a code block, a rule or an image',
+    JSON.stringify(across.refused));
+
+  assert(across.order === 'TitleOne.a = 1Two.Three.Four.Five.Six.Seven.Eight.',
+    'a refused merge leaves every block where the author put it',
+    JSON.stringify(across.order));
+
+  assert(across.control.merged && across.control.text === 'Seven.Eight.',
+    'two paragraphs with nothing between them still merge, so the guard is a guard and not an off switch',
+    JSON.stringify(across.control));
+
   const firstWorkspaceId = markdown.id;
   const reloaded = sess.once('Page.loadEventFired');
   await sess.send('Runtime.evaluate', {
