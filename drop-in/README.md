@@ -209,9 +209,3 @@ export is staged in `../.data/sow/_staging/sow-005-ryker-google-docs-export.md`.
 Comments, the revision journal, revision review and the GitHub backend were
 built and then decommissioned on 2026-08-16, per sow-006. They are recoverable
 at the `v0.1.0-two-builds` tag.
-
-## Credits
-
-Wing icon by [prasong tadoungsorn](https://thenounproject.com/creator/layersky/) from
-[Noun Project](https://thenounproject.com/icon/wing-1382909/), licensed
-[CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
