@@ -78,10 +78,8 @@ it.
 Ryker requires Node.js 20 or newer for installation. The resulting HTML and
 classic browser script work offline and from `file://` without Node.js.
 
-This repository is at version `0.2.0`, which is not on npm yet. Both the
-`latest` and `next` tags currently serve `0.1.1-rc.1`, so any `npx` command
-above installs the release candidate rather than this code until `0.2.0` is
-published.
+This repository is at version `0.2.1`, and the npm `latest` tag serves it, so
+every `npx` command above installs this code.
 
 ## Privacy
 

@@ -1,5 +1,5 @@
 /*!
- * Ryker Extension 0.2.0
+ * Ryker Extension 0.2.1
  * A drop-in editing layer for authored HTML reports.
  *
  * Generated bundle. Do not edit. Sources, in load order:
@@ -49,7 +49,7 @@
 (function () {
   'use strict';
   if (window.Ryker && window.Ryker.VERSION) return;
-  var Ryker = { VERSION: "0.2.0", BUILD: "Ryker Extension", SURFACE: "extension" };
+  var Ryker = { VERSION: "0.2.1", BUILD: "Ryker Extension", SURFACE: "extension" };
   window.Ryker = Ryker;
 
   /* ---- utils/dom.js ---------------------------------------------- */

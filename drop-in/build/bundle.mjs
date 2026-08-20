@@ -18,7 +18,7 @@ const SRC = join(ROOT, 'src');
 const DIST = join(ROOT, 'dist');
 const EXTENSION = join(ROOT, '..', 'extension');
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 const MAX_LINES = 600;
 
 // One product, one bundle, per sow-006 decision 1.

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Ryker",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Inline editing for HTML and Markdown. Export your corrections as agent-ready instructions a model can learn from.",
   "permissions": [
     "activeTab",

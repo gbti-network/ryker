@@ -1,6 +1,6 @@
 {
   "name": "@gbti/ryker",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Add Ryker inline editing and prompt-ready change requests to authored HTML documents.",
   "type": "module",
   "bin": {
