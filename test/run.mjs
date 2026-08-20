@@ -3877,6 +3877,283 @@ async function runWorkspace(sess) {
   JSON.stringify(redirect));
 }
 
+async function runMarkdownInstructions(sess) {
+  console.log('\ninstructions/steps.js (Markdown instructions, not HTML ones)');
+
+  const MD_SOURCE = [
+    '# Notes',
+    '',
+    'A paragraph with _emphasis_ and `code`.',
+    '',
+    '+ first',
+    '+ second',
+    '',
+    '| Name | Value |',
+    '| --- | --- |',
+    '| a | 1 |',
+    ''
+  ].join('\n');
+
+  await navigate(sess, WORKSPACE_FIXTURE);
+  await waitInPage(sess, `!!window.RykerWorkspace`, 10000,
+    'Ryker workspace to reset before the Markdown instruction checks');
+
+  // Every step writer, driven through both vocabularies with no live document,
+  // which is the property steps.js was split out to keep. This IS the
+  // completeness check: a key missing from one vocabulary throws rather than
+  // falling back, so a writer that runs to the end in Markdown mode has every
+  // word it needs. Asserting the two key lists match would test the table;
+  // this tests the thing the table is for.
+  const everyKind = await evaluate(sess, `(function () {
+    var kinds = [
+      { kind: 'replace', id: 'a', tag: 'P', beforeTag: 'P', afterTag: 'H2',
+        before: 'was', after: 'now' },
+      { kind: 'replace', id: 'b', tag: 'P', beforeTag: 'P', afterTag: 'LI',
+        boxTag: 'UL', before: 'was', after: 'now' },
+      { kind: 'insert', id: 'c', tag: 'P', after: 'fresh', prev: null },
+      { kind: 'insert', id: 'd', tag: 'LI', boxTag: 'OL', after: 'fresh', prev: null },
+      { kind: 'insert', id: 'd2', tag: 'LI', boxTag: 'UL', after: 'fresh', prev: null },
+      { kind: 'deletebox', id: 'e', tag: 'TABLE', position: 'the 1st cell',
+        cells: ['one', 'two'] },
+      { kind: 'delete', id: 'f', before: 'gone' },
+      { kind: 'delete', id: 'g', atomic: true, tag: 'SVG', before: '<svg></svg>' },
+      { kind: 'addrow', id: 'h', cellTag: 'TD', position: 'the 1st cell',
+        afterRow: 'a | 1', cells: [{ html: 'x' }, { html: 'y' }] },
+      { kind: 'deleterow', id: 'i', position: 'the 1st cell', cells: [{ html: 'x' }] },
+      { kind: 'addcol', id: 'j', col: 1, position: 'the 1st cell',
+        cells: [{ tag: 'TH', html: 'h' }, { tag: 'TD', html: 'd' }] },
+      { kind: 'delcol', id: 'k', col: 1, position: 'the 1st cell', cells: [{ html: 'x' }] }
+    ];
+    function ctxFor(format) {
+      return { where: function () { return 'somewhere'; },
+        text: function (h) { return String(h == null ? '' : h); },
+        pristine: function () { return null; }, stepOf: {}, editedAt: {},
+        format: format, source: function () { return null; },
+        md: function (h) { return String(h == null ? '' : h); } };
+    }
+    function run(format) {
+      var lines = [], threw = null;
+      try {
+        kinds.forEach(function (e, i) { Ryker.steps.write(e, i + 1, ctxFor(format), lines); });
+      } catch (err) { threw = err.message; }
+      // The bodies are kept, not just the headings. Keeping only '## ' lines is
+      // exactly why "Insert one a table row holding 2 a cell cell(s)" and a
+      // note telling a reader to bulletise a numbered list both survived a
+      // green suite: this harness generated them and then threw them away.
+      return { threw: threw, body: lines.join(String.fromCharCode(10)),
+        headings: lines.filter(function (l) { return l.indexOf('## ') === 0; }) };
+    }
+    var unknown = null;
+    try { Ryker.steps.write(kinds[0], 1, ctxFor('klingon'), []); }
+    catch (err) { unknown = err.message; }
+    return { html: run('html'), markdown: run('markdown'), unknown: unknown };
+  })()`);
+
+  assert(everyKind.markdown.threw === null &&
+    everyKind.markdown.headings.length === everyKind.html.headings.length &&
+    everyKind.markdown.headings.length === 12,
+  'every step writer has a complete Markdown vocabulary, since a missing word throws',
+  JSON.stringify(everyKind.markdown));
+
+  assert(/klingon/.test(everyKind.unknown || ''),
+    'an unknown format fails loudly rather than quietly writing HTML words',
+    JSON.stringify({ unknown: everyKind.unknown }));
+
+  assert(!/ a (cell|table row|paragraph|list item)\b[^\n]*\bcell\(s\)/.test(everyKind.markdown.body) &&
+    !/Insert one a /.test(everyKind.markdown.body) &&
+    !/Insert a new a /.test(everyKind.markdown.body),
+  'no Markdown step doubles an article or a noun it already carries',
+  JSON.stringify((everyKind.markdown.body.match(/^.*Insert one.*$/m) || [])[0] || ''));
+
+  // The rule cuts both ways. A bulleted list must not be told to renumber and
+  // a numbered one must not be told to swap in a bullet, which is what the
+  // single shared sentence did before it was split.
+  const steps = everyKind.markdown.body.split('## ');
+  const numbered = steps.filter((b) => /numbered list with one item/.test(b))[0] || '';
+  const bulleted = steps.filter((b) => /bulleted list with one item/.test(b))[0] || '';
+  assert(/renumbers an ordered list/.test(numbered) && !/bullet marker/.test(numbered) &&
+    /whichever bullet marker/.test(bulleted) && !/renumbers/.test(bulleted),
+  'an inserted numbered list is not told to adopt the bullet marker of a bulleted one',
+  JSON.stringify({ numbered, bulleted }));
+
+  assert(/delimiter row/.test(everyKind.markdown.body) &&
+    !/delimiter row/.test(everyKind.html.body),
+  'a Markdown column step names the delimiter row, without which the table stops parsing',
+  JSON.stringify(everyKind.markdown.body.slice(-500)));
+
+  // `<svg>` is exempt on purpose rather than overlooked. An SVG inside a
+  // Markdown file is literal HTML, so naming the tag is the accurate thing to
+  // say there; every other tag in a step heading would name something the file
+  // does not contain.
+  assert(!everyKind.markdown.headings.some((h) => /<(?!svg>)[a-z]+>/i.test(h)) &&
+    everyKind.markdown.headings.some((h) => /<svg>/.test(h)) &&
+    everyKind.html.headings.some((h) => /<p>|<table>|<tr>/i.test(h)),
+  'no Markdown step heading names an HTML tag, except an SVG, which really is one',
+  JSON.stringify(everyKind.markdown.headings));
+
+  const written = await evaluate(sess, `RykerWorkspace.openText('notes.md',
+    ${JSON.stringify(MD_SOURCE)}).then(function () {
+      var doc = document.getElementById('workspace-document');
+      var paragraph = doc.querySelector('p');
+      var item = doc.querySelectorAll('li')[1];
+      paragraph.textContent = 'A rewritten paragraph.';
+      paragraph.dispatchEvent(new Event('input', { bubbles: true }));
+      item.textContent = 'second, edited';
+      item.dispatchEvent(new Event('input', { bubbles: true }));
+      Ryker.instructions.record();
+      return { prompt: Ryker.instructions.build() };
+    })`);
+
+  const prompt = written.prompt || '';
+
+  assert(/Apply every edit below to the Markdown source/.test(prompt) &&
+    !/source HTML/.test(prompt) && !/leaving the tag and its attributes alone/.test(prompt) &&
+    !/includes\nmarkup/.test(prompt),
+  'a Markdown document gets a preamble about Markdown, not one about tags and attributes',
+  JSON.stringify(prompt.slice(0, 600)));
+
+  assert(prompt.indexOf('_emphasis_') !== -1 && prompt.indexOf('<em>') === -1,
+    'a FROM quotes the Markdown the block was authored as, so it can be found in the file',
+    JSON.stringify(prompt.slice(0, 900)));
+
+  // The rule this vocabulary was built on. The parser accepts `-`, `*`, `+`,
+  // `1.` and `1)` and keeps only the text, so a step that named a marker would
+  // convert this `+` list while claiming to change one line.
+  assert(!/^\s*[-*+]\s/m.test(prompt.split('FROM:')[0] || '') &&
+    !/(a|an) `[-*+]`/.test(prompt),
+  'no step dictates a bullet marker for a list the file already has',
+  JSON.stringify(prompt.slice(0, 900)));
+
+  // Not a Markdown bug, and not one the Markdown work introduced: the committed
+  // bundle says the same thing. Editing a list item's text was reported as
+  // converting it into a list, because the conversion branch never checked that
+  // the tag had changed.
+  assert(/Replace the contents of a list item/.test(prompt) &&
+    !/Change a list item to a/.test(prompt),
+  'editing a list item is a content change, not a conversion into the list it is already in',
+  JSON.stringify(prompt.slice(0, 900)));
+
+  // The positive control for the loud guard. The first version of this call
+  // named the wrong module and the guard returned the HTML unchanged, so every
+  // TO payload silently stayed HTML while the suite passed. A missing
+  // capability may degrade; a missing module member is a typo. Asserting only
+  // that the serialiser works would not have caught the original bug, because
+  // it did not work and nothing failed, so this asserts the absence case too.
+  const loudGuard = await evaluate(sess, `(function () {
+    var keep = Ryker.exportMarkdown.inlineOf;
+    Ryker.exportMarkdown.inlineOf = undefined;
+    var threw = null;
+    try { Ryker.instructions.build(); } catch (err) { threw = err.message; }
+    Ryker.exportMarkdown.inlineOf = keep;
+    return { threw: threw, recovered: Ryker.instructions.build().indexOf('FROM:') !== -1 };
+  })()`);
+
+  assert(/exportMarkdown\.inlineOf is missing/.test(loudGuard.threw || '') && loudGuard.recovered,
+    'a missing cross-module member throws instead of quietly writing HTML into a Markdown TO',
+    JSON.stringify(loudGuard));
+
+  // The phase's headline behaviour, which had no test at all: a verifier
+  // replaced exportMarkdown.inlineOf with (n) => n.innerHTML and the suite
+  // stayed green. Asserting on the whole prompt is not enough, because the FROM
+  // half carries the authored Markdown and passes either way. This slices to
+  // the TO payloads, which are the only place the serialiser is the thing under
+  // test, and covers all three inline forms because inlineOf branches per tag.
+  await navigate(sess, WORKSPACE_FIXTURE);
+  await waitInPage(sess, `!!window.RykerWorkspace`, 10000, 'Ryker workspace to reset');
+  const serialised = await evaluate(sess, `RykerWorkspace.openText('notes.md',
+    ${JSON.stringify(MD_SOURCE)}).then(function () {
+      var doc = document.getElementById('workspace-document');
+      var target = doc.querySelector('p');
+      target.innerHTML = 'A <em>rate</em> change, <strong>bold</strong>, ' +
+        'and a <a href="/x">link</a>.';
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+      Ryker.instructions.record();
+      var built = Ryker.instructions.build();
+      return { tos: built.split('TO:').slice(1).join('TO:') };
+    })`);
+
+  assert(/A \*rate\* change, \*\*bold\*\*, and a \[link\]\(\/x\)\./.test(serialised.tos) &&
+    !/<em>|<strong>|<a /.test(serialised.tos),
+  'a TO payload is Markdown, covering emphasis, strong and links, not the HTML that was typed',
+  JSON.stringify(serialised.tos.slice(0, 400)));
+
+  await navigate(sess, WORKSPACE_FIXTURE);
+  await waitInPage(sess, `!!window.RykerWorkspace`, 10000, 'Ryker workspace to reset');
+  const inserted = await evaluate(sess, `RykerWorkspace.openText('notes.md',
+    ${JSON.stringify(MD_SOURCE)}).then(function () {
+      var doc = document.getElementById('workspace-document');
+      var fresh = document.createElement('h1');
+      fresh.textContent = 'A brand new heading';
+      doc.appendChild(fresh);
+      Ryker.editable.rebind ? Ryker.editable.rebind(fresh) : null;
+      Ryker.instructions.record();
+      var built = Ryker.instructions.build();
+      var step = built.split('## ').filter(function (b) {
+        return /^\\d+\\. Insert a new/.test(b); })[0] || '';
+      return { step: step, heading: (step.split('\\n')[0] || '') };
+    })`);
+
+  // Without the prefix the reader adds a heading as a plain line of text, and
+  // the file gets a paragraph where a heading was meant.
+  assert(/Insert a new level 1 heading/.test(inserted.step) &&
+    /<<<\s*\n# A brand new heading/.test(inserted.step) &&
+    /Leave one blank line before it and one after it\./.test(inserted.step),
+  'an inserted Markdown block carries its own prefix and says what spacing it needs',
+  JSON.stringify(inserted.step.slice(0, 400)));
+
+  // moveStep lives in instructions/moves.js and steps.write() has no move
+  // branch, so no extension of the everyKind harness could ever have reached
+  // it. That is why it kept emitting "Move a <blockquote>" while the suite was
+  // green, and why this has to be a document-level test.
+  await navigate(sess, WORKSPACE_FIXTURE);
+  await waitInPage(sess, `!!window.RykerWorkspace`, 10000, 'Ryker workspace to reset');
+  const moved = await evaluate(sess, `RykerWorkspace.openText('notes.md',
+    ${JSON.stringify(MD_SOURCE)}).then(function () {
+      var doc = document.getElementById('workspace-document');
+      Ryker.move.nudge([doc.querySelector('ul')], 'up');
+      Ryker.instructions.record();
+      var built = Ryker.instructions.build();
+      return { built: built,
+        headings: built.split(String.fromCharCode(10)).filter(function (l) {
+          return l.indexOf('## ') === 0; }),
+        quoted: (built.match(/"([^"]+)"/g) || []) };
+    })`);
+
+  assert(moved.headings.length > 0 &&
+    !moved.headings.some((h) => /<[a-z]+>/i.test(h)) &&
+    !/Move a <|Move this one </.test(moved.built),
+  'a move step on a Markdown document names structure, not the HTML tag it moved',
+  JSON.stringify(moved.headings));
+
+  // Every line a move step quotes has to be findable in the file, which is what
+  // the preamble promises three paragraphs above it. The anchor lines used to
+  // go through text(), which strips inline markup, so they quoted "with stress
+  // here" against a file that says "with _stress_ here".
+  const claims = [...moved.built.matchAll(/(?:begins|just after this text): "([^"]+)"/g)]
+    .map((m) => m[1].replace(/\.\.\.$/, ''));
+  const unfindable = claims.filter((q) => MD_SOURCE.indexOf(q) === -1);
+  assert(claims.length > 0 && unfindable.length === 0,
+    'every line a Markdown move step quotes as the file occurs literally in the file',
+    JSON.stringify({ claims, unfindable }));
+
+  await navigate(sess, WORKSPACE_FIXTURE);
+  await waitInPage(sess, `!!window.RykerWorkspace`, 10000, 'Ryker workspace to reset');
+  const headingChange = await evaluate(sess, `RykerWorkspace.openText('notes.md',
+    ${JSON.stringify(MD_SOURCE)}).then(function () {
+      var doc = document.getElementById('workspace-document');
+      var paragraph = doc.querySelector('p');
+      Ryker.pick.set ? Ryker.pick.set([paragraph]) : null;
+      Ryker.editable.convert(paragraph, 'h2');
+      Ryker.instructions.record();
+      return { prompt: Ryker.instructions.build() };
+    })`);
+
+  assert(/level 2 heading \(`## `\)/.test(headingChange.prompt || '') &&
+    !/<h2>/.test(headingChange.prompt || ''),
+  'a block-type change names the Markdown prefix, which the parser accepts in only one form',
+  JSON.stringify((headingChange.prompt || '').slice(0, 700)));
+}
+
 const bundles = ['ryker.js'].filter((f) => existsSync(join(DIST, f)));
 if (!bundles.length) {
   console.error('No bundle found in drop-in/dist. Run: node drop-in/build/bundle.mjs');
@@ -3888,6 +4165,7 @@ try {
   for (const file of bundles) { await runBuild(sess, file); await runBlockTypes(sess, file); await runSanitizer(sess, file); await runEditorHardening(sess, file); await runAutoLists(sess, file); await runAtomicSvg(sess, file); await runRecovery(sess, file); await runMerge(sess, file); await runSaveNotes(sess, file); await runMove(sess, file); await runUnits(sess, file); await runPackager(sess, file); await runLogging(sess, file); await runFailureIsolation(sess, file); }
   await runExtension(sess);
   await runWorkspace(sess);
+  await runMarkdownInstructions(sess);
 } finally {
   await sess.close();
 }

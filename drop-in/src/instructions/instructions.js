@@ -16,6 +16,7 @@ Ryker.instructions = (function () {
   var session = null;  // one page load; scopes cumulative revision records
   var recovery = null; // stable in one tab so a refresh can find its draft
   var pristinePositions = {};
+  var pristineSource = null;   // block id -> the Markdown it was authored as
   var listeners = [];
 
   function tabSession() {
@@ -35,8 +36,16 @@ Ryker.instructions = (function () {
     pristineTree = Ryker.units.snapshot();
     baseline = null;
     pristinePositions = {};
+    // The authored Markdown for each block, taken here for the same reason the
+    // position is: it is a property of the document as it arrived, and reading
+    // it later would read it from a node somebody has since edited. The stamp
+    // itself is never rewritten, but the node can stop existing.
+    pristineSource = {};
     Object.keys(pristine).forEach(function (id) {
-      pristinePositions[id] = placeOf(Ryker.blocks.byId(id));
+      var node = Ryker.blocks.byId(id);
+      pristinePositions[id] = placeOf(node);
+      var src = node && node.getAttribute ? node.getAttribute('data-ryker-md-src') : null;
+      if (src != null) pristineSource[id] = src;
     });
     recovery = tabSession();
     session = Ryker.dom.uid('edit');
@@ -61,6 +70,41 @@ Ryker.instructions = (function () {
 
   function sessionId() { return recovery; }
   function editingSessionId() { return session; }
+
+  // Serialising through the exporter's own inline writer rather than a second
+  // one here is the point: two writers would drift, and the instruction would
+  // then describe an edit the export does not make.
+  function markdownOf(html) {
+    // Throws rather than degrading, deliberately. The first version of this
+    // guard returned the HTML unchanged if the member was missing, and when the
+    // reference turned out to name the wrong module every TO payload silently
+    // stayed HTML while the suite went green. A missing capability may degrade;
+    // a missing module member is a typo, and a typo has to be loud.
+    if (!Ryker.exportMarkdown || !Ryker.exportMarkdown.inlineOf) {
+      throw new Error('instructions: Ryker.exportMarkdown.inlineOf is missing, ' +
+        'so a Markdown TO cannot be written');
+    }
+    var holder = document.createElement('div');
+    holder.innerHTML = html == null ? '' : html;
+    return Ryker.exportMarkdown.inlineOf(holder);
+  }
+
+  // The exporter's block writer, so an inserted heading in a prompt and an
+  // inserted heading in an export cannot disagree about what a prefix is.
+  function markdownBlockOf(tag, html) {
+    if (!Ryker.exportMarkdown || !Ryker.exportMarkdown.blockOf) {
+      throw new Error('instructions: Ryker.exportMarkdown.blockOf is missing, ' +
+        'so a Markdown insert cannot be written');
+    }
+    var holder = document.createElement(/^[A-Z][A-Z0-9]*$/.test(tag || '') ? tag : 'p');
+    holder.innerHTML = html == null ? '' : html;
+    return Ryker.exportMarkdown.blockOf(holder);
+  }
+
+  function authoredSource(id) {
+    if (!pristineSource || !Object.prototype.hasOwnProperty.call(pristineSource, id)) return null;
+    return pristineSource[id];
+  }
 
   function pristineHtml(id) {
     if (!pristine || !Object.prototype.hasOwnProperty.call(pristine, id)) return undefined;
@@ -223,6 +267,27 @@ Ryker.instructions = (function () {
 
   function placeOf(node) {
     if (!node) return null;
+
+    // A Position naming a tag and an id is worse than useless in a Markdown
+    // file, because the preamble says Position is part of the selector and
+    // neither of those things is in the source. It names structure instead,
+    // through the same vocabulary the steps use, so there is still one place
+    // where a Markdown word is decided.
+    if (Ryker.config.isMarkdown()) {
+      var tagName = node.tagName.toLowerCase();
+      var root = Ryker.blocks.root();
+      // A move to the front hands this the root itself, and "the 1st block in
+      // the document" would be a description of the whole document.
+      if (node === root || node === document.body) return 'the document';
+      var kin = Array.prototype.filter.call(root.querySelectorAll(tagName), function (n) {
+        return !Ryker.blocks.excluded(n);
+      });
+      var at = kin.indexOf(node);
+      var noun = Ryker.steps.word({ format: 'markdown' }, 'bareBlock', node.tagName);
+      return at === -1 ? 'a ' + noun + ' in the document'
+        : 'the ' + ordinal(at + 1) + ' ' + noun + ' in the document';
+    }
+
     if (node.id) return 'the element with id=' + quoted(node.id);
 
     var scope = node.parentElement;
@@ -282,116 +347,18 @@ Ryker.instructions = (function () {
   // Where a moved element ends up, named at the level the element itself sits
   // at.
   //
-  // The obvious answer, the block that precedes it in the finished order, is
-  // the wrong one and reads as nonsense: a whole <section> came out as "move it
-  // after the 101st <p> inside the section with id=rationale", and a <p> after
-  // a <td>. Nothing can be placed after a cell.
-  //
-  // The move has already happened in the document, so the element's own
-  // previous sibling IS the answer, exact and at the right level by
-  // construction. Move steps are emitted in finished-document order, so where
-  // one move lands against another the earlier step has already put its element
-  // in place.
-  function anchorOf(el) {
-    var n = el.previousElementSibling;
-    while (n && (n.tagName === 'SCRIPT' || n.tagName === 'STYLE')) n = n.previousElementSibling;
-    return n;
+  function writerCtx(stepOf, editedAt) {
+    return { where: where, text: text, pristine: pristineHtml,
+             stepOf: stepOf || {}, editedAt: editedAt || {},
+             format: Ryker.config.isMarkdown() ? 'markdown' : 'html',
+             source: authoredSource, md: markdownOf, mdBlock: markdownBlockOf,
+             place: placeOf, quote: quoted };
   }
 
-  // How to recognise the anchor, in one line.
-  //
-  // For a block that is its opening words, taken from the document as authored
-  // rather than as edited: moves are applied before the rewrites, so quoting
-  // the new wording would point at text the file does not contain yet.
-  //
-  // For a container it is the outline's own label, because textContent on a
-  // table returns every cell run together with no spaces between them, which
-  // came out as "#What changesWhereImpactEffortWhy R1Fix the Apple Pay hire
-  // path" and identified nothing.
-  function anchorLine(node) {
-    var id = safeId(node);
-    if (id != null) {
-      var was = pristineHtml(id);
-      var t = clipText(was !== undefined ? text(was) : Ryker.dom.textOf(node));
-      return t ? 'That element begins: "' + t + '"' : null;
-    }
-    var label = Ryker.outline.label(node);
-    return label ? 'That element is described as ' + quoted(label) + '.' : null;
-  }
-
-  // One move, written so it can be followed without knowing anything about
-  // Ryker. What moves is identified by the exact opening markup of its first
-  // block, which is text the file actually contains.
-  function moveStep(m, n, stepOf, out) {
-    var rec = m.rec, at = m.at;
-    var el = at.elements[0];
-    var tag = at.tag ? '<' + at.tag.toLowerCase() + '>' : null;
-
-    out.push('## ' + n + '. Move ' + (tag ? 'a ' + tag : 'an element'));
-    out.push('');
-    out.push('Move this one ' + (tag || 'element') + ' and everything inside it. Change nothing');
-    if (el.id) {
-      out.push('about its contents. It is the one with id=' + quoted(el.id) + '.');
-    } else {
-      out.push('about its contents. It is the element whose first block reads, exactly:');
-      out.push('<<<'); out.push(pristineHtml(rec.lead) != null
-        ? pristineHtml(rec.lead) : ''); out.push('>>>');
-    }
-    out.push('');
-
-    var anchor = anchorOf(el);
-    if (!anchor) {
-      var host = placeOf(el.parentElement);
-      out.push('Put it first inside ' + (host || 'the document body') + ', before');
-      out.push('everything else in there.');
-    } else if (stepOf[safeId(anchor)]) {
-      out.push('Put it immediately after the element added in step ' +
-        stepOf[safeId(anchor)] + '.');
-      out.push('Apply that step before this one.');
-    } else {
-      out.push('Put it immediately after ' + (placeOf(anchor) || 'the preceding element') + ',');
-      out.push('as a sibling of it, not inside it.');
-      var line = anchorLine(anchor);
-      if (line) out.push(line);
-    }
-    out.push('');
-
-    var wasAfter = rec.was ? Ryker.units.index()[rec.was] : null;
-    if (wasAfter && wasAfter.id) {
-      out.push('In the file it currently sits just after the element with id=' +
-        quoted(wasAfter.id) + '.');
-    } else if (rec.wasLead) {
-      var w = text(pristineHtml(rec.wasLead) != null ? pristineHtml(rec.wasLead) : '');
-      if (w) out.push('In the file it currently sits just after this text: "' +
-        clipText(w) + '"');
-    } else {
-      var from = rec.wasParent ? Ryker.units.index()[rec.wasParent] : null;
-      out.push('In the file it is currently the first thing inside ' +
-        (from ? (placeOf(from) || 'its container') : 'the document body') + '.');
-    }
-    out.push('');
-    out.push('Blocks carried along: ' + at.blocks);
-
-    if (at.nav.length) {
-      out.push('');
-      out.push('The contents list links into what moved. Move ' +
-        (at.nav.length > 1 ? 'these entries' : 'the entry') + ' to match, so the list');
-      out.push('stays in document order:');
-      at.nav.forEach(function (t2) { out.push('  - ' + quoted(t2)); });
-    }
-  }
-
-  // Only a block has a block id, and asking for one anywhere else costs a walk
-  // of the whole document to answer null.
-  function safeId(node) {
-    if (!node || !node.matches || !node.matches(Ryker.blocks.SELECTOR)) return null;
-    if (Ryker.blocks.excluded(node)) return null;
-    try { return Ryker.blocks.blockId(node); } catch (e) { return null; }
-  }
-
-  function clipText(s) {
-    return s.length > 80 ? s.slice(0, 77) + '...' : s;
-  }
+  // The move writer lives in instructions/moves.js. These stay because the
+  // suspicious() and build() paths below use them for their own reasons.
+  function safeId(node) { return Ryker.moveStep.safeId(node); }
+  function clipText(s) { return Ryker.moveStep.clipText(s); }
 
   function build() {
     var cfg = Ryker.config.load();
@@ -444,17 +411,40 @@ Ryker.instructions = (function () {
       out.push('');
     }
 
-    out.push('Apply every edit below to the source HTML of this document as it was');
-    out.push('authored. Every FROM below is the original text, so this applies cleanly');
-    out.push('to a fresh copy of the file even where a block was edited several times.');
-    out.push('');
-    out.push('Locate each element using both its quoted FROM text and its Position.');
-    out.push('The FROM text is exact but may also occur in another element. Position is');
-    out.push('therefore part of the selector, not merely a cross-check. Replace');
-    out.push('only the inner HTML, leaving the tag and its attributes alone. Add no');
-    out.push('attributes of your own. Text between <<< and >>> is literal and includes');
-    out.push('markup. Change nothing that is not named here.');
-    out.push('');
+    // Handed a Markdown file, every sentence of the HTML preamble was false:
+    // it named a source the file does not have, told the reader to preserve
+    // tags and attributes that do not exist, and promised that the text
+    // between the fences was markup. This is the half of the SOW that produced
+    // wrong work rather than wrong labels, because an assistant acts on it.
+    if (Ryker.config.isMarkdown()) {
+      out.push('Apply every edit below to the Markdown source of this document as it');
+      out.push('was authored. Every FROM below is the original Markdown, so this applies');
+      out.push('cleanly to a fresh copy of the file even where a block was edited');
+      out.push('several times.');
+      out.push('');
+      out.push('Locate each line using both its quoted FROM text and its Position.');
+      out.push('The FROM text is exact but may also occur elsewhere in the file.');
+      out.push('Position is therefore part of the selector, not merely a cross-check.');
+      out.push('When a step replaces text, replace the text of the line, leave its');
+      out.push('Markdown prefix alone unless the step says otherwise, and keep the blank');
+      out.push('lines around it as they are. A step that inserts a block says what');
+      out.push('spacing it needs.');
+      out.push('Text between <<< and >>> is literal Markdown. Change nothing that is not');
+      out.push('named here.');
+      out.push('');
+    } else {
+      out.push('Apply every edit below to the source HTML of this document as it was');
+      out.push('authored. Every FROM below is the original text, so this applies cleanly');
+      out.push('to a fresh copy of the file even where a block was edited several times.');
+      out.push('');
+      out.push('Locate each element using both its quoted FROM text and its Position.');
+      out.push('The FROM text is exact but may also occur in another element. Position is');
+      out.push('therefore part of the selector, not merely a cross-check. Replace');
+      out.push('only the inner HTML, leaving the tag and its attributes alone. Add no');
+      out.push('attributes of your own. Text between <<< and >>> is literal and includes');
+      out.push('markup. Change nothing that is not named here.');
+      out.push('');
+    }
     if (mv.length) {
       out.push('The first ' + mv.length + ' step(s) move elements rather than rewrite them.');
       out.push('Do those first and in the order given: each one names where an element');
@@ -482,15 +472,14 @@ Ryker.instructions = (function () {
     mv.forEach(function (m, i) {
       out.push('---');
       out.push('');
-      moveStep(m, i + 1, stepOf, out);
+      Ryker.moveStep.write(m, i + 1, stepOf, out, writerCtx(stepOf));
       out.push('');
     });
 
     // Every function a step needs to describe the set it belongs to. Passed in
     // rather than reached for, so instructions/steps.js can be read, changed
     // and reasoned about without a live document behind it.
-    var ctx = { where: where, text: text, pristine: pristineHtml,
-                stepOf: stepOf, editedAt: editedAt };
+    var ctx = writerCtx(stepOf, editedAt);
     list.forEach(function (e, i) {
       out.push('---');
       out.push('');

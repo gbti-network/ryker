@@ -31,8 +31,9 @@
  *   editor/move.js  (436 lines)
  *   editor/units.js  (393 lines)
  *   ui/rail.js  (530 lines)
- *   instructions/steps.js  (375 lines)
- *   instructions/instructions.js  (517 lines)
+ *   instructions/steps.js  (585 lines)
+ *   instructions/moves.js  (158 lines)
+ *   instructions/instructions.js  (506 lines)
  *   instructions/merge.js  (405 lines)
  *   storage/fs.js  (336 lines)
  *   storage/logger.js  (433 lines)
@@ -6954,6 +6955,192 @@
       return s.length > n ? s.slice(0, n - 3) + '...' : s;
     }
 
+    // ---- the two vocabularies ------------------------------------------------
+    //
+    // Every step below used to name an HTML tag directly, which is right for a
+    // document whose source is HTML and false for one whose source is Markdown:
+    // "Change <p> to <h2>" tells an assistant to edit tags in a file that has
+    // none. The fix is one writer reading one of two vocabularies, chosen by
+    // Ryker.config.isMarkdown(), rather than a branch inside each writer. Eleven
+    // `if (isMarkdown)` branches is the four scattered regexes this SOW was
+    // written for, one level down: eleven places that can each be got wrong on
+    // their own, instead of one decision expressed once.
+    //
+    // The rule for what a word says, which decides every entry below without a
+    // second judgement call: NAME THE LITERAL MARKDOWN TOKEN WHERE THE PARSER
+    // ACCEPTS ONLY ONE FORM, AND NAME THE STRUCTURE WHERE IT ACCEPTS SEVERAL.
+    // Headings take the token, because the parser matches `#{1,6}` and nothing
+    // else, so Setext headings do not exist here and `##` cannot contradict the
+    // file. List items take the structure and never the marker, because the
+    // parser accepts `-`, `*`, `+`, `1.` and `1)` and keeps only the text, so
+    // the document's own convention is not recoverable and an instruction naming
+    // one would silently convert every list it touched while claiming to change
+    // a single line.
+    //
+    // A missing key throws rather than falling back. A vocabulary that quietly
+    // returns an HTML word when Markdown is missing an entry is a table with
+    // branches hiding in it, and the hole would surface as a wrong instruction
+    // rather than as a failure.
+
+    function tagWord(tag) { return '<' + String(tag || 'p').toLowerCase() + '>'; }
+
+    function headingLevel(tag) {
+      var m = /^H([1-6])$/.exec(String(tag || '').toUpperCase());
+      return m ? Number(m[1]) : 0;
+    }
+
+    function hashes(level) { return new Array(level + 1).join('#'); }
+
+    // Containers are here because move anchors are the one call site that hands
+    // placeOf something that is not a leaf block. The `|| 'a block'` fallback
+    // below stays deliberately: placeOf is handed the document root on a move to
+    // the front, and instructions.build() has no try/catch above it, so a throw
+    // for an unlisted tag would cost the whole prompt rather than one word.
+    var PROSE = {
+      P: 'a paragraph', LI: 'a list item', TD: 'a table cell',
+      TH: 'a table header cell', CAPTION: 'a table caption',
+      FIGCAPTION: 'a figure caption', DT: 'a definition term',
+      DD: 'a definition', BLOCKQUOTE: 'a quoted paragraph',
+      PRE: 'a code block', UL: 'a bulleted list', OL: 'a numbered list',
+      TABLE: 'a table', FIGURE: 'a figure', SECTION: 'a section'
+    };
+
+    var WORDS = {
+      html: {
+        block: tagWord,
+        bareBlock: tagWord,
+        list: function (boxTag) {
+          return boxTag === 'OL' ? 'an ordered list' : 'an unordered list';
+        },
+        insertedList: function (boxTag) {
+          return (boxTag === 'OL' ? 'ordered' : 'unordered') + ' list (<' +
+            String(boxTag || 'UL').toLowerCase() + '>) containing one <li>';
+        },
+        table: '<table>',
+        removeTable: 'Remove the entire <table> element, its rows and its cells. Leave any',
+        row: '<tr>',
+        bareRow: '<tr>',
+        cell: function (tag) { return tagWord(tag === 'TH' ? 'th' : 'td'); },
+        cells: function (tag, count) {
+          return count + ' ' + tagWord(tag === 'TH' ? 'th' : 'td') + ' cell(s)';
+        },
+        columnSeparator: null,
+        rowPayload: function (tag, cells) {
+          var name = tag === 'TH' ? 'th' : 'td';
+          return '<tr>' + cells.map(function (c) {
+            return '<' + name + '>' + c.html + '</' + name + '>';
+          }).join('') + '</tr>';
+        },
+        cellPayload: function (tag, html) {
+          var name = tag === 'TH' ? 'th' : 'td';
+          return '<' + name + '>' + html + '</' + name + '>';
+        },
+        listPayload: function (boxTag, html) {
+          var name = String(boxTag || 'UL').toLowerCase();
+          return '<' + name + '><li>' + html + '</li></' + name + '>';
+        },
+        keepSame: 'Keep the element\'s contents and attributes unchanged. Its current contents are:',
+        markerNote: function () { return null; }
+      },
+      markdown: {
+        block: function (tag) {
+          var level = headingLevel(tag);
+          if (level) return 'a level ' + level + ' heading (`' + hashes(level) + ' `)';
+          return PROSE[String(tag || 'P').toUpperCase()] || 'a block';
+        },
+        // "Insert a new " already carries the article, so the same word cannot
+        // serve both positions. The test caught "Insert a new a paragraph".
+        bareBlock: function (tag) {
+          return String(WORDS.markdown.block(tag)).replace(/^an? /, '');
+        },
+        list: function (boxTag) {
+          return boxTag === 'OL' ? 'a numbered list' : 'a bulleted list';
+        },
+        insertedList: function (boxTag) {
+          return (boxTag === 'OL' ? 'numbered' : 'bulleted') + ' list with one item';
+        },
+        table: 'table',
+        removeTable: 'Remove the entire table, every one of its rows and its separator line. Leave any',
+        row: 'a table row',
+        bareRow: 'table row',
+        cell: function (tag) { return tag === 'TH' ? 'a header cell' : 'a cell'; },
+        cells: function (tag, count) { return count + ' cell(s)'; },
+        // A pipe table stops parsing the moment its delimiter row disagrees with
+        // the number of columns, so a column step that does not mention it
+        // produces a file that renders as paragraph text. The colons carry the
+        // alignment and the exporter preserves them, so a reader who drops them
+        // silently restyles the table.
+        columnSeparator: 'Add one cell to the delimiter row underneath the header as well, ' +
+          'keeping any alignment colons the other columns use.',
+        rowPayload: function (tag, cells) {
+          return '| ' + cells.map(function (c) { return c.md || ''; }).join(' | ') + ' |';
+        },
+        cellPayload: function (tag, html, md) {
+          var value = md == null ? html : md;
+          return value === '' ? '(blank)' : value;
+        },
+        listPayload: function (boxTag, html, md) {
+          return (boxTag === 'OL' ? '1. ' : '- ') + (md == null ? html : md);
+        },
+        keepSame: 'Keep the text of the line unchanged. Only its prefix changes. The text is:',
+        // A list being INSERTED has no existing marker to preserve, so a payload
+        // has to pick one and `-` is what the exporter emits for the same reason.
+        // Saying so out loud is the honest version: it keeps the rule that no
+        // step dictates a marker for a line the file already has.
+        //
+        // Numbered lists get the opposite sentence rather than the same one. The
+        // first version told a reader inserting an ordered list to swap in
+        // whichever BULLET the file used, which would have turned it into a
+        // bulleted one.
+        markerNote: function (boxTag) {
+          return boxTag === 'OL'
+            ? 'The literal number does not matter: Markdown renumbers an ordered list from its first item.'
+            : 'Use whichever bullet marker this file already uses, if it uses another.';
+        }
+      }
+    };
+
+    // Reading a word goes through here so a gap is loud. `format` arrives on ctx
+    // rather than being read from the namespace, so a step stays testable with
+    // no live document, which is the property the module was split out for.
+    function word(ctx, key, a, b, c) {
+      var book = WORDS[(ctx && ctx.format) || 'html'];
+      if (!book) throw new Error('steps: no vocabulary for format ' + ctx.format);
+      if (!Object.prototype.hasOwnProperty.call(book, key)) {
+        throw new Error('steps: the ' + ctx.format + ' vocabulary has no entry for ' + key);
+      }
+      var value = book[key];
+      return typeof value === 'function' ? value(a, b, c) : value;
+    }
+
+    // A FROM has to be findable in the file the assistant is holding. For a
+    // Markdown document that is the authored Markdown carried on the block, not
+    // the HTML it was rendered into: a block whose innerHTML is `<em>rate</em>`
+    // reads `*rate*` in the file, and searching a `.md` for the former finds
+    // nothing at all. This is the whole reason phase 1 stamps the source.
+    function fromText(ctx, id, html) {
+      if (!ctx || ctx.format !== 'markdown') return html;
+      var src = ctx.source ? ctx.source(id) : null;
+      return src == null ? toText(ctx, html) : src;
+    }
+
+    // A TO has no authored source, because nobody wrote it in the file yet. It
+    // is serialised through the exporter's own inline writer rather than a second
+    // one living here, so the instruction and the export cannot drift.
+    function toText(ctx, html) {
+      if (!ctx || ctx.format !== 'markdown') return html;
+      return ctx.md ? ctx.md(html) : html;
+    }
+
+    // An inserted block needs its own prefix, or the reader adds a heading as a
+    // plain line of text. Built by the exporter's block writer rather than by
+    // counting hashes here, so an inserted H2 in a prompt and an inserted H2 in
+    // an export cannot disagree about what a level 2 heading looks like.
+    function blockPayload(ctx, tag, html) {
+      if (!ctx || ctx.format !== 'markdown') return html;
+      return ctx.mdBlock ? ctx.mdBlock(tag, html) : toText(ctx, html);
+    }
+
     // Where an inserted block goes. An insert chained off another insert refers
     // to the step that creates it, because the element it follows does not exist
     // in the file yet, and one chained off a rewrite refers to that step rather
@@ -6980,31 +7167,38 @@
     function replaceStep(e, n, ctx, out) {
       var changesTag = e.beforeTag && e.afterTag && e.beforeTag !== e.afterTag;
       var sameContents = e.before === e.after;
-      var replacementList = e.afterTag === 'LI' && (e.boxTag === 'OL' || e.boxTag === 'UL');
+      // The conversion branch has to require that the tag ACTUALLY changed.
+      // Without that, editing the text of a list item read "Change <li> to an
+      // unordered list", describing a conversion nobody performed and telling
+      // the reader to restructure a list that was already a list. Found while
+      // reading real output rather than assertions, and it predates the Markdown
+      // work: the committed bundle says the same thing.
+      var replacementList = changesTag && e.afterTag === 'LI' &&
+        (e.boxTag === 'OL' || e.boxTag === 'UL');
       if (replacementList) {
-        out.push('## ' + n + '. Change <' + e.beforeTag.toLowerCase() + '> to an ' +
-          (e.boxTag === 'OL' ? 'ordered' : 'unordered') + ' list');
+        out.push('## ' + n + '. Change ' + word(ctx, 'block', e.beforeTag) + ' to ' +
+          word(ctx, 'list', e.boxTag));
       } else if (changesTag) {
-        out.push('## ' + n + '. Change <' + e.beforeTag.toLowerCase() + '> to <' +
-          e.afterTag.toLowerCase() + '>' + (sameContents ? '' : ' and replace its contents'));
+        out.push('## ' + n + '. Change ' + word(ctx, 'block', e.beforeTag) + ' to ' +
+          word(ctx, 'block', e.afterTag) + (sameContents ? '' : ' and replace its contents'));
       } else {
         out.push('## ' + n + '. Replace the contents of ' +
-          (e.tag ? '<' + e.tag.toLowerCase() + '>' : 'a block'));
+          (e.tag ? word(ctx, 'block', e.tag) : 'a block'));
       }
       out.push('');
       var w = ctx.where(e.id);
       if (w) out.push('Position: ' + w);
       out.push('');
       if (changesTag && sameContents) {
-        out.push('Keep the element\'s contents and attributes unchanged. Its current contents are:');
-        out.push('<<<'); out.push(e.before); out.push('>>>');
+        out.push(word(ctx, 'keepSame'));
+        out.push('<<<'); out.push(fromText(ctx, e.id, e.before)); out.push('>>>');
         return;
       }
       out.push('FROM:');
-      out.push('<<<'); out.push(e.before); out.push('>>>');
+      out.push('<<<'); out.push(fromText(ctx, e.id, e.before)); out.push('>>>');
       out.push('');
       out.push('TO:');
-      out.push('<<<'); out.push(e.after); out.push('>>>');
+      out.push('<<<'); out.push(toText(ctx, e.after)); out.push('>>>');
       out.push('');
       out.push('Plain text of the new version, for confirmation:');
       out.push('  ' + ctx.text(e.after));
@@ -7014,32 +7208,40 @@
       var tag = (e.tag || 'p').toLowerCase();
       var insertedList = tag === 'li' && (e.boxTag === 'OL' || e.boxTag === 'UL');
       if (insertedList) {
-        out.push('## ' + n + '. Insert a new ' + (e.boxTag === 'OL' ? 'ordered' : 'unordered') +
-          ' list (<' + e.boxTag.toLowerCase() + '>) containing one <li>');
+        out.push('## ' + n + '. Insert a new ' + word(ctx, 'insertedList', e.boxTag));
       } else {
-        out.push('## ' + n + '. Insert a new <' + tag + '>');
+        out.push('## ' + n + '. Insert a new ' + word(ctx, 'bareBlock', tag));
       }
       out.push('');
       afterLine(e, ctx, out);
       out.push('');
       out.push('CONTENT:');
       out.push('<<<');
-      out.push(insertedList ? '<' + e.boxTag.toLowerCase() + '><li>' + e.after + '</li></' +
-        e.boxTag.toLowerCase() + '>' : e.after);
+      out.push(insertedList
+        ? word(ctx, 'listPayload', e.boxTag, e.after, toText(ctx, e.after))
+        : blockPayload(ctx, tag.toUpperCase(), e.after));
       out.push('>>>');
+      var marker = insertedList && word(ctx, 'markerNote', e.boxTag);
+      if (marker) out.push(marker);
+      // Markdown separates blocks by blank lines, and a new one pasted against
+      // its neighbour joins them into a single paragraph. A new item inside a
+      // list is the exception: there the blank line would end the list.
+      if (ctx && ctx.format === 'markdown' && tag !== 'li') {
+        out.push('Leave one blank line before it and one after it.');
+      }
       out.push('');
       out.push('Plain text, for confirmation:');
       out.push('  ' + ctx.text(e.after));
     }
 
     function deleteBoxStep(e, n, ctx, out) {
-      out.push('## ' + n + '. Delete a whole <table>');
+      out.push('## ' + n + '. Delete a whole ' + word(ctx, 'table'));
       out.push('');
       if (e.position) {
-        out.push('Position: the <table> containing ' + e.position + '.');
+        out.push('Position: the ' + word(ctx, 'table') + ' containing ' + e.position + '.');
         out.push('');
       }
-      out.push('Remove the entire <table> element, its rows and its cells. Leave any');
+      out.push(word(ctx, 'removeTable'));
       out.push('caption, heading or paragraph around it alone unless another step names');
       out.push('it. The table is the one whose cells read, in order:');
       out.push('');
@@ -7067,7 +7269,7 @@
         out.push('');
       }
       out.push('Remove the element whose exact contents are:');
-      out.push('<<<'); out.push(e.before); out.push('>>>');
+      out.push('<<<'); out.push(fromText(ctx, e.id, e.before)); out.push('>>>');
       out.push('');
       out.push('Plain text, for confirmation:');
       out.push('  ' + ctx.text(e.before));
@@ -7086,23 +7288,19 @@
       return cells.map(function (c) { return c.html; });
     }
 
-    function markup(tag, cells) {
-      return '<tr>' + cells.map(function (c) {
-        return '<' + tag + '>' + c.html + '</' + tag + '>';
-      }).join('') + '</tr>';
-    }
-
     function addRowStep(e, n, ctx, out) {
-      var tag = e.cellTag === 'TH' ? 'th' : 'td';
       out.push('## ' + n + '. Insert a new table row');
       out.push('');
-      if (e.position) out.push('Position: in the <table> containing ' + e.position + '.');
+      if (e.position) out.push('Position: in the ' + word(ctx, 'table') + ' containing ' + e.position + '.');
       if (e.afterRow) out.push('Put it immediately after the row reading: ' + e.afterRow);
       else out.push('Put it as the first row of its row group.');
       out.push('');
-      out.push('Insert one <tr> holding ' + e.cells.length + ' <' + tag + '> cell(s), in this order:');
+      out.push('Insert one ' + word(ctx, 'bareRow') + ' holding ' +
+        word(ctx, 'cells', e.cellTag, e.cells.length) + ', in this order:');
       out.push('<<<');
-      out.push(markup(tag, e.cells));
+      out.push(word(ctx, 'rowPayload', e.cellTag, e.cells.map(function (c) {
+        return { html: c.html, md: toText(ctx, c.html) };
+      })));
       out.push('>>>');
       out.push('');
       out.push('Plain text of the new row, for confirmation:');
@@ -7112,9 +7310,9 @@
     function deleteRowStep(e, n, ctx, out) {
       out.push('## ' + n + '. Delete a table row');
       out.push('');
-      if (e.position) out.push('Position: in the <table> containing ' + e.position + '.');
+      if (e.position) out.push('Position: in the ' + word(ctx, 'table') + ' containing ' + e.position + '.');
       out.push('');
-      out.push('Remove one whole <tr> and every cell inside it. Change no other row.');
+      out.push('Remove one whole ' + word(ctx, 'row') + ' and every cell inside it. Change no other row.');
       out.push('It is the row whose cells read, in order:');
       out.push('');
       e.cells.forEach(function (c, k) {
@@ -7125,23 +7323,30 @@
     function addColumnStep(e, n, ctx, out) {
       out.push('## ' + n + '. Insert a new table column');
       out.push('');
-      if (e.position) out.push('Position: in the <table> containing ' + e.position + '.');
+      if (e.position) out.push('Position: in the ' + word(ctx, 'table') + ' containing ' + e.position + '.');
       out.push('Insert it as column ' + (e.col + 1) + ', counting from 1 at the left, in');
       out.push('every row of the table including the header.');
       out.push('');
-      out.push('Add one cell to each row, in row order, using <th> in a header row and');
-      out.push('<td> elsewhere:');
+      if (ctx && ctx.format === 'markdown') {
+        out.push('Add one cell to each row, in row order. A Markdown table draws no');
+        out.push('distinction between a header cell and a body cell:');
+      } else {
+        out.push('Add one cell to each row, in row order, using ' + word(ctx, 'cell', 'TH') +
+          ' in a header row and');
+        out.push(word(ctx, 'cell', 'TD') + ' elsewhere:');
+      }
       out.push('');
       e.cells.forEach(function (c, k) {
-        out.push('  ' + (k + 1) + '. <' + (c.tag === 'TH' ? 'th' : 'td') + '>' + c.html +
-          '</' + (c.tag === 'TH' ? 'th' : 'td') + '>');
+        out.push('  ' + (k + 1) + '. ' + word(ctx, 'cellPayload', c.tag, c.html, toText(ctx, c.html)));
       });
+      var sep = word(ctx, 'columnSeparator');
+      if (sep) { out.push(''); out.push(sep); }
     }
 
     function deleteColumnStep(e, n, ctx, out) {
       out.push('## ' + n + '. Delete a table column');
       out.push('');
-      if (e.position) out.push('Position: in the <table> containing ' + e.position + '.');
+      if (e.position) out.push('Position: in the ' + word(ctx, 'table') + ' containing ' + e.position + '.');
       out.push('Remove column ' + (e.col + 1) + ', counting from 1 at the left, from every');
       out.push('row of the table including the header. Leave every other column alone.');
       out.push('');
@@ -7150,6 +7355,12 @@
       e.cells.forEach(function (c, k) {
         out.push('  ' + (k + 1) + '. ' + (clip(ctx.text(c.html), 90) || '(blank)'));
       });
+      var gone = word(ctx, 'columnSeparator');
+      if (gone) {
+        out.push('');
+        out.push('Remove that column\'s cell from the delimiter row underneath the header');
+        out.push('as well, so the row still has one cell per column.');
+      }
     }
 
     // ---- collapsing cell edits back into the operation that made them --------
@@ -7305,7 +7516,167 @@
       return deleteStep(e, n, ctx, out);
     }
 
-    return { write: write, group: group, clip: clip };
+    return { write: write, group: group, clip: clip, word: word, fromText: fromText };
+  })();
+
+
+  /* ---- instructions/moves.js ------------------------------------- */
+  // One move, written so it can be followed without knowing anything about Ryker.
+  //
+  // Split out of instructions.js for the same reason steps.js was: that module
+  // does two jobs, working out what changed and writing English about it, and the
+  // second one grows. Giving moves the Markdown vocabulary pushed it past the 600
+  // line cap, and the cap was right. A move is its own kind of step, with its own
+  // anchoring problem, and it now sits beside the other step writers rather than
+  // inside the module that decides what changed.
+  //
+  // Everything it needs about the surrounding set arrives in ctx and in the small
+  // set of accessors instructions.js passes in, so nothing here reads back into
+  // that module.
+  Ryker.moveStep = (function () {
+    'use strict';
+
+    // The obvious answer, the block that precedes it in the finished order, is
+    // the wrong one and reads as nonsense: a whole <section> came out as "move it
+    // after the 101st <p> inside the section with id=rationale", and a <p> after
+    // a <td>. Nothing can be placed after a cell.
+    //
+    // The move has already happened in the document, so the element's own
+    // previous sibling IS the answer, exact and at the right level by
+    // construction. Move steps are emitted in finished-document order, so where
+    // one move lands against another the earlier step has already put its element
+    // in place.
+    function anchorOf(el) {
+      var n = el.previousElementSibling;
+      while (n && (n.tagName === 'SCRIPT' || n.tagName === 'STYLE')) n = n.previousElementSibling;
+      return n;
+    }
+
+    // How to recognise the anchor, in one line.
+    //
+    // For a block that is its opening words, taken from the document as authored
+    // rather than as edited: moves are applied before the rewrites, so quoting
+    // the new wording would point at text the file does not contain yet.
+    //
+    // For a container it is the outline's own label, because textContent on a
+    // table returns every cell run together with no spaces between them, which
+    // came out as "#What changesWhereImpactEffortWhy R1Fix the Apple Pay hire
+    // path" and identified nothing.
+    function anchorLine(node, ctx) {
+      var id = safeId(node);
+      if (id != null) {
+        var was = ctx.pristine(id);
+        // Quoting stripped text against a Markdown file is the same defect as a
+        // stripped FROM: the reader searches for "with stress here" in a file
+        // that says "with _stress_ here".
+        var raw = was !== undefined
+          ? (ctx && ctx.format === 'markdown'
+              ? Ryker.steps.fromText(ctx, id, was) : ctx.text(was))
+          : Ryker.dom.textOf(node);
+        var t = clipText(raw);
+        return t ? 'That element begins: "' + t + '"' : null;
+      }
+      var label = Ryker.outline.label(node);
+      return label ? 'That element is described as ' + ctx.quote(label) + '.' : null;
+    }
+
+    // One move, written so it can be followed without knowing anything about
+    // Ryker. What moves is identified by the exact opening markup of its first
+    // block, which is text the file actually contains.
+    // A unit move deals in containers as often as in leaves, so the noun cannot
+    // come from bareBlock alone: that answers "block" for UL, OL and TABLE, which
+    // are most of what actually moves. This was the one writer the Markdown
+    // vocabulary never reached, because it lives here rather than in steps.js and
+    // steps.write() has no move branch to extend.
+    function moveNoun(ctx, tag) {
+      var upper = String(tag || '').toUpperCase();
+      if (!upper) return 'an element';
+      if (ctx.format !== 'markdown') return 'a <' + upper.toLowerCase() + '>';
+      if (upper === 'UL' || upper === 'OL') return Ryker.steps.word(ctx, 'list', upper);
+      if (upper === 'TABLE') return 'a ' + Ryker.steps.word(ctx, 'table');
+      return Ryker.steps.word(ctx, 'block', upper);
+    }
+
+    function moveStep(m, n, stepOf, out, ctx) {
+      var rec = m.rec, at = m.at;
+      var el = at.elements[0];
+      var noun = moveNoun(ctx, at.tag);
+      var bare = noun.replace(/^an? /, '');
+
+      out.push('## ' + n + '. Move ' + noun);
+      out.push('');
+      out.push('Move this one ' + bare + ' and everything inside it. Change nothing');
+      if (el.id) {
+        out.push('about its contents. It is the one with id=' + ctx.quote(el.id) + '.');
+      } else {
+        out.push('about its contents. It is the element whose first block reads, exactly:');
+        // A FROM, so it quotes the file rather than being re-serialised. Sending
+        // it through the TO path would respell `_stress_` as `*stress*` and the
+        // reader would search a file that does not contain it.
+        out.push('<<<');
+        out.push(Ryker.steps.fromText(ctx, rec.lead,
+          ctx.pristine(rec.lead) != null ? ctx.pristine(rec.lead) : ''));
+        out.push('>>>');
+      }
+      out.push('');
+
+      var anchor = anchorOf(el);
+      if (!anchor) {
+        var host = ctx.place(el.parentElement);
+        out.push('Put it first inside ' + (host || 'the document body') + ', before');
+        out.push('everything else in there.');
+      } else if (stepOf[safeId(anchor)]) {
+        out.push('Put it immediately after the element added in step ' +
+          stepOf[safeId(anchor)] + '.');
+        out.push('Apply that step before this one.');
+      } else {
+        out.push('Put it immediately after ' + (ctx.place(anchor) || 'the preceding element') + ',');
+        out.push('as a sibling of it, not inside it.');
+        var line = anchorLine(anchor, ctx);
+        if (line) out.push(line);
+      }
+      out.push('');
+
+      var wasAfter = rec.was ? Ryker.units.index()[rec.was] : null;
+      if (wasAfter && wasAfter.id) {
+        out.push('In the file it currently sits just after the element with id=' +
+          ctx.quote(wasAfter.id) + '.');
+      } else if (rec.wasLead) {
+        var was = ctx.pristine(rec.wasLead) != null ? ctx.pristine(rec.wasLead) : '';
+        var w = ctx.format === 'markdown'
+          ? Ryker.steps.fromText(ctx, rec.wasLead, was) : ctx.text(was);
+        if (w) out.push('In the file it currently sits just after this text: "' +
+          clipText(w) + '"');
+      } else {
+        var from = rec.wasParent ? Ryker.units.index()[rec.wasParent] : null;
+        out.push('In the file it is currently the first thing inside ' +
+          (from ? (ctx.place(from) || 'its container') : 'the document body') + '.');
+      }
+      out.push('');
+      out.push('Blocks carried along: ' + at.blocks);
+
+      if (at.nav.length) {
+        out.push('');
+        out.push('The contents list links into what moved. Move ' +
+          (at.nav.length > 1 ? 'these entries' : 'the entry') + ' to match, so the list');
+        out.push('stays in document order:');
+        at.nav.forEach(function (t2) { out.push('  - ' + ctx.quote(t2)); });
+      }
+    }
+
+    // Only a block has a block id, and asking for one anywhere else costs a walk
+    // of the whole document to answer null.
+    function safeId(node) {
+      if (!node || !node.matches || !node.matches(Ryker.blocks.SELECTOR)) return null;
+      if (Ryker.blocks.excluded(node)) return null;
+      try { return Ryker.blocks.blockId(node); } catch (e) { return null; }
+    }
+
+    function clipText(s) {
+      return s.length > 80 ? s.slice(0, 77) + '...' : s;
+    }
+
+    return { write: moveStep, anchorOf: anchorOf, safeId: safeId, clipText: clipText };
   })();
 
 
@@ -7328,6 +7699,7 @@
     var session = null;  // one page load; scopes cumulative revision records
     var recovery = null; // stable in one tab so a refresh can find its draft
     var pristinePositions = {};
+    var pristineSource = null;   // block id -> the Markdown it was authored as
     var listeners = [];
 
     function tabSession() {
@@ -7347,8 +7719,16 @@
       pristineTree = Ryker.units.snapshot();
       baseline = null;
       pristinePositions = {};
+      // The authored Markdown for each block, taken here for the same reason the
+      // position is: it is a property of the document as it arrived, and reading
+      // it later would read it from a node somebody has since edited. The stamp
+      // itself is never rewritten, but the node can stop existing.
+      pristineSource = {};
       Object.keys(pristine).forEach(function (id) {
-        pristinePositions[id] = placeOf(Ryker.blocks.byId(id));
+        var node = Ryker.blocks.byId(id);
+        pristinePositions[id] = placeOf(node);
+        var src = node && node.getAttribute ? node.getAttribute('data-ryker-md-src') : null;
+        if (src != null) pristineSource[id] = src;
       });
       recovery = tabSession();
       session = Ryker.dom.uid('edit');
@@ -7373,6 +7753,41 @@
 
     function sessionId() { return recovery; }
     function editingSessionId() { return session; }
+
+    // Serialising through the exporter's own inline writer rather than a second
+    // one here is the point: two writers would drift, and the instruction would
+    // then describe an edit the export does not make.
+    function markdownOf(html) {
+      // Throws rather than degrading, deliberately. The first version of this
+      // guard returned the HTML unchanged if the member was missing, and when the
+      // reference turned out to name the wrong module every TO payload silently
+      // stayed HTML while the suite went green. A missing capability may degrade;
+      // a missing module member is a typo, and a typo has to be loud.
+      if (!Ryker.exportMarkdown || !Ryker.exportMarkdown.inlineOf) {
+        throw new Error('instructions: Ryker.exportMarkdown.inlineOf is missing, ' +
+          'so a Markdown TO cannot be written');
+      }
+      var holder = document.createElement('div');
+      holder.innerHTML = html == null ? '' : html;
+      return Ryker.exportMarkdown.inlineOf(holder);
+    }
+
+    // The exporter's block writer, so an inserted heading in a prompt and an
+    // inserted heading in an export cannot disagree about what a prefix is.
+    function markdownBlockOf(tag, html) {
+      if (!Ryker.exportMarkdown || !Ryker.exportMarkdown.blockOf) {
+        throw new Error('instructions: Ryker.exportMarkdown.blockOf is missing, ' +
+          'so a Markdown insert cannot be written');
+      }
+      var holder = document.createElement(/^[A-Z][A-Z0-9]*$/.test(tag || '') ? tag : 'p');
+      holder.innerHTML = html == null ? '' : html;
+      return Ryker.exportMarkdown.blockOf(holder);
+    }
+
+    function authoredSource(id) {
+      if (!pristineSource || !Object.prototype.hasOwnProperty.call(pristineSource, id)) return null;
+      return pristineSource[id];
+    }
 
     function pristineHtml(id) {
       if (!pristine || !Object.prototype.hasOwnProperty.call(pristine, id)) return undefined;
@@ -7535,6 +7950,27 @@
 
     function placeOf(node) {
       if (!node) return null;
+
+      // A Position naming a tag and an id is worse than useless in a Markdown
+      // file, because the preamble says Position is part of the selector and
+      // neither of those things is in the source. It names structure instead,
+      // through the same vocabulary the steps use, so there is still one place
+      // where a Markdown word is decided.
+      if (Ryker.config.isMarkdown()) {
+        var tagName = node.tagName.toLowerCase();
+        var root = Ryker.blocks.root();
+        // A move to the front hands this the root itself, and "the 1st block in
+        // the document" would be a description of the whole document.
+        if (node === root || node === document.body) return 'the document';
+        var kin = Array.prototype.filter.call(root.querySelectorAll(tagName), function (n) {
+          return !Ryker.blocks.excluded(n);
+        });
+        var at = kin.indexOf(node);
+        var noun = Ryker.steps.word({ format: 'markdown' }, 'bareBlock', node.tagName);
+        return at === -1 ? 'a ' + noun + ' in the document'
+          : 'the ' + ordinal(at + 1) + ' ' + noun + ' in the document';
+      }
+
       if (node.id) return 'the element with id=' + quoted(node.id);
 
       var scope = node.parentElement;
@@ -7594,116 +8030,18 @@
     // Where a moved element ends up, named at the level the element itself sits
     // at.
     //
-    // The obvious answer, the block that precedes it in the finished order, is
-    // the wrong one and reads as nonsense: a whole <section> came out as "move it
-    // after the 101st <p> inside the section with id=rationale", and a <p> after
-    // a <td>. Nothing can be placed after a cell.
-    //
-    // The move has already happened in the document, so the element's own
-    // previous sibling IS the answer, exact and at the right level by
-    // construction. Move steps are emitted in finished-document order, so where
-    // one move lands against another the earlier step has already put its element
-    // in place.
-    function anchorOf(el) {
-      var n = el.previousElementSibling;
-      while (n && (n.tagName === 'SCRIPT' || n.tagName === 'STYLE')) n = n.previousElementSibling;
-      return n;
+    function writerCtx(stepOf, editedAt) {
+      return { where: where, text: text, pristine: pristineHtml,
+               stepOf: stepOf || {}, editedAt: editedAt || {},
+               format: Ryker.config.isMarkdown() ? 'markdown' : 'html',
+               source: authoredSource, md: markdownOf, mdBlock: markdownBlockOf,
+               place: placeOf, quote: quoted };
     }
 
-    // How to recognise the anchor, in one line.
-    //
-    // For a block that is its opening words, taken from the document as authored
-    // rather than as edited: moves are applied before the rewrites, so quoting
-    // the new wording would point at text the file does not contain yet.
-    //
-    // For a container it is the outline's own label, because textContent on a
-    // table returns every cell run together with no spaces between them, which
-    // came out as "#What changesWhereImpactEffortWhy R1Fix the Apple Pay hire
-    // path" and identified nothing.
-    function anchorLine(node) {
-      var id = safeId(node);
-      if (id != null) {
-        var was = pristineHtml(id);
-        var t = clipText(was !== undefined ? text(was) : Ryker.dom.textOf(node));
-        return t ? 'That element begins: "' + t + '"' : null;
-      }
-      var label = Ryker.outline.label(node);
-      return label ? 'That element is described as ' + quoted(label) + '.' : null;
-    }
-
-    // One move, written so it can be followed without knowing anything about
-    // Ryker. What moves is identified by the exact opening markup of its first
-    // block, which is text the file actually contains.
-    function moveStep(m, n, stepOf, out) {
-      var rec = m.rec, at = m.at;
-      var el = at.elements[0];
-      var tag = at.tag ? '<' + at.tag.toLowerCase() + '>' : null;
-
-      out.push('## ' + n + '. Move ' + (tag ? 'a ' + tag : 'an element'));
-      out.push('');
-      out.push('Move this one ' + (tag || 'element') + ' and everything inside it. Change nothing');
-      if (el.id) {
-        out.push('about its contents. It is the one with id=' + quoted(el.id) + '.');
-      } else {
-        out.push('about its contents. It is the element whose first block reads, exactly:');
-        out.push('<<<'); out.push(pristineHtml(rec.lead) != null
-          ? pristineHtml(rec.lead) : ''); out.push('>>>');
-      }
-      out.push('');
-
-      var anchor = anchorOf(el);
-      if (!anchor) {
-        var host = placeOf(el.parentElement);
-        out.push('Put it first inside ' + (host || 'the document body') + ', before');
-        out.push('everything else in there.');
-      } else if (stepOf[safeId(anchor)]) {
-        out.push('Put it immediately after the element added in step ' +
-          stepOf[safeId(anchor)] + '.');
-        out.push('Apply that step before this one.');
-      } else {
-        out.push('Put it immediately after ' + (placeOf(anchor) || 'the preceding element') + ',');
-        out.push('as a sibling of it, not inside it.');
-        var line = anchorLine(anchor);
-        if (line) out.push(line);
-      }
-      out.push('');
-
-      var wasAfter = rec.was ? Ryker.units.index()[rec.was] : null;
-      if (wasAfter && wasAfter.id) {
-        out.push('In the file it currently sits just after the element with id=' +
-          quoted(wasAfter.id) + '.');
-      } else if (rec.wasLead) {
-        var w = text(pristineHtml(rec.wasLead) != null ? pristineHtml(rec.wasLead) : '');
-        if (w) out.push('In the file it currently sits just after this text: "' +
-          clipText(w) + '"');
-      } else {
-        var from = rec.wasParent ? Ryker.units.index()[rec.wasParent] : null;
-        out.push('In the file it is currently the first thing inside ' +
-          (from ? (placeOf(from) || 'its container') : 'the document body') + '.');
-      }
-      out.push('');
-      out.push('Blocks carried along: ' + at.blocks);
-
-      if (at.nav.length) {
-        out.push('');
-        out.push('The contents list links into what moved. Move ' +
-          (at.nav.length > 1 ? 'these entries' : 'the entry') + ' to match, so the list');
-        out.push('stays in document order:');
-        at.nav.forEach(function (t2) { out.push('  - ' + quoted(t2)); });
-      }
-    }
-
-    // Only a block has a block id, and asking for one anywhere else costs a walk
-    // of the whole document to answer null.
-    function safeId(node) {
-      if (!node || !node.matches || !node.matches(Ryker.blocks.SELECTOR)) return null;
-      if (Ryker.blocks.excluded(node)) return null;
-      try { return Ryker.blocks.blockId(node); } catch (e) { return null; }
-    }
-
-    function clipText(s) {
-      return s.length > 80 ? s.slice(0, 77) + '...' : s;
-    }
+    // The move writer lives in instructions/moves.js. These stay because the
+    // suspicious() and build() paths below use them for their own reasons.
+    function safeId(node) { return Ryker.moveStep.safeId(node); }
+    function clipText(s) { return Ryker.moveStep.clipText(s); }
 
     function build() {
       var cfg = Ryker.config.load();
@@ -7756,17 +8094,40 @@
         out.push('');
       }
 
-      out.push('Apply every edit below to the source HTML of this document as it was');
-      out.push('authored. Every FROM below is the original text, so this applies cleanly');
-      out.push('to a fresh copy of the file even where a block was edited several times.');
-      out.push('');
-      out.push('Locate each element using both its quoted FROM text and its Position.');
-      out.push('The FROM text is exact but may also occur in another element. Position is');
-      out.push('therefore part of the selector, not merely a cross-check. Replace');
-      out.push('only the inner HTML, leaving the tag and its attributes alone. Add no');
-      out.push('attributes of your own. Text between <<< and >>> is literal and includes');
-      out.push('markup. Change nothing that is not named here.');
-      out.push('');
+      // Handed a Markdown file, every sentence of the HTML preamble was false:
+      // it named a source the file does not have, told the reader to preserve
+      // tags and attributes that do not exist, and promised that the text
+      // between the fences was markup. This is the half of the SOW that produced
+      // wrong work rather than wrong labels, because an assistant acts on it.
+      if (Ryker.config.isMarkdown()) {
+        out.push('Apply every edit below to the Markdown source of this document as it');
+        out.push('was authored. Every FROM below is the original Markdown, so this applies');
+        out.push('cleanly to a fresh copy of the file even where a block was edited');
+        out.push('several times.');
+        out.push('');
+        out.push('Locate each line using both its quoted FROM text and its Position.');
+        out.push('The FROM text is exact but may also occur elsewhere in the file.');
+        out.push('Position is therefore part of the selector, not merely a cross-check.');
+        out.push('When a step replaces text, replace the text of the line, leave its');
+        out.push('Markdown prefix alone unless the step says otherwise, and keep the blank');
+        out.push('lines around it as they are. A step that inserts a block says what');
+        out.push('spacing it needs.');
+        out.push('Text between <<< and >>> is literal Markdown. Change nothing that is not');
+        out.push('named here.');
+        out.push('');
+      } else {
+        out.push('Apply every edit below to the source HTML of this document as it was');
+        out.push('authored. Every FROM below is the original text, so this applies cleanly');
+        out.push('to a fresh copy of the file even where a block was edited several times.');
+        out.push('');
+        out.push('Locate each element using both its quoted FROM text and its Position.');
+        out.push('The FROM text is exact but may also occur in another element. Position is');
+        out.push('therefore part of the selector, not merely a cross-check. Replace');
+        out.push('only the inner HTML, leaving the tag and its attributes alone. Add no');
+        out.push('attributes of your own. Text between <<< and >>> is literal and includes');
+        out.push('markup. Change nothing that is not named here.');
+        out.push('');
+      }
       if (mv.length) {
         out.push('The first ' + mv.length + ' step(s) move elements rather than rewrite them.');
         out.push('Do those first and in the order given: each one names where an element');
@@ -7794,15 +8155,14 @@
       mv.forEach(function (m, i) {
         out.push('---');
         out.push('');
-        moveStep(m, i + 1, stepOf, out);
+        Ryker.moveStep.write(m, i + 1, stepOf, out, writerCtx(stepOf));
         out.push('');
       });
 
       // Every function a step needs to describe the set it belongs to. Passed in
       // rather than reached for, so instructions/steps.js can be read, changed
       // and reasoned about without a live document behind it.
-      var ctx = { where: where, text: text, pristine: pristineHtml,
-                  stepOf: stepOf, editedAt: editedAt };
+      var ctx = writerCtx(stepOf, editedAt);
       list.forEach(function (e, i) {
         out.push('---');
         out.push('');
