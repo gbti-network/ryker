@@ -1,0 +1,132 @@
+name: Publish the package to npm
+
+# Publish @gbti/ryker through npm TRUSTED PUBLISHING, so a release needs no
+# token stored anywhere. GitHub Actions mints a short-lived OIDC identity, npm
+# checks it against a trusted publisher registered on the package, and that is
+# the whole credential. There is no NPM_TOKEN secret to leak, rotate or expire.
+#
+# WHY THIS EXISTS RATHER THAN `npm publish` ON A LAPTOP. The account's only
+# second factor is a WebAuthn security key. The npm CLI answers a publish
+# challenge with a typed one-time password and cannot talk to a security key, so
+# an interactive publish dead-ends at `Enter OTP:` with nothing to type. A
+# granular access token authenticates fine and still gets EOTP, because it does
+# not bypass the challenge. Trusted publishing removes the challenge instead of
+# trying to answer it.
+#
+# MANUAL by design, and unlike the extension this cannot be walked back: an npm
+# version is immutable, so a wrong publish is corrected only by publishing
+# another version. Hence no tag trigger. Publishing is a decision.
+#
+# SETUP, once, on npmjs.com. Package @gbti/ryker -> Settings -> Trusted
+# Publisher -> GitHub Actions:
+#   Organization or user   gbti-network
+#   Repository             ryker
+#   Workflow filename      publish-npm.yml
+# Leave the environment field empty unless one is added below.
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'dry-run (build, test and pack, publish nothing) or publish (irreversible)'
+        type: choice
+        # The safe action has to be the lazy action, same rule as
+        # publish-extension.yml. An npm version can never be reused, so a
+        # default of `publish` would make a stray click permanent.
+        default: dry-run
+        options: [dry-run, publish]
+
+permissions:
+  # The whole credential. Without id-token: write there is no OIDC identity for
+  # npm to trust, and the publish falls back to asking for a token it will not
+  # find.
+  id-token: write
+  contents: read
+
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    env:
+      # prepublishOnly runs the full suite, which drives Chrome over the
+      # DevTools Protocol and needs to be told which binary to launch.
+      RYKER_CHROME: google-chrome
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node 22 for the same reason ci.yml pins it: the harness uses the global
+      # WebSocket, which older Node does not have.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      # setup-node ships an npm too old to know about OIDC. Trusted publishing
+      # needs 11.5.1 or newer, and silently falling back to token auth on an
+      # older npm is exactly the confusing failure this workflow exists to
+      # avoid, so the version is asserted rather than hoped for.
+      - name: Install an npm that supports trusted publishing
+        run: |
+          npm install -g npm@latest
+          V=$(npm --version)
+          MIN=11.5.1
+          echo "npm $V"
+          if [ "$(printf '%s\n%s\n' "$MIN" "$V" | sort -V | head -1)" != "$MIN" ]; then
+            echo "npm $V is too old for OIDC trusted publishing; need $MIN or newer."
+            exit 1
+          fi
+
+      - name: Rebuild the bundles from source
+        run: node drop-in/build/bundle.mjs
+
+      # dist/ is committed and is what people copy next to their report, so a
+      # commit that changed src/ without it would publish the old code.
+      - name: Fail if the committed bundle is stale
+        run: |
+          if ! git diff --quiet -- drop-in/dist extension/ryker.js; then
+            echo "A generated Ryker bundle is out of date with drop-in/src."
+            echo "Run: node drop-in/build/bundle.mjs, and commit the result."
+            git diff --stat -- drop-in/dist extension/ryker.js
+            exit 1
+          fi
+
+      # A version already on the registry cannot be republished. Catching it
+      # here says so plainly, instead of spending a full test run to arrive at
+      # a 403 that reads like an auth failure.
+      - name: Refuse a version the registry already has
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          echo "About to consider $NAME@$VERSION."
+          if npm view "$NAME@$VERSION" version >/dev/null 2>&1; then
+            echo "$NAME@$VERSION is already published. Bump before publishing:"
+            echo "  npm run release -- patch"
+            exit 1
+          fi
+          echo "$NAME@$VERSION is not on the registry yet."
+
+      # prepublishOnly runs build, the full suite, the CLI acceptance test and
+      # the package release gate, so both modes below are gated on all of it.
+      - name: Pack without publishing
+        if: inputs.mode == 'dry-run'
+        run: npm publish --dry-run
+
+      # No token and no NODE_AUTH_TOKEN on purpose. Provenance is attached
+      # automatically when a trusted publisher is what authorised the publish.
+      - name: Publish
+        if: inputs.mode == 'publish'
+        run: npm publish
+
+      - name: Say what happened
+        run: |
+          if [ "${{ inputs.mode }}" = "publish" ]; then
+            echo "Published. Move the next tag if this is the newest release:"
+            echo "  npm dist-tag add $(node -p "require('./package.json').name")@$(node -p "require('./package.json').version") next"
+          else
+            echo "Dry run only. Nothing was published."
+          fi
