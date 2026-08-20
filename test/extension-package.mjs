@@ -10,7 +10,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { pack, packageFiles, readZipEntries, EXTENSION } from '../extension/build/package.mjs';
-import { decidePublish, compareVersions, zipManifestVersion } from '../extension/build/publish.mjs';
+import { decidePublish, decidePublishOnly, compareVersions, zipManifestVersion } from '../extension/build/publish.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const problems = [];
@@ -107,6 +107,17 @@ check(decidePublish({ zip: '0.1.2', manifest: '0.1.2', item: null }).ok === true
   'the publish gate blocks a release when the item version cannot be read');
 check(decidePublish({ zip: '0.1.2', manifest: '0.1.2', item: '0.1.1' }).ok === true,
   'the publish gate blocks a legitimate upgrade');
+
+// --publish-only submits a draft that is already up, so equality is the case
+// that must SUCCEED. It is the mirror of the rule above, and reusing that rule
+// here was the bug: the plain form cannot submit its own upload, because by
+// then the item holds the version being submitted.
+check(decidePublishOnly({ zip: '0.2.1', item: '0.2.1' }).ok === true,
+  'publish-only refuses to submit the draft it just uploaded');
+check(decidePublishOnly({ zip: '0.2.1', item: '0.2.0' }).ok === false,
+  'publish-only would press submit on a build this tree never produced');
+check(decidePublishOnly({ zip: '0.2.1', item: null }).ok === true,
+  'publish-only blocks on an item version it could not read');
 
 // ---- report ---------------------------------------------------------------
 

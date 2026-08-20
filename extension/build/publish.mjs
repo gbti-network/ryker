@@ -13,9 +13,16 @@
 //   CWS_APP_ID            the store item id (no default: Ryker has no item yet)
 //   CWS_PUBLISH_TARGET    'default' (everyone) or 'trustedTesters'
 //
-//   node extension/build/publish.mjs --check        verify credentials, upload nothing
-//   node extension/build/publish.mjs --upload-only  upload a draft, review it in the dashboard
-//   node extension/build/publish.mjs                upload and go live
+//   node extension/build/publish.mjs --check         verify credentials, upload nothing
+//   node extension/build/publish.mjs --upload-only   upload a draft, review it in the dashboard
+//   node extension/build/publish.mjs --publish-only  submit the draft already uploaded
+//   node extension/build/publish.mjs                 upload and go live
+//
+// --publish-only is the other half of --upload-only. The store requires a
+// strictly greater version on every UPLOAD, so once a draft is up, running the
+// plain form to submit it fails the version guard before it reaches the publish
+// call: the item and the package are the same version, which is the whole point.
+// Bumping again just to press submit would burn a version per attempt.
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -24,6 +31,7 @@ import { pack, readZipEntries, DEFAULT_OUT } from './package.mjs';
 const args = new Set(process.argv.slice(2));
 const CHECK_ONLY = args.has('--check');
 const UPLOAD_ONLY = args.has('--upload-only');
+const PUBLISH_ONLY = args.has('--publish-only');
 
 /** Semver compare for X.Y.Z. 1 when a > b, -1 when a < b, 0 when equal. */
 export function compareVersions(a, b) {
@@ -72,6 +80,20 @@ export function decidePublish({ zip, manifest, item }) {
       'Run `npm run release -- patch`, commit, then publish again.' };
   }
   return { ok: true, note: `item holds ${item}, shipping ${zip}.` };
+}
+
+/** Whether the draft sitting on the item is the one this tree means to submit.
+ *  Submitting is not uploading, so the strictly-greater rule does not apply and
+ *  equality is the SUCCESS case. What must not happen is pressing submit on a
+ *  build somebody else uploaded, which would ship code this tree never saw. An
+ *  unreadable item version is allowed through: the read is best-effort, and a
+ *  draft that is already up is the thing being submitted either way. */
+export function decidePublishOnly({ zip, item }) {
+  if (item && zip && item !== zip) {
+    return { ok: false, error: `refusing to publish: the store item holds ${item}, not the ` +
+      `${zip} in this working tree. Upload first, or check out the version that is up there.` };
+  }
+  return { ok: true };
 }
 
 async function accessToken({ clientId, clientSecret, refreshToken, fetchImpl }) {
@@ -131,7 +153,7 @@ async function publishItem({ appId, token, target, fetchImpl }) {
 
 export async function main({
   env = process.env, fetchImpl = globalThis.fetch,
-  checkOnly = CHECK_ONLY, uploadOnly = UPLOAD_ONLY
+  checkOnly = CHECK_ONLY, uploadOnly = UPLOAD_ONLY, publishOnly = PUBLISH_ONLY
 } = {}) {
   const clientId = (env.CWS_CLIENT_ID || '').trim();
   const clientSecret = (env.CWS_CLIENT_SECRET || '').trim();
@@ -161,7 +183,8 @@ export async function main({
 
   console.log(`publish: item ${appId}, package ${(bytes / 1024).toFixed(1)} KB, ` +
     `version ${zip}, target ${target}` +
-    `${uploadOnly ? ' (upload only)' : ''}${checkOnly ? ' (check only)' : ''}.`);
+    `${uploadOnly ? ' (upload only)' : ''}${publishOnly ? ' (publish only)' : ''}` +
+    `${checkOnly ? ' (check only)' : ''}.`);
 
   const token = await accessToken({ clientId, clientSecret, refreshToken, fetchImpl });
   if (checkOnly) {
@@ -171,8 +194,24 @@ export async function main({
 
   const manifest = JSON.parse(
     readFileSync(new URL('../manifest.json', import.meta.url), 'utf8')).version || null;
+  const held = await itemVersion({ appId, token, fetchImpl });
+
+  // Submitting a draft that is already uploaded. decidePublish below asks
+  // whether this package may be UPLOADED, which is a different question, and
+  // the answer here is no by design: the item already holds it.
+  if (publishOnly) {
+    const only = decidePublishOnly({ zip, item: held });
+    if (!only.ok) throw new Error(only.error);
+    console.log(`publish: submitting the draft the item already holds (${held || zip}).`);
+    const sent = await publishItem({ appId, token, target, fetchImpl });
+    const st = Array.isArray(sent.status) ? sent.status.join(', ') : String(sent.status ?? 'unknown');
+    console.log(`publish: publish requested (status=${st}). ` +
+      'A code change re-enters review; the listing updates once it clears.');
+    return { ok: true, published: true, status: st };
+  }
+
   const decision = decidePublish({
-    zip, manifest, item: await itemVersion({ appId, token, fetchImpl })
+    zip, manifest, item: held
   });
   if (!decision.ok) throw new Error(decision.error);
   if (decision.note) console.log(`publish: ${decision.note}`);
