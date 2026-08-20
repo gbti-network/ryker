@@ -385,7 +385,10 @@
       children[i].setAttribute('data-ryker-md-from', String(ranges[i].from));
       children[i].setAttribute('data-ryker-md-to', String(ranges[i].to));
     }
-    if (window.Ryker && Ryker.exportMarkdown) Ryker.exportMarkdown.adopt(source);
+    // The ranges go over as well as onto the elements. The elements say what
+    // each surviving block owns; the list says what every block owned, which
+    // is the only way the exporter can tell a gap from a deleted block.
+    if (window.Ryker && Ryker.exportMarkdown) Ryker.exportMarkdown.adopt(source, ranges);
   }
 
   function reloadWith(name, text) {

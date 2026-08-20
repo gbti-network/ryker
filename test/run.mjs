@@ -3636,6 +3636,128 @@ async function runWorkspace(sess) {
     'the export dialog over a Markdown file offers Markdown and never calls the file a report',
     JSON.stringify(mdDialog));
 
+  // Deleting and moving, which is where the first version of this exporter lost
+  // people's work. It copied the gap between two blocks straight out of the
+  // source so blank lines survive, and never asked whether another block's text
+  // was sitting in that gap. A deleted block's lines ARE gap, so the copy put
+  // them back; a moved block's jumped-over neighbours are gap in front of it, so
+  // they were copied there and emitted again in their own place.
+  //
+  // Every check below was run against the committed build first and four of them
+  // failed there, including deleting the whole document and getting the original
+  // file back. A check that passes on both is not protecting anything, which is
+  // the failure this suite has already shipped once.
+  async function openMarkdown(source) {
+    await navigate(sess, WORKSPACE_FIXTURE);
+    await waitInPage(sess, `!!window.RykerWorkspace`, 10000, 'Ryker workspace to reset');
+    return evaluate(sess, `RykerWorkspace.openText('notes.md',
+      ${JSON.stringify(source)}).then(function () { return true; })`);
+  }
+  const occurrences = (text, needle) => text.split(needle).length - 1;
+
+  // Deliberately three top-level blocks with a section heading between them, so
+  // a delete and a move both have to cross a gap that carries real text.
+  const MD_EDITS = [
+    '# Notes', '', 'Alpha paragraph with _emphasis_.', '', '',
+    '+ first', '+ second', '', '## Section', '', 'Bravo paragraph.', '',
+    'Charlie paragraph.', ''
+  ].join('\n');
+
+  await openMarkdown(MD_EDITS);
+  const deleted = await evaluate(sess, `(function () {
+    var doc = document.getElementById('workspace-document');
+    var target = Array.prototype.filter.call(doc.children, function (el) {
+      return el.tagName === 'P' && /Bravo/.test(el.textContent);
+    })[0];
+    Ryker.multi.removeNodes([target]);
+    return Ryker.exportMarkdown.build();
+  })()`);
+
+  assert(deleted.indexOf('Bravo paragraph.') === -1 &&
+    deleted.indexOf('Alpha paragraph with _emphasis_.') !== -1 &&
+    deleted.indexOf('Charlie paragraph.') !== -1 &&
+    deleted.indexOf('+ first') !== -1 && deleted.indexOf('# Notes') !== -1,
+    'a deleted Markdown block stays deleted, and takes nothing else with it',
+    JSON.stringify(deleted));
+
+  assert(!/\n\n\n/.test(deleted.slice(deleted.indexOf('## Section'))),
+    'the hole a deleted block leaves behind does not stack its blank lines up',
+    JSON.stringify(deleted));
+
+  await openMarkdown(MD_EDITS);
+  const wiped = await evaluate(sess, `(function () {
+    var doc = document.getElementById('workspace-document');
+    Ryker.multi.removeNodes(Array.prototype.slice.call(doc.children));
+    return Ryker.exportMarkdown.build();
+  })()`);
+
+  assert(wiped.trim() === '',
+    'emptying the document exports an empty file, not the document back again',
+    JSON.stringify(wiped));
+
+  await openMarkdown(MD_EDITS);
+  const moved = await evaluate(sess, `(function () {
+    var doc = document.getElementById('workspace-document');
+    var target = Array.prototype.filter.call(doc.children, function (el) {
+      return el.tagName === 'P' && /Charlie/.test(el.textContent);
+    })[0];
+    // nudge() returns a message on refusal and nothing on success, so the
+    // evidence a move happened is the document, not the return value.
+    var refusal = Ryker.move.nudge([target], 'up');
+    return {
+      refusal: typeof refusal === 'string' ? refusal : null,
+      order: Array.prototype.map.call(doc.children, function (el) {
+        return (el.textContent || '').slice(0, 12);
+      }),
+      out: Ryker.exportMarkdown.build()
+    };
+  })()`);
+
+  assert(moved.refusal === null &&
+    moved.order.indexOf('Charlie para') < moved.order.indexOf('Bravo paragr'),
+    'the rail can move a Markdown block past another one',
+    JSON.stringify(moved.order) + ' ' + moved.refusal);
+
+  assert(occurrences(moved.out, 'Bravo paragraph.') === 1 &&
+    occurrences(moved.out, 'Alpha paragraph with _emphasis_.') === 1 &&
+    occurrences(moved.out, '# Notes') === 1 && occurrences(moved.out, '+ first') === 1,
+    'a moved block duplicates nothing it jumped over',
+    JSON.stringify(moved.out));
+
+  assert(moved.out.indexOf('Charlie paragraph.') < moved.out.indexOf('Bravo paragraph.') &&
+    moved.out.indexOf('_emphasis_') !== -1 && moved.out.indexOf('+ first') !== -1,
+    'a moved block lands in its new position carrying its own authored bytes',
+    JSON.stringify(moved.out));
+
+  // The export has to refuse rather than guess. Without the authored ranges it
+  // cannot tell a blank-line gap from a block somebody deleted, and guessing
+  // there is what returned a deleted paragraph to the file.
+  await openMarkdown(MD_EDITS);
+  const refuses = await evaluate(sess, `(function () {
+    Ryker.exportMarkdown.adopt('# Notes\\n', null);
+    var thrown = null;
+    try { Ryker.exportMarkdown.build(); } catch (error) { thrown = error.message; }
+    return { available: Ryker.exportMarkdown.available(), thrown: thrown };
+  })()`);
+
+  assert(refuses.available === false && typeof refuses.thrown === 'string',
+    'a source adopted without its line ranges disables the export instead of guessing at the gaps',
+    JSON.stringify(refuses));
+
+  // Named for its dependent rather than its behaviour: instructions.js calls
+  // inlineOf on a detached container to turn an edited block into the Markdown a
+  // TO payload quotes. Whoever narrows inlineOf to attached nodes should read
+  // the reason in the failure line rather than go and find out why this is red.
+  const detached = await evaluate(sess, `(function () {
+    var probe = document.createElement('div');
+    probe.innerHTML = 'A <em>rate</em> change with <strong>bold</strong> and <a href="/x">link</a>.';
+    return Ryker.exportMarkdown.inlineOf(probe);
+  })()`);
+
+  assert(detached === 'A *rate* change with **bold** and [link](/x).',
+    'inlineOf accepts a detached container, which instructions.js depends on for every Markdown TO',
+    JSON.stringify(detached));
+
   const firstWorkspaceId = markdown.id;
   const reloaded = sess.once('Page.loadEventFired');
   await sess.send('Runtime.evaluate', {

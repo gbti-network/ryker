@@ -15,18 +15,33 @@ Ryker.exportMarkdown = (function () {
   'use strict';
 
   var source = null;
+  var ranges = null;
 
   // The workspace hands over the normalised source once, at open, before boot.
   // Nothing else may set it: a second document arrives through a reload, which
   // is the same lifecycle rule openTextAt() already enforces for identity.
-  function adopt(text) {
+  //
+  // The ranges arrive with it because build() cannot do without them. Knowing
+  // which lines a block owns is not enough; it has to know which lines ANY
+  // block owned, including blocks the user has since deleted, or it copies
+  // them back out of the gaps. So the two are adopted together and a source
+  // without ranges is treated as no source at all, which makes the export
+  // refuse rather than hand back a file with resurrected text in it.
+  function adopt(text, spans) {
     source = typeof text === 'string' ? text : null;
+    ranges = source !== null && spans && spans.length ? spans : null;
+    if (ranges === null) source = null;
   }
 
   function available() {
-    return source !== null && Ryker.config.isMarkdown();
+    return source !== null && ranges !== null && Ryker.config.isMarkdown();
   }
 
+  // Contract: accepts any node whose childNodes are inline content, attached to
+  // the document or not. instructions.js builds a detached container from an
+  // edited block and calls this to get the Markdown a TO payload quotes, so
+  // narrowing it to attached nodes would silently put HTML back into every
+  // Markdown instruction. There is a test named after that caller.
   function inlineOf(node) {
     var out = '';
     Array.prototype.forEach.call(node.childNodes, function (n) {
@@ -128,12 +143,48 @@ Ryker.exportMarkdown = (function () {
     return copy.outerHTML;
   }
 
-  // Gaps between blocks are blank lines the parser never owned, so they are
-  // reproduced from the source rather than invented. Two blocks still adjacent
-  // in the source keep whatever separated them, including a run of blank lines
-  // somebody put there on purpose. Blocks that moved lose that and fall back to
-  // one blank line, which is the honest answer: the source no longer says what
-  // belongs between them.
+  // Every source line the parser claimed for a block, whether or not that block
+  // is still in the document. This is the whole fix for two corruptions that
+  // shipped in the first version, and both came from the same missing question.
+  //
+  // The gap between two blocks was copied straight out of the source so that
+  // blank lines survive, and nothing asked whether another block's text was
+  // sitting in that gap. Delete a paragraph and its lines become gap, so the
+  // copy put it back: deleting every block returned the original file. Move a
+  // block and the blocks it jumped over become gap in front of it, so they were
+  // copied there AND emitted again in their own place, and the move never
+  // happened.
+  //
+  // With this map a gap carries only lines no block ever owned, which is blank
+  // lines and anything the parser did not parse. A deleted block's lines are
+  // owned and no element emits them, so they are gone. A moved block's lines
+  // are owned and its own element emits them, once, where it now sits.
+  function ownedLines(count) {
+    var owned = new Array(count);
+    ranges.forEach(function (span) {
+      for (var n = span.from; n <= span.to; n += 1) {
+        if (n >= 0 && n < count) owned[n] = true;
+      }
+    });
+    return owned;
+  }
+
+  // A gap with nothing owned in it is reproduced verbatim, so a run of blank
+  // lines somebody put there on purpose survives. Where a block used to be, it
+  // takes its trailing blank lines with it: otherwise removing the last
+  // paragraph of a section leaves the blank line above it and the blank line
+  // below it stacked into a gap the author never wrote.
+  function gapLines(lines, owned, from, to) {
+    var kept = [];
+    var i = from;
+    while (i < to) {
+      if (!owned[i]) { kept.push(lines[i]); i += 1; continue; }
+      while (i < to && owned[i]) i += 1;
+      while (i < to && lines[i] === '') i += 1;
+    }
+    return kept;
+  }
+
   function build() {
     if (!available()) {
       throw new Error('This document was not opened from Markdown, so there is no Markdown to write back.');
@@ -141,6 +192,7 @@ Ryker.exportMarkdown = (function () {
     var doc = Ryker.exportHtml.snapshotDoc(false);
     var body = doc.body || doc.querySelector('body');
     var lines = source.split('\n');
+    var owned = ownedLines(lines.length);
     var out = [];
     var cursor = 0;
     var first = true;
@@ -152,12 +204,18 @@ Ryker.exportMarkdown = (function () {
       var to = toAttr === null ? -1 : Number(toAttr);
       var known = from >= 0 && to >= from && to < lines.length;
 
-      // A gap of zero lines is not an empty line, it is nothing at all. Pushing
-      // '' for it puts a separator in front of the first block and shifts the
-      // whole file down by one.
-      if (known && from > cursor) {
-        out.push(lines.slice(cursor, from).join('\n'));
-      } else if (!first && !(known && from >= cursor)) {
+      // Only a block still standing where it was authored has a gap in front of
+      // it to reproduce. A block that moved backwards has the document's other
+      // text in front of it instead, and a block that never came from the file
+      // has nothing.
+      var gap = known && from >= cursor ? gapLines(lines, owned, cursor, from) : null;
+
+      if (gap && gap.length) {
+        out.push(gap.join('\n'));
+      } else if (!first) {
+        // Two blocks are two blocks because a blank line separates them. Where
+        // the authored gap is gone, to a delete or to a move, one blank line is
+        // the honest answer: the source no longer says what belongs here.
         out.push('');
       }
       first = false;
@@ -171,10 +229,13 @@ Ryker.exportMarkdown = (function () {
     });
 
     // Whatever followed the last block in the original: a trailing blank line,
-    // a comment, the newline at end of file.
-    if (cursor < lines.length) out.push(lines.slice(cursor).join('\n'));
-    var text = out.filter(function (part) { return part !== null; }).join('\n');
-    return text.replace(/\n*$/, '\n');
+    // a comment, the newline at end of file. Filtered the same way, so deleting
+    // the last block does not bring it back through the tail.
+    if (cursor < lines.length) {
+      var tail = gapLines(lines, owned, cursor, lines.length);
+      if (tail.length) out.push(tail.join('\n'));
+    }
+    return out.join('\n').replace(/\n*$/, '\n');
   }
 
   return {
