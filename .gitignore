@@ -6,3 +6,5 @@
 extension/dist/
 /scripts/
 .playwright-mcp/
+.env
+.env.*

@@ -423,6 +423,21 @@ Ryker.blocks = (function () {
     else root().appendChild(node);
   }
 
+  // What an element is to a READER. The Markdown parser gives a list item that
+  // owns a sublist a <p> for its own text, because the scan above skips any
+  // block containing another block. Structurally that is a paragraph; to a
+  // reader it IS the list item. Calling it a paragraph also mislocates it, since
+  // "the 1st paragraph in the document" counts a set it is not part of, and an
+  // agent following that edits the wrong block. Wording and position only:
+  // applyChange() keeps the real tag or replay builds an <li> inside an <li>.
+  function describes(node) {
+    if (!node || !node.tagName) return null;
+    if (node.tagName === 'P' && node.parentElement && node.parentElement.tagName === 'LI') {
+      return node.parentElement;
+    }
+    return node;
+  }
+
   function applyChange(c, context) {
     context = context || { boxes: boxIndex(), rows: Ryker.table.rowIndex() };
     var node = byId(c.id);
@@ -569,6 +584,7 @@ Ryker.blocks = (function () {
 
   return {
     SELECTOR: SELECTOR, PICK_SELECTOR: PICK_SELECTOR, root: root, all: all,
+    describes: describes,
     atomic: atomic, pickSequence: pickSequence, blockId: blockId, transferId: transferId,
     byId: byId, hash: hash,
     excluded: excluded, snapshot: snapshot, diffSnapshots: diffSnapshots, label: label,

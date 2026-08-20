@@ -7,10 +7,11 @@
  *   config/config.js  (131 lines)
  *   security/scan.js  (86 lines)
  *   editor/sanitize.js  (218 lines)
- *   editor/blocks.js  (580 lines)
+ *   editor/blocks.js  (596 lines)
  *   export/zip.js  (193 lines)
  *   export/html.js  (217 lines)
- *   export/markdown.js  (246 lines)
+ *   export/markdown.js  (297 lines)
+ *   export/target.js  (66 lines)
  *   export/packager.js  (277 lines)
  *   ui/theme.js  (61 lines)
  *   ui/styles.js  (405 lines)
@@ -19,7 +20,7 @@
  *   ui/tooltip.js  (82 lines)
  *   ui/dialog.js  (138 lines)
  *   ui/menu.js  (104 lines)
- *   export/dialog.js  (99 lines)
+ *   export/dialog.js  (213 lines)
  *   editor/editable.js  (596 lines)
  *   editor/history.js  (248 lines)
  *   editor/formatbar.js  (252 lines)
@@ -31,16 +32,16 @@
  *   editor/move.js  (436 lines)
  *   editor/units.js  (393 lines)
  *   ui/rail.js  (530 lines)
- *   instructions/steps.js  (585 lines)
+ *   instructions/steps.js  (592 lines)
  *   instructions/moves.js  (158 lines)
- *   instructions/instructions.js  (506 lines)
+ *   instructions/instructions.js  (509 lines)
  *   instructions/merge.js  (405 lines)
  *   storage/fs.js  (336 lines)
  *   storage/logger.js  (433 lines)
  *   instructions/browser.js  (296 lines)
  *   ui/pane.js  (292 lines)
  *   storage/recover.js  (335 lines)
- *   bootstrap/boot.js  (528 lines)
+ *   bootstrap/boot.js  (541 lines)
  *
  * Classic script by design: module scripts do not load from file:// URLs,
  * and a report handed over as a ZIP is opened from disk.
@@ -971,6 +972,21 @@
       else root().appendChild(node);
     }
 
+    // What an element is to a READER. The Markdown parser gives a list item that
+    // owns a sublist a <p> for its own text, because the scan above skips any
+    // block containing another block. Structurally that is a paragraph; to a
+    // reader it IS the list item. Calling it a paragraph also mislocates it, since
+    // "the 1st paragraph in the document" counts a set it is not part of, and an
+    // agent following that edits the wrong block. Wording and position only:
+    // applyChange() keeps the real tag or replay builds an <li> inside an <li>.
+    function describes(node) {
+      if (!node || !node.tagName) return null;
+      if (node.tagName === 'P' && node.parentElement && node.parentElement.tagName === 'LI') {
+        return node.parentElement;
+      }
+      return node;
+    }
+
     function applyChange(c, context) {
       context = context || { boxes: boxIndex(), rows: Ryker.table.rowIndex() };
       var node = byId(c.id);
@@ -1117,6 +1133,7 @@
 
     return {
       SELECTOR: SELECTOR, PICK_SELECTOR: PICK_SELECTOR, root: root, all: all,
+      describes: describes,
       atomic: atomic, pickSequence: pickSequence, blockId: blockId, transferId: transferId,
       byId: byId, hash: hash,
       excluded: excluded, snapshot: snapshot, diffSnapshots: diffSnapshots, label: label,
@@ -1560,6 +1577,11 @@
 
     var source = null;
     var ranges = null;
+    // How the file was authored, so writing it back does not silently reformat
+    // every line. Only Save Document overwrites the original, but Save Document
+    // As should hand back the same bytes too.
+    var eol = '\n';
+    var finalNewline = true;
 
     // The workspace hands over the normalised source once, at open, before boot.
     // Nothing else may set it: a second document arrives through a reload, which
@@ -1571,10 +1593,12 @@
     // them back out of the gaps. So the two are adopted together and a source
     // without ranges is treated as no source at all, which makes the export
     // refuse rather than hand back a file with resurrected text in it.
-    function adopt(text, spans) {
+    function adopt(text, spans, endings) {
       source = typeof text === 'string' ? text : null;
       ranges = source !== null && spans && spans.length ? spans : null;
       if (ranges === null) source = null;
+      eol = (endings && endings.eol === '\r\n') ? '\r\n' : '\n';
+      finalNewline = !endings || endings.finalNewline !== false;
     }
 
     function available() {
@@ -1632,22 +1656,56 @@
       return out.join('\n');
     }
 
+    // The parser wraps a parent item's text in a <p> so that an item owning a
+    // sublist is still editable. That wrapper is Ryker's device and not something
+    // the author wrote, so it comes back off on the way out. Anything else inside
+    // the item is left alone: a <p> somebody added by editing is content.
+    function itemText(li) {
+      var own = document.createElement('div');
+      Array.prototype.forEach.call(li.childNodes, function (node) {
+        if (node.nodeType === 1 && (node.tagName === 'UL' || node.tagName === 'OL')) return;
+        own.appendChild(node.cloneNode(true));
+      });
+      if (own.children.length !== 1) return own;
+      var only = own.firstElementChild;
+      if (only.tagName !== 'P') return own;
+      var rest = own.cloneNode(true);
+      rest.removeChild(rest.firstElementChild);
+      return rest.textContent.trim() ? own : only;
+    }
+
+    // Written by walking, because a sublist lives INSIDE its parent <li>. The
+    // continuation indent is the width of the parent's own marker, which is what
+    // CommonMark asks for and what the workspace parser reads back as a child.
+    //
+    // Never a literal `-` versus `*` decision that reaches an untouched line: the
+    // parser keeps only the item text, so the document's own bullet convention is
+    // not recoverable here. It survives because an unchanged list is copied out
+    // of the source rather than rewritten, indents included.
+    function listLines(el, indent) {
+      var ordered = el.tagName === 'OL';
+      var n = 0;
+      var out = [];
+      Array.prototype.forEach.call(el.children, function (li) {
+        n += 1;
+        var marker = ordered ? n + '. ' : '- ';
+        out.push(indent + marker + inlineOf(itemText(li)));
+        var deeper = indent + new Array(marker.length + 1).join(' ');
+        Array.prototype.forEach.call(li.children, function (child) {
+          if (child.tagName === 'UL' || child.tagName === 'OL') {
+            out.push(listLines(child, deeper));
+          }
+        });
+      });
+      return out.join('\n');
+    }
+
     function blockOf(el) {
       var tag = el.tagName;
       if (/^H[1-6]$/.test(tag)) {
         return new Array(Number(tag.charAt(1)) + 1).join('#') + ' ' + inlineOf(el);
       }
-      if (tag === 'UL' || tag === 'OL') {
-        var n = 0;
-        return Array.prototype.map.call(el.children, function (li) {
-          n += 1;
-          // Never a literal `-` or `*` decision that could reach an untouched
-          // line: the parser keeps only the item text, so the document's own
-          // bullet convention is not recoverable here. It survives because
-          // unchanged lists are copied rather than rewritten.
-          return (tag === 'OL' ? n + '. ' : '- ') + inlineOf(li);
-        }).join('\n');
-      }
+      if (tag === 'UL' || tag === 'OL') return listLines(el, '');
       if (tag === 'BLOCKQUOTE') {
         return inlineOf(el).split('\n').map(function (line) { return '> ' + line; }).join('\n');
       }
@@ -1754,9 +1812,15 @@
         // has nothing.
         var gap = known && from >= cursor ? gapLines(lines, owned, cursor, from) : null;
 
+        // Adjacent in the source: this block starts on the very line after the
+        // last one ended, so the author wrote no separator and inventing one
+        // rewrites a line nobody touched. A heading with a fenced block pushed
+        // straight up against it is the common case, and it is why a real
+        // CLAUDE.md did not round-trip byte for byte.
+        var joined = known && from === cursor;
         if (gap && gap.length) {
           out.push(gap.join('\n'));
-        } else if (!first) {
+        } else if (!first && !joined) {
           // Two blocks are two blocks because a blank line separates them. Where
           // the authored gap is gone, to a delete or to a move, one blank line is
           // the honest answer: the source no longer says what belongs here.
@@ -1779,12 +1843,84 @@
         var tail = gapLines(lines, owned, cursor, lines.length);
         if (tail.length) out.push(tail.join('\n'));
       }
-      return out.join('\n').replace(/\n*$/, '\n');
+      // Restore what the file was authored with. The join is always LF because
+      // every range was normalised on the way in; the document's own ending goes
+      // back on last, so a CRLF file is not rewritten line by line into LF.
+      var text = out.join('\n').replace(/\n*$/, finalNewline ? '\n' : '');
+      return eol === '\r\n' ? text.replace(/\n/g, '\r\n') : text;
     }
 
     return {
       adopt: adopt, available: available, build: build,
       blockOf: blockOf, inlineOf: inlineOf
+    };
+  })();
+
+
+  /* ---- export/target.js ------------------------------------------ */
+  // Where "Save Document" writes, when writing back to the opened file is
+  // possible at all.
+  //
+  // Until 2026-08-20 every way out of Ryker was a download: four buttons, one
+  // blob, one anchor click. The export dialog told a Markdown reader it "writes
+  // your edits back into the file you opened", which described the diff (true:
+  // untouched lines come back byte for byte) in the vocabulary of a save
+  // (false: nothing was ever written back). This module is the half that was
+  // missing, so the sentence can become true rather than be softened.
+  //
+  // SURFACE-AGNOSTIC BY CONSTRUCTION. The File System Access API does not appear
+  // here and must not. A drop-in page is the document; it holds no handle to
+  // itself and cannot acquire one, so on that surface there is no target and
+  // Save Document does not appear. The extension workspace opens a real file and
+  // registers what it got. Everything above this module asks `available()` and
+  // stays out of the question of how a given surface writes.
+  Ryker.saveTarget = (function () {
+    'use strict';
+
+    // { name, write(text) -> Promise, ensureWritable() -> Promise<boolean> }
+    var current = null;
+
+    /** Adopt a writable document, or clear with no argument. The workspace calls
+     *  this once per opened file, and again with null when a write is refused,
+     *  so a revoked permission stops advertising a Save that cannot happen. */
+    function set(target) {
+      if (!target || typeof target.write !== 'function') { current = null; return null; }
+      current = target;
+      return current;
+    }
+
+    function clear() { current = null; }
+
+    function available() { return !!current; }
+
+    /** The file name to put in front of a person before overwriting their work.
+     *  Never a path: the handle knows where it came from and Ryker does not. */
+    function name() {
+      return (current && current.name) ? String(current.name) : '';
+    }
+
+    /** Raise a read handle to a writable one. Split out from write() because the
+     *  grant needs a user gesture, and the gesture we have is the click on the
+     *  confirmation, not the click that opened it. Targets without a permission
+     *  model resolve true. */
+    function ensureWritable() {
+      if (!current) return Promise.reject(new Error('No document is open for saving.'));
+      if (typeof current.ensureWritable !== 'function') return Promise.resolve(true);
+      return Promise.resolve().then(function () { return current.ensureWritable(); });
+    }
+
+    /** Overwrite the opened file. Resolves with the name written, so a caller can
+     *  report what happened without holding the target itself. */
+    function write(text) {
+      if (!current) return Promise.reject(new Error('No document is open for saving.'));
+      var target = current;
+      return Promise.resolve().then(function () { return target.write(text); })
+        .then(function () { return target.name; });
+    }
+
+    return {
+      set: set, clear: clear, available: available,
+      name: name, ensureWritable: ensureWritable, write: write
     };
   })();
 
@@ -3182,27 +3318,26 @@
 
 
   /* ---- export/dialog.js ------------------------------------------ */
-  // The export dialog, for both of the shapes a document can leave in.
+  // The two ways a document leaves Ryker: over the top of itself, or beside it.
   //
   // This lived inside bootstrap/boot.js until 2026-08-19, when adding the
   // Markdown branch pushed that file past its 600 line cap. The cap is doing its
   // job here: the dialog is about what a file becomes on the way out, which is
   // this folder's subject and was never boot's.
+  //
+  // RENAMED FROM "Export" ON 2026-08-20, because the old name hid a real
+  // difference behind one word. Every button in this file used to end at
+  // exportHtml.download(), a blob and an anchor click, while the Markdown copy
+  // told the reader it "writes your edits back into the file you opened". That
+  // sentence described the diff and named a destination it did not write to:
+  // untouched lines really do come back byte for byte, and the file on disk was
+  // really never touched. Two verbs fix what one could not:
+  //
+  //   Save Document      overwrite the opened file, on confirmation
+  //   Save Document As   a new file beside it, which is what always happened
   Ryker.exportDialog = (function () {
     'use strict';
 
-    // Spec section 21, restored 2026-08-16.
-    //
-    // exportHtml.clean() and withRyker() survived the decommission intact and the
-    // test suite proves clean() round-trips a document character for character,
-    // but the menu that reached them lived in ui/toolbar.js and was deleted with
-    // the full build. So a required capability was fully implemented, fully
-    // tested, documented in README and named in AGENT.md as the way to verify an
-    // install, and reachable by nobody. sow-006 retired comments, revisions and
-    // GitHub; it never retired export.
-    //
-    // Lifted from the deleted toolbar.js with the Journal button dropped, since
-    // exportHtml.journalJson() went with the revision journal.
     // What to call the open document in the interface. A file Ryker rendered from
     // Markdown is not a report and is not HTML, and calling it either is how the
     // export dialog came to explain a .md file in terms of tags it does not have.
@@ -3210,20 +3345,124 @@
       return Ryker.config.isMarkdown() ? 'Markdown' : 'report';
     }
 
-    function open() {
+    /** True when the surface handed Ryker a writable document. Only the extension
+     *  workspace does; a drop-in page is the document and holds no handle to
+     *  itself, so Save Document never appears there. */
+    function canSave() {
+      return !!(Ryker.saveTarget && Ryker.saveTarget.available());
+    }
+
+    /** The bytes to write, in the format the document was authored in. Markdown
+     *  round-trips through the source map so untouched lines survive; anything
+     *  else is the cleaned document with Ryker taken out. */
+    function contents() {
+      var asMarkdown = Ryker.config.isMarkdown() &&
+        Ryker.exportMarkdown && Ryker.exportMarkdown.available();
+      if (asMarkdown) {
+        var text = Ryker.exportMarkdown.build();
+        return { text: text, hits: Ryker.scan.text(text, 'Markdown') };
+      }
+      var o = Ryker.exportHtml.scanned('clean');
+      return { text: o.html, hits: o.hits };
+    }
+
+    // SAVE DOCUMENT. The confirmation is not a formality and is not skippable:
+    // this is the only action in Ryker that destroys something the user did not
+    // create in Ryker. It names the file, says the word overwrite, and puts the
+    // consequence in the button rather than leaving "Continue" to carry it.
+    function save() {
+      if (!canSave()) {
+        Ryker.dialog.alert('Save Document',
+          '<p>This document was not opened from a file Ryker can write to, so there is ' +
+          'nothing to overwrite. Use <b>Save Document As</b> to write a new file.</p>');
+        return;
+      }
+      var name = Ryker.saveTarget.name();
+      var safe = Ryker.dom.escapeHtml(name);
+      Ryker.dialog.open({
+        title: 'Save Document',
+        body: '<div class="note bad">This overwrites <b>' + safe + '</b> on your disk with every ' +
+          'change from this session.</div>' +
+          '<p>The file is replaced where it sits. Ryker keeps no copy of what it held before, ' +
+          'so take one yourself if you need it.</p>' +
+          '<p>To keep the original and write a new file beside it, cancel and use ' +
+          '<b>Save Document As</b>.</p>',
+        buttons: [
+          { label: 'Cancel' },
+          {
+            label: 'Overwrite ' + name, danger: true,
+            action: function () {
+              // Built before the write so a credential stops the save without
+              // having already asked for a permission it will not use.
+              var out;
+              try { out = contents(); }
+              catch (error) { reportFailure(error); return; }
+              if (out.hits.length) { Ryker.dialog.leak(out.hits); return; }
+              // The grant needs a user gesture and this click is the last one
+              // there will be, so it is requested here rather than at open.
+              Ryker.saveTarget.ensureWritable().then(function (state) {
+                // A dismissed permission dialog is not a refusal. Chrome leaves
+                // the grant in 'prompt' when it is closed with Escape or a click
+                // away, and treating that as denial would retire the target and
+                // cost the person their Save Document over a stray keystroke.
+                if (state === 'prompt') {
+                  Ryker.dialog.open({
+                    title: 'Not saved',
+                    body: '<div class="note bad">Ryker was not given permission to write to <b>' +
+                      safe + '</b> this time.</div>' +
+                      '<p>The file on disk is unchanged. Choose <b>Save Document</b> again to ask ' +
+                      'for it.</p>'
+                  });
+                  return null;
+                }
+                if (state !== 'granted' && state !== true) {
+                  throw new Error('Ryker was not given permission to write to ' + name + '.');
+                }
+                return Ryker.saveTarget.write(out.text).then(function (written) {
+                  Ryker.dialog.alert('Saved',
+                    '<p><b>' + Ryker.dom.escapeHtml(written) + '</b> now holds every change from ' +
+                    'this session.</p>', 'ok');
+                });
+              }).catch(reportFailure);
+            }
+          }
+        ]
+      });
+    }
+
+    function reportFailure(error) {
+      var message = (error && error.message) ? error.message : String(error);
+      // A revoked or expired grant must not leave a Save Document in the menu
+      // that cannot work. The surface re-registers when the file is reopened.
+      if (/permission|not allowed|NotAllowed|SecurityError/i.test(message)) {
+        Ryker.saveTarget.clear();
+      }
+      // dialog.open rather than dialog.alert: alert() wraps its body in a styled
+      // .note of its own, so a .note bad inside it draws a red box inside an
+      // accent box. leak() and boot.js use open() for the same reason.
+      Ryker.dialog.open({
+        title: 'Not saved',
+        body: '<div class="note bad">' + Ryker.dom.escapeHtml(message) + '</div>' +
+          '<p>The file on disk is unchanged.</p>'
+      });
+    }
+
+    // SAVE DOCUMENT AS. Every branch here writes a NEW file through the browser's
+    // download, which is what "Export" always did. The copy now says so.
+    function saveAs() {
       var base = Ryker.exportHtml.baseName();
       var attach = !Ryker.exportHtml.canAttach || Ryker.exportHtml.canAttach();
       var asMarkdown = Ryker.config.isMarkdown() &&
         Ryker.exportMarkdown && Ryker.exportMarkdown.available();
       var body;
       if (asMarkdown) {
-        body = '<p><b>Markdown</b> writes your edits back into the file you opened. Every line you ' +
-          'did not touch is returned exactly as you wrote it, so the change is reviewable.</p>' +
-          '<p><b>HTML</b> is the rendered document instead, for sending to someone who should read ' +
-          'it rather than edit it.</p>';
+        body = '<p><b>Markdown</b> downloads a new <code>.md</code> file. Every line you did not ' +
+          'touch is written exactly as you wrote it, so the change is reviewable.</p>' +
+          '<p><b>HTML</b> downloads the rendered document instead, for sending to someone who ' +
+          'should read it rather than edit it.</p>';
       } else {
-        body = '<p><b>Clean HTML</b> is the ' + documentWord() + ' on its own, with Ryker taken ' +
-          'out. This is what you send to someone who should read it rather than edit it.</p>';
+        body = '<p><b>Clean HTML</b> downloads the ' + documentWord() + ' on its own, with Ryker ' +
+          'taken out. This is what you send to someone who should read it rather than edit it.</p>';
         if (attach) {
           body += '<p><b>With Ryker</b> keeps the editor attached, so whoever opens it can carry on ' +
             'editing and leave with their own instruction set.</p>';
@@ -3232,6 +3471,13 @@
             'drop-in in the source file when you need a portable editable copy.</p>';
         }
       }
+      // Said once, here, rather than implied by a verb. The whole defect this
+      // rename addresses was a reader believing a download had replaced a file.
+      body += canSave()
+        ? '<p>None of these touch <b>' + Ryker.dom.escapeHtml(Ryker.saveTarget.name()) +
+          '</b>. Use <b>Save Document</b> to overwrite it.</p>'
+        : '<p>Your original file is left where it is.</p>';
+
       var buttons = [{ label: 'Cancel' }];
       if (attach) {
         buttons.push({
@@ -3273,12 +3519,16 @@
         });
       }
       Ryker.dialog.open({
-        title: 'Export',
+        title: 'Save Document As',
         body: body,
         buttons: buttons
       });
     }
-    return { open: open, documentWord: documentWord };
+
+    return {
+      open: saveAs, saveAs: saveAs, save: save,
+      canSave: canSave, documentWord: documentWord
+    };
   })();
 
 
@@ -7197,6 +7447,13 @@
       if (ptext) out.push('That element begins: "' + clip(ptext) + '"');
     }
 
+    // The noun only. e.tag stays the real tag everywhere replay depends on it.
+    function spokenTag(id, tag) {
+      var node = id ? Ryker.blocks.byId(id) : null;
+      var spoken = node ? Ryker.blocks.describes(node) : null;
+      return spoken ? spoken.tagName : tag;
+    }
+
     function replaceStep(e, n, ctx, out) {
       var changesTag = e.beforeTag && e.afterTag && e.beforeTag !== e.afterTag;
       var sameContents = e.before === e.after;
@@ -7216,7 +7473,7 @@
           word(ctx, 'block', e.afterTag) + (sameContents ? '' : ' and replace its contents'));
       } else {
         out.push('## ' + n + '. Replace the contents of ' +
-          (e.tag ? word(ctx, 'block', e.tag) : 'a block'));
+          (e.tag ? word(ctx, 'block', spokenTag(e.id, e.tag)) : 'a block'));
       }
       out.push('');
       var w = ctx.where(e.id);
@@ -7990,16 +8247,19 @@
       // through the same vocabulary the steps use, so there is still one place
       // where a Markdown word is decided.
       if (Ryker.config.isMarkdown()) {
-        var tagName = node.tagName.toLowerCase();
         var root = Ryker.blocks.root();
         // A move to the front hands this the root itself, and "the 1st block in
         // the document" would be a description of the whole document.
         if (node === root || node === document.body) return 'the document';
+        // A nested list item's text lives in a <p> inside its <li>. Counted as a
+        // paragraph it would be given the ordinal of a set it does not belong to.
+        var subject = Ryker.blocks.describes(node) || node;
+        var tagName = subject.tagName.toLowerCase();
         var kin = Array.prototype.filter.call(root.querySelectorAll(tagName), function (n) {
           return !Ryker.blocks.excluded(n);
         });
-        var at = kin.indexOf(node);
-        var noun = Ryker.steps.word({ format: 'markdown' }, 'bareBlock', node.tagName);
+        var at = kin.indexOf(subject);
+        var noun = Ryker.steps.word({ format: 'markdown' }, 'bareBlock', subject.tagName);
         return at === -1 ? 'a ' + noun + ' in the document'
           : 'the ' + ordinal(at + 1) + ' ' + noun + ' in the document';
       }
@@ -10443,11 +10703,24 @@
     // Resolved on every open so both logging and the save-note preference are
     // current without attaching another click listener each time state changes.
     function buildMenu() {
-      return [
-        // "report" is inherited from the two authored reports Ryker was built
-        // against, and it was still the label over a file called notes.md.
-        { label: 'Export ' + Ryker.exportDialog.documentWord() + '...', icon: 'download',
-          run: function () { Ryker.exportDialog.open(); } },
+      // Two verbs since 2026-08-20. "Export" was one word over two different
+      // outcomes, and the one it did NOT do was the one its own copy promised.
+      // Save Document appears only where a surface handed Ryker something
+      // writable, which today is the extension workspace and never a drop-in
+      // page, because a drop-in page is the document and holds no handle to
+      // itself. Resolved per open, so reopening a file brings the entry back.
+      //
+      // Pushed rather than left as a falsy slot: ui/menu.js renders EVERY falsy
+      // entry as a divider (menu.js:23), so a conditional null here would show a
+      // stray rule above the first item on the drop-in surface.
+      var items = [];
+      if (Ryker.exportDialog.canSave()) {
+        items.push({ label: 'Save Document', icon: 'download',
+          run: function () { Ryker.exportDialog.save(); } });
+      }
+      items.push({ label: 'Save Document As...', icon: 'download',
+        run: function () { Ryker.exportDialog.saveAs(); } });
+      return items.concat([
         { label: 'Package report', icon: 'package', run: function () { Ryker.packager.open(); } },
         { label: 'Download instructions', icon: 'download', run: function () { Ryker.pane.download(); } },
         { label: 'Copy instructions', icon: 'copy', run: function () { Ryker.pane.copy(); } },
@@ -10462,7 +10735,7 @@
         null,
         { label: 'Clear document', icon: 'trash', danger: true,
           run: function () { Ryker.pane.confirmClear(); } }
-      ];
+      ]);
     }
 
     function saveNotesEnabled() {

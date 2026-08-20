@@ -37,6 +37,7 @@ const MODULES = [
   'export/zip.js',
   'export/html.js',
   'export/markdown.js',
+  'export/target.js',
   'export/packager.js',
   'ui/theme.js',
   'ui/styles.js',

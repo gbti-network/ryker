@@ -68,14 +68,25 @@ body { background: var(--rk-bg2); }
   background: var(--rk-fg2);
   border: 1px solid var(--rk-onactive);
   border-radius: var(--rk-r-md);
+  font-family: inherit;
+  font-size: inherit;
   font-weight: 650;
   cursor: pointer;
 }
 
 .workspace-button:hover { background: var(--rk-onactive); }
-.workspace-button:focus-within, #workspace-file:focus + .workspace-button { outline: 3px solid var(--rk-ring); }
+.workspace-button:focus-visible, .workspace-button:focus-within { outline: 3px solid var(--rk-ring); }
 .workspace-drop, .workspace-status { color: var(--rk-muted); font-size: 13px; }
 .workspace-drop { margin: 18px 0 0; }
+/* Offered inside the status line, and only after Chrome has refused a folder,
+   so the landing page keeps one file control instead of two. */
+.workspace-inline-link {
+  border: 0; background: none; padding: 0; cursor: pointer;
+  font-family: inherit; font-size: inherit; color: inherit;
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.workspace-inline-link:hover { color: var(--rk-onactive); }
+.workspace-inline-link:focus-visible { outline: 3px solid var(--rk-ring); border-radius: 4px; }
 .workspace-status { min-height: 20px; margin: 12px 0 0; }
 .workspace-status.error { color: var(--rk-danger); }
 
@@ -139,3 +150,10 @@ body.workspace-loaded #workspace-document td:empty { min-width: 64px; }
   .workspace-open { padding-left: 8px; padding-right: 8px; }
   body.workspace-loaded #workspace-document { width: calc(100% - 28px); padding-top: 64px; }
 }
+
+/* The parser gives a list item that owns a sublist a <p> for its own text, so
+   the text stays editable while the item is a container. Put the paragraph
+   margins back to nothing: this is still a list item, not a paragraph. */
+body.workspace-loaded #workspace-document li > p { margin: 0; }
+body.workspace-loaded #workspace-document li > ul,
+body.workspace-loaded #workspace-document li > ol { margin: 0; }

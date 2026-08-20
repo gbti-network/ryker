@@ -274,16 +274,19 @@ Ryker.instructions = (function () {
     // through the same vocabulary the steps use, so there is still one place
     // where a Markdown word is decided.
     if (Ryker.config.isMarkdown()) {
-      var tagName = node.tagName.toLowerCase();
       var root = Ryker.blocks.root();
       // A move to the front hands this the root itself, and "the 1st block in
       // the document" would be a description of the whole document.
       if (node === root || node === document.body) return 'the document';
+      // A nested list item's text lives in a <p> inside its <li>. Counted as a
+      // paragraph it would be given the ordinal of a set it does not belong to.
+      var subject = Ryker.blocks.describes(node) || node;
+      var tagName = subject.tagName.toLowerCase();
       var kin = Array.prototype.filter.call(root.querySelectorAll(tagName), function (n) {
         return !Ryker.blocks.excluded(n);
       });
-      var at = kin.indexOf(node);
-      var noun = Ryker.steps.word({ format: 'markdown' }, 'bareBlock', node.tagName);
+      var at = kin.indexOf(subject);
+      var noun = Ryker.steps.word({ format: 'markdown' }, 'bareBlock', subject.tagName);
       return at === -1 ? 'a ' + noun + ' in the document'
         : 'the ' + ordinal(at + 1) + ' ' + noun + ' in the document';
     }

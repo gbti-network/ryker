@@ -118,8 +118,10 @@ it is the case Ryker most needs to work in.
   H1 to H5 block types, bold, italic, strikethrough, link and clear formatting.
   Block-type changes support undo/redo and are emitted as element-name changes,
   not as fictional text rewrites.
-- **Export** produces the report with Ryker removed, the report with Ryker
-  attached, or a ZIP with whatever else you choose.
+- **Save Document As** produces the report with Ryker removed, the report with
+  Ryker attached, or a ZIP with whatever else you choose. It always writes a new
+  file. There is no **Save Document** on the drop-in surface: the page is the
+  document and holds no handle to itself, so there is nothing to overwrite.
 - **Failure isolation.** Every stage of the boot is wrapped. A module that
   throws is named in the console and skipped, and the document stays readable
   and exportable, which the test suite proves by poisoning one on purpose.

@@ -228,6 +228,13 @@ Ryker.steps = (function () {
     if (ptext) out.push('That element begins: "' + clip(ptext) + '"');
   }
 
+  // The noun only. e.tag stays the real tag everywhere replay depends on it.
+  function spokenTag(id, tag) {
+    var node = id ? Ryker.blocks.byId(id) : null;
+    var spoken = node ? Ryker.blocks.describes(node) : null;
+    return spoken ? spoken.tagName : tag;
+  }
+
   function replaceStep(e, n, ctx, out) {
     var changesTag = e.beforeTag && e.afterTag && e.beforeTag !== e.afterTag;
     var sameContents = e.before === e.after;
@@ -247,7 +254,7 @@ Ryker.steps = (function () {
         word(ctx, 'block', e.afterTag) + (sameContents ? '' : ' and replace its contents'));
     } else {
       out.push('## ' + n + '. Replace the contents of ' +
-        (e.tag ? word(ctx, 'block', e.tag) : 'a block'));
+        (e.tag ? word(ctx, 'block', spokenTag(e.id, e.tag)) : 'a block'));
     }
     out.push('');
     var w = ctx.where(e.id);

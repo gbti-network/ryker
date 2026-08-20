@@ -110,11 +110,24 @@ Ryker.boot = (function () {
   // Resolved on every open so both logging and the save-note preference are
   // current without attaching another click listener each time state changes.
   function buildMenu() {
-    return [
-      // "report" is inherited from the two authored reports Ryker was built
-      // against, and it was still the label over a file called notes.md.
-      { label: 'Export ' + Ryker.exportDialog.documentWord() + '...', icon: 'download',
-        run: function () { Ryker.exportDialog.open(); } },
+    // Two verbs since 2026-08-20. "Export" was one word over two different
+    // outcomes, and the one it did NOT do was the one its own copy promised.
+    // Save Document appears only where a surface handed Ryker something
+    // writable, which today is the extension workspace and never a drop-in
+    // page, because a drop-in page is the document and holds no handle to
+    // itself. Resolved per open, so reopening a file brings the entry back.
+    //
+    // Pushed rather than left as a falsy slot: ui/menu.js renders EVERY falsy
+    // entry as a divider (menu.js:23), so a conditional null here would show a
+    // stray rule above the first item on the drop-in surface.
+    var items = [];
+    if (Ryker.exportDialog.canSave()) {
+      items.push({ label: 'Save Document', icon: 'download',
+        run: function () { Ryker.exportDialog.save(); } });
+    }
+    items.push({ label: 'Save Document As...', icon: 'download',
+      run: function () { Ryker.exportDialog.saveAs(); } });
+    return items.concat([
       { label: 'Package report', icon: 'package', run: function () { Ryker.packager.open(); } },
       { label: 'Download instructions', icon: 'download', run: function () { Ryker.pane.download(); } },
       { label: 'Copy instructions', icon: 'copy', run: function () { Ryker.pane.copy(); } },
@@ -129,7 +142,7 @@ Ryker.boot = (function () {
       null,
       { label: 'Clear document', icon: 'trash', danger: true,
         run: function () { Ryker.pane.confirmClear(); } }
-    ];
+    ]);
   }
 
   function saveNotesEnabled() {

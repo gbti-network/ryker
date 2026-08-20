@@ -49,7 +49,8 @@ npx --yes @gbti/ryker insert ./report.html
 - Move or delete whole sections from that outline, recorded as moves rather than
   as character diffs
 - Revision history tracked per document
-- Export the modified document as a new HTML file
+- Markdown with nested lists, tables and code fences, returned as the file it came from
+- Save the edited document back over the file you opened, or as a new file beside it
 
 ## Install into an HTML document
 
@@ -112,3 +113,10 @@ Bugs and issues: <https://github.com/gbti-network/ryker/issues>
 Wing icon by [prasong tadoungsorn](https://thenounproject.com/creator/layersky/) from
 [Noun Project](https://thenounproject.com/icon/wing-1382909/), licensed
 [CC BY 3.0](https://creativecommons.org/licenses/by/3.0/).
+
+This credit lives here and in the Chrome Web Store listing, and deliberately
+nowhere else. Earlier commits placed it more widely and were narrowed later, so
+a commit message asking for it in other files has been superseded by this line
+rather than by an oversight. CC BY attribution attaches to distribution, and
+both places it appears are distributed: this file ships in the npm package, and
+the listing is public.

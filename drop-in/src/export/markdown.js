@@ -16,6 +16,11 @@ Ryker.exportMarkdown = (function () {
 
   var source = null;
   var ranges = null;
+  // How the file was authored, so writing it back does not silently reformat
+  // every line. Only Save Document overwrites the original, but Save Document
+  // As should hand back the same bytes too.
+  var eol = '\n';
+  var finalNewline = true;
 
   // The workspace hands over the normalised source once, at open, before boot.
   // Nothing else may set it: a second document arrives through a reload, which
@@ -27,10 +32,12 @@ Ryker.exportMarkdown = (function () {
   // them back out of the gaps. So the two are adopted together and a source
   // without ranges is treated as no source at all, which makes the export
   // refuse rather than hand back a file with resurrected text in it.
-  function adopt(text, spans) {
+  function adopt(text, spans, endings) {
     source = typeof text === 'string' ? text : null;
     ranges = source !== null && spans && spans.length ? spans : null;
     if (ranges === null) source = null;
+    eol = (endings && endings.eol === '\r\n') ? '\r\n' : '\n';
+    finalNewline = !endings || endings.finalNewline !== false;
   }
 
   function available() {
@@ -88,22 +95,56 @@ Ryker.exportMarkdown = (function () {
     return out.join('\n');
   }
 
+  // The parser wraps a parent item's text in a <p> so that an item owning a
+  // sublist is still editable. That wrapper is Ryker's device and not something
+  // the author wrote, so it comes back off on the way out. Anything else inside
+  // the item is left alone: a <p> somebody added by editing is content.
+  function itemText(li) {
+    var own = document.createElement('div');
+    Array.prototype.forEach.call(li.childNodes, function (node) {
+      if (node.nodeType === 1 && (node.tagName === 'UL' || node.tagName === 'OL')) return;
+      own.appendChild(node.cloneNode(true));
+    });
+    if (own.children.length !== 1) return own;
+    var only = own.firstElementChild;
+    if (only.tagName !== 'P') return own;
+    var rest = own.cloneNode(true);
+    rest.removeChild(rest.firstElementChild);
+    return rest.textContent.trim() ? own : only;
+  }
+
+  // Written by walking, because a sublist lives INSIDE its parent <li>. The
+  // continuation indent is the width of the parent's own marker, which is what
+  // CommonMark asks for and what the workspace parser reads back as a child.
+  //
+  // Never a literal `-` versus `*` decision that reaches an untouched line: the
+  // parser keeps only the item text, so the document's own bullet convention is
+  // not recoverable here. It survives because an unchanged list is copied out
+  // of the source rather than rewritten, indents included.
+  function listLines(el, indent) {
+    var ordered = el.tagName === 'OL';
+    var n = 0;
+    var out = [];
+    Array.prototype.forEach.call(el.children, function (li) {
+      n += 1;
+      var marker = ordered ? n + '. ' : '- ';
+      out.push(indent + marker + inlineOf(itemText(li)));
+      var deeper = indent + new Array(marker.length + 1).join(' ');
+      Array.prototype.forEach.call(li.children, function (child) {
+        if (child.tagName === 'UL' || child.tagName === 'OL') {
+          out.push(listLines(child, deeper));
+        }
+      });
+    });
+    return out.join('\n');
+  }
+
   function blockOf(el) {
     var tag = el.tagName;
     if (/^H[1-6]$/.test(tag)) {
       return new Array(Number(tag.charAt(1)) + 1).join('#') + ' ' + inlineOf(el);
     }
-    if (tag === 'UL' || tag === 'OL') {
-      var n = 0;
-      return Array.prototype.map.call(el.children, function (li) {
-        n += 1;
-        // Never a literal `-` or `*` decision that could reach an untouched
-        // line: the parser keeps only the item text, so the document's own
-        // bullet convention is not recoverable here. It survives because
-        // unchanged lists are copied rather than rewritten.
-        return (tag === 'OL' ? n + '. ' : '- ') + inlineOf(li);
-      }).join('\n');
-    }
+    if (tag === 'UL' || tag === 'OL') return listLines(el, '');
     if (tag === 'BLOCKQUOTE') {
       return inlineOf(el).split('\n').map(function (line) { return '> ' + line; }).join('\n');
     }
@@ -210,9 +251,15 @@ Ryker.exportMarkdown = (function () {
       // has nothing.
       var gap = known && from >= cursor ? gapLines(lines, owned, cursor, from) : null;
 
+      // Adjacent in the source: this block starts on the very line after the
+      // last one ended, so the author wrote no separator and inventing one
+      // rewrites a line nobody touched. A heading with a fenced block pushed
+      // straight up against it is the common case, and it is why a real
+      // CLAUDE.md did not round-trip byte for byte.
+      var joined = known && from === cursor;
       if (gap && gap.length) {
         out.push(gap.join('\n'));
-      } else if (!first) {
+      } else if (!first && !joined) {
         // Two blocks are two blocks because a blank line separates them. Where
         // the authored gap is gone, to a delete or to a move, one blank line is
         // the honest answer: the source no longer says what belongs here.
@@ -235,7 +282,11 @@ Ryker.exportMarkdown = (function () {
       var tail = gapLines(lines, owned, cursor, lines.length);
       if (tail.length) out.push(tail.join('\n'));
     }
-    return out.join('\n').replace(/\n*$/, '\n');
+    // Restore what the file was authored with. The join is always LF because
+    // every range was normalised on the way in; the document's own ending goes
+    // back on last, so a CRLF file is not rewritten line by line into LF.
+    var text = out.join('\n').replace(/\n*$/, finalNewline ? '\n' : '');
+    return eol === '\r\n' ? text.replace(/\n/g, '\r\n') : text;
   }
 
   return {

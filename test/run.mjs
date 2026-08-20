@@ -1602,9 +1602,35 @@ async function runPackager(sess, file) {
   if (exportUi.error) {
     bad('the export menu is reachable from the toolbar', exportUi.error);
   } else {
-    const hasExport = exportUi.labels.some((l) => /^export report/i.test(l));
-    assert(hasExport, 'the export menu is reachable from the toolbar',
-      hasExport ? null : `More menu offers: ${JSON.stringify(exportUi.labels)}`);
+    const hasSaveAs = exportUi.labels.some((l) => /^save document as/i.test(l));
+    assert(hasSaveAs, 'the export menu is reachable from the toolbar',
+      hasSaveAs ? null : `More menu offers: ${JSON.stringify(exportUi.labels)}`);
+
+    // A drop-in page IS the document and can hold no handle to itself, so the
+    // overwrite verb must not be offered here. Guarding the absence because the
+    // menu entry is conditional: a canSave() that wrongly returned true would
+    // put a Save Document in front of someone it can only fail for.
+    const hasSave = exportUi.labels.some((l) => /^save document$/i.test(l));
+    assert(!hasSave, 'the drop-in surface does not offer Save Document, having nothing to overwrite',
+      !hasSave ? null : `More menu offers: ${JSON.stringify(exportUi.labels)}`);
+
+    // ui/menu.js renders every falsy entry as a divider, so omitting the
+    // conditional item by leaving a null in the array would open the menu with
+    // a rule above its first row.
+    const leadingRule = await evaluate(sess, `(function () {
+      var sr = document.getElementById('ryker-root').shadowRoot;
+      var list = sr.querySelector('.menu');
+      if (!list) return { error: 'the More menu did not open' };
+      var first = list.firstElementChild;
+      return { first: first ? first.className : '(empty)' };
+    })()`);
+    if (leadingRule.error) {
+      bad('the More menu does not open on a divider', leadingRule.error);
+    } else {
+      const clean = !/menu-sep/.test(leadingRule.first);
+      assert(clean, 'the More menu does not open on a divider',
+        clean ? null : `first child is "${leadingRule.first}"`);
+    }
   }
 
   await navigate(sess, FIXTURE);
@@ -3353,6 +3379,34 @@ async function runWorkspace(sess) {
   'the extension workspace and drop-in chrome use the same canonical theme tokens',
   JSON.stringify(landing.theme));
 
+  // The open control has to be a BUTTON the script owns, not a <label for> tied
+  // to the file input. A label opens <input type=file>, which yields a File: a
+  // read-only snapshot with no route back to disk, which is why every export was
+  // a download and why "writes your edits back into the file you opened" could
+  // not have been true. showOpenFilePicker() is the only call that returns a
+  // writable handle, and it can only be made from script. If this ever reverts
+  // to a label, Save Document silently stops being possible.
+  const openControl = await evaluate(sess, `(function () {
+    var button = document.getElementById('workspace-choose');
+    var input = document.getElementById('workspace-file');
+    var labels = Array.prototype.map.call(document.querySelectorAll('label[for]'), function (l) {
+      return l.getAttribute('for');
+    });
+    return {
+      tag: button ? button.tagName : '(missing)',
+      type: button ? button.getAttribute('type') : '',
+      label: button ? (button.textContent || '').trim() : '',
+      inputStillPresent: !!input,
+      labelsBoundToInput: labels.filter(function (f) { return f === 'workspace-file'; }).length,
+      pickerAvailable: typeof window.showOpenFilePicker === 'function'
+    };
+  })()`);
+  assert(openControl.tag === 'BUTTON' && openControl.type === 'button' &&
+    openControl.label === 'Choose a file' && openControl.labelsBoundToInput === 0 &&
+    openControl.inputStillPresent,
+  'the workspace opens files through a scripted button, keeping the input only as a fallback',
+  JSON.stringify(openControl));
+
   const workspaceRadius = await evaluate(sess, `(function () {
     document.body.classList.add('workspace-dragging');
     var value = getComputedStyle(document.querySelector('.workspace-open')).borderTopLeftRadius;
@@ -3366,9 +3420,13 @@ async function runWorkspace(sess) {
     var emptyError = null;
     try { await RykerWorkspace.openText('empty.html', ''); }
     catch (error) { emptyError = error.message; }
-    var nestedError = null;
-    try { await RykerWorkspace.openText('nested.md', '- parent\\n  - child'); }
-    catch (error) { nestedError = error.message; }
+    // Rendered, not opened. openText() loads a document and every check after
+    // this one expects the landing page, which is how the old rejection probe
+    // stayed harmless: it threw. Nesting is supported now, so it would not.
+    var nested = document.createElement('div');
+    nested.innerHTML = RykerWorkspace.markdown(
+      '- parent\\n  - child\\n    1. deep\\n- sibling');
+    var top = nested.firstElementChild;
 
     var grid = document.createElement('div');
     grid.innerHTML = RykerWorkspace.markdown([
@@ -3402,7 +3460,19 @@ async function runWorkspace(sess) {
         document.getElementById('workspace-file').isConnected &&
         !document.body.classList.contains('workspace-loaded'),
       emptyError: emptyError,
-      nestedError: nestedError,
+      nested: {
+        topTag: top.tagName,
+        topItems: top.children.length,
+        // The parent's own text lives in a <p> so it stays an editable leaf
+        // while the <li> around it is a container.
+        parentText: top.children[0].querySelector('p').textContent,
+        parentIsContainer: !!top.children[0].querySelector('ul'),
+        childText: top.querySelector('li > ul > li > p').textContent,
+        deepTag: top.querySelector('li > ul > li > ol') ? 'OL' : '(none)',
+        deepText: top.querySelector('li > ul > li > ol > li').textContent,
+        siblingLeaf: top.children[1].innerHTML,
+        siblingHasChild: top.children[1].children.length
+      },
       grid: {
         tables: grid.querySelectorAll('table').length,
         headers: Array.prototype.map.call(grid.querySelectorAll('thead th'),
@@ -3436,9 +3506,17 @@ async function runWorkspace(sess) {
   assert(workspacePreflight.pickerVisible && /no displayable content/i.test(workspacePreflight.emptyError),
     'an empty upload fails visibly without removing its own file picker',
     JSON.stringify(workspacePreflight));
-  assert(/nested lists/i.test(workspacePreflight.nestedError),
-    'unsupported Markdown structures are rejected before they can be flattened',
-    JSON.stringify(workspacePreflight));
+  assert(workspacePreflight.nested.topTag === 'UL' && workspacePreflight.nested.topItems === 2 &&
+    workspacePreflight.nested.parentText === 'parent' &&
+    workspacePreflight.nested.parentIsContainer &&
+    workspacePreflight.nested.childText === 'child' &&
+    workspacePreflight.nested.deepTag === 'OL' && workspacePreflight.nested.deepText === 'deep',
+  'an indented Markdown list becomes a real nested list, three levels and a change of marker deep',
+  JSON.stringify(workspacePreflight.nested));
+  assert(workspacePreflight.nested.siblingLeaf === 'sibling' &&
+    workspacePreflight.nested.siblingHasChild === 0,
+  'an item with no sublist stays a bare <li>, so only the items that need a wrapper get one',
+  JSON.stringify(workspacePreflight.nested));
   assert(workspacePreflight.grid.tables === 1 &&
     JSON.stringify(workspacePreflight.grid.headers) === JSON.stringify(['Item', 'Owner', 'Effort']) &&
     JSON.stringify(workspacePreflight.grid.align) === JSON.stringify(['left', 'center', 'right']) &&
@@ -3528,6 +3606,400 @@ async function runWorkspace(sess) {
     workspaceExport.scripts === 0 && workspaceExport.editable === 0,
   'workspace clean export contains only the uploaded document and never labels inert HTML as attached Ryker',
   JSON.stringify(workspaceExport));
+
+  // CHROME'S BLOCKLIST. showOpenFilePicker() refuses to hand out a handle for a
+  // directory Chrome considers sensitive, and the refusal is a native dialog:
+  // "Ryker can't open files in this folder because it contains system files".
+  // Dismissing it rejects with AbortError, byte for byte the same rejection an
+  // ordinary cancel produces, so no catch can tell a blocked folder from a
+  // change of mind. showOpenFilePicker() also consumes the user activation, so
+  // input.click() straight after it is refused by Chrome as a file dialog with
+  // no gesture behind it. Both facts point the same way: the fallback cannot be
+  // automatic, and it cannot be a second permanent button either, because the
+  // page is meant to offer ONE file control. It is offered in the status line,
+  // and only once Chrome has actually refused something.
+  //
+  // Before this existed the catch returned silently on AbortError, and a person
+  // whose files lived in a blocked folder could not open them at all.
+  await navigate(sess, WORKSPACE_FIXTURE);
+  await waitInPage(sess, `!!window.RykerWorkspace`, 10000, 'Ryker workspace to reset');
+  const oneControl = await evaluate(sess, `(function () {
+    var open = document.getElementById('workspace-open');
+    return {
+      buttons: Array.prototype.map.call(open.querySelectorAll('button'), function (b) {
+        return (b.textContent || '').trim();
+      }),
+      fallbackBefore: !!document.getElementById('workspace-fallback')
+    };
+  })()`);
+  assert(oneControl.buttons.length === 1 && oneControl.buttons[0] === 'Choose a file' &&
+    !oneControl.fallbackBefore,
+  'the workspace landing page offers exactly one file control and no standing fallback',
+  JSON.stringify(oneControl));
+
+  const blocked = await evaluate(sess, `(function () {
+    var calls = 0;
+    window.showOpenFilePicker = function () {
+      calls += 1;
+      return Promise.reject(new DOMException('The user aborted a request.', 'AbortError'));
+    };
+    document.getElementById('workspace-choose').click();
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        var status = document.getElementById('workspace-status');
+        var link = document.getElementById('workspace-fallback');
+        resolve({
+          calls: calls,
+          linkPresent: !!link,
+          linkTag: link ? link.tagName : '(missing)',
+          hint: (status.textContent || '').trim(),
+          isError: status.classList.contains('error'),
+          loaded: document.body.classList.contains('workspace-loaded')
+        });
+      }, 120);
+    });
+  })()`);
+
+  assert(blocked.calls === 1 && blocked.linkPresent && blocked.linkTag === 'BUTTON' &&
+    !blocked.loaded && !blocked.isError,
+  'a refused picker offers a fallback in the status line rather than failing silently',
+  JSON.stringify(blocked));
+
+  assert(/Chrome refuses some folders/.test(blocked.hint) && /WSL/.test(blocked.hint) &&
+    /browse for it without saving over it/.test(blocked.hint),
+  'the refusal names what Chrome does and what to do about it, as a hint rather than an error',
+  JSON.stringify(blocked.hint));
+
+  // And that route has to actually open the document. It goes through
+  // <input type=file>, which yields a File and no handle: fully editable, Save
+  // Document As intact, and no Save Document, because there is nothing to
+  // write back to. Offering Save Document here would be the worse bug.
+  //
+  // The notice about that arrives as a dialog once the document is up, which is
+  // where it is news about the file on screen instead of a warning label on a
+  // landing page nobody has chosen a file from yet.
+  const fallbackOpen = await evaluate(sess, `(function () {
+    var input = document.getElementById('workspace-file');
+    var opened = 0;
+    // The click cannot reach a native dialog, so the selection the dialog would
+    // have made is installed directly and the change event it fires is sent.
+    document.getElementById('workspace-fallback').addEventListener('click', function () {
+      opened += 1;
+      var dt = new DataTransfer();
+      dt.items.add(new File(['# Unwritable\\n\\nOpened with no handle.\\n'],
+        'unwritable.md', { type: 'text/markdown' }));
+      input.files = dt.files;
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    document.getElementById('workspace-fallback').click();
+    return new Promise(function (resolve) {
+      var tries = 0;
+      (function wait() {
+        tries += 1;
+        var loaded = document.body.classList.contains('workspace-loaded');
+        var root = document.getElementById('ryker-root');
+        var sr = root && root.shadowRoot;
+        var dialog = sr && sr.querySelector('.backdrop[role="dialog"]');
+        if ((!loaded || !dialog) && tries < 100) { setTimeout(wait, 50); return; }
+        var title = dialog && dialog.querySelector('header h2');
+        var body = dialog && dialog.querySelector('.body');
+        var out = {
+          opened: opened, loaded: loaded,
+          markdown: !!(window.Ryker && Ryker.config && Ryker.config.isMarkdown()),
+          available: !!(window.Ryker && Ryker.saveTarget && Ryker.saveTarget.available()),
+          canSave: !!(window.Ryker && Ryker.exportDialog && Ryker.exportDialog.canSave()),
+          noticeTitle: title ? (title.textContent || '').trim() : '(none)',
+          noticeBody: body ? (body.textContent || '').trim() : '',
+          labels: []
+        };
+        // Dismiss it before reading the menu, so the modal is not sitting over
+        // the button the next click has to reach.
+        var close = dialog && dialog.querySelector('.foot button.rk');
+        if (close) close.click();
+        var more = sr && sr.querySelector('[aria-haspopup="menu"]');
+        if (more) {
+          more.click();
+          out.labels = Array.prototype.map.call(sr.querySelectorAll('[role="menuitem"]'),
+            function (b) { return (b.textContent || '').trim(); });
+        }
+        resolve(out);
+      })();
+    });
+  })()`);
+
+  assert(fallbackOpen.opened === 1 && fallbackOpen.loaded && fallbackOpen.markdown,
+    'the status-line fallback opens the document Chrome would not hand over a handle for',
+    JSON.stringify({ opened: fallbackOpen.opened, loaded: fallbackOpen.loaded,
+      markdown: fallbackOpen.markdown }));
+
+  assert(!fallbackOpen.available && !fallbackOpen.canSave &&
+    fallbackOpen.labels.indexOf('Save Document') === -1 &&
+    fallbackOpen.labels.indexOf('Save Document As...') !== -1,
+  'a document opened without a handle offers Save Document As and never Save Document',
+  JSON.stringify(fallbackOpen.labels));
+
+  assert(/Saving over this file is unavailable/.test(fallbackOpen.noticeTitle) &&
+    /unwritable\.md/.test(fallbackOpen.noticeBody) &&
+    /Save Document As/.test(fallbackOpen.noticeBody),
+  'the limitation is announced once the document is open, naming the file and the way out',
+  JSON.stringify({ title: fallbackOpen.noticeTitle, body: fallbackOpen.noticeBody.slice(0, 120) }));
+
+  // THE WHOLE CHAIN, short of the native dialog. Everything from the click to
+  // the bytes on disk is exercised here with showOpenFilePicker stubbed: the
+  // real picker is a native window no automated run can complete, and that one
+  // gap is what the human acceptance pass is for. Everything downstream of it
+  // is ordinary code and is covered.
+  await navigate(sess, WORKSPACE_FIXTURE);
+  await waitInPage(sess, `!!window.RykerWorkspace`, 10000, 'Ryker workspace to reset');
+  const picked = await evaluate(sess, `(function () {
+    // Parked on window because each evaluate() is its own scope: the closure
+    // that captures the write cannot be read from the call that triggers it.
+    window.__rykerPickedWrites = [];
+    window.__rykerPermissionAsks = 0;
+    var written = window.__rykerPickedWrites;
+    var permissionAsks = 0;
+    var handle = {
+      kind: 'file',
+      name: 'picked.md',
+      getFile: function () {
+        return Promise.resolve(new File(['# Picked\\n\\nOpened through the picker.\\n'],
+          'picked.md', { type: 'text/markdown' }));
+      },
+      queryPermission: function () { return Promise.resolve('prompt'); },
+      requestPermission: function () {
+        permissionAsks += 1; window.__rykerPermissionAsks += 1;
+        return Promise.resolve('granted');
+      },
+      createWritable: function () {
+        return Promise.resolve({
+          write: function (text) { written.push(String(text)); return Promise.resolve(); },
+          close: function () { return Promise.resolve(); },
+          abort: function () { return Promise.resolve(); }
+        });
+      }
+    };
+    var calls = 0;
+    window.showOpenFilePicker = function () { calls += 1; return Promise.resolve([handle]); };
+    document.getElementById('workspace-choose').click();
+    return new Promise(function (resolve) {
+      var tries = 0;
+      (function wait() {
+        tries += 1;
+        var loaded = document.body.classList.contains('workspace-loaded');
+        if (!loaded && tries < 100) { setTimeout(wait, 50); return; }
+        resolve({
+          calls: calls, loaded: loaded,
+          available: !!(window.Ryker && Ryker.saveTarget && Ryker.saveTarget.available()),
+          name: window.Ryker && Ryker.saveTarget ? Ryker.saveTarget.name() : '',
+          canSave: !!(window.Ryker && Ryker.exportDialog && Ryker.exportDialog.canSave()),
+          permissionAsks: permissionAsks,
+          handle: handle, written: written
+        });
+      })();
+    });
+  })()`);
+
+  assert(picked.calls === 1 && picked.loaded,
+    'the workspace Choose a file button opens the picker that returns a writable handle',
+    JSON.stringify({ calls: picked.calls, loaded: picked.loaded }));
+
+  assert(picked.available && picked.name === 'picked.md' && picked.canSave,
+    'a document opened through the picker registers itself as writable',
+    JSON.stringify({ available: picked.available, name: picked.name, canSave: picked.canSave }));
+
+  assert(picked.permissionAsks === 0,
+    'opening a file through the picker asks for no write permission by itself',
+    String(picked.permissionAsks));
+
+  // Now the menu a person actually reads, on a surface that CAN overwrite.
+  const workspaceMenu = await evaluate(sess, `(function () {
+    var sr = document.getElementById('ryker-root').shadowRoot;
+    var more = sr.querySelector('[aria-haspopup="menu"]');
+    if (!more) return { error: 'no More button in the workspace toolbar' };
+    more.click();
+    var labels = Array.prototype.map.call(sr.querySelectorAll('[role="menuitem"]'), function (b) {
+      return (b.textContent || '').trim();
+    });
+    var sep = sr.querySelector('.menu') && sr.querySelector('.menu').firstElementChild;
+    return { labels: labels, first: sep ? sep.className : '(empty)' };
+  })()`);
+
+  if (workspaceMenu.error) {
+    bad('a writable workspace document offers both Save Document and Save Document As',
+      workspaceMenu.error);
+  } else {
+    const both = workspaceMenu.labels.some((l) => /^save document$/i.test(l)) &&
+      workspaceMenu.labels.some((l) => /^save document as/i.test(l));
+    assert(both, 'a writable workspace document offers both Save Document and Save Document As',
+      both ? null : JSON.stringify(workspaceMenu.labels));
+    const clean = !/menu-sep/.test(workspaceMenu.first);
+    assert(clean, 'adding Save Document does not open the menu on a divider', workspaceMenu.first);
+  }
+
+  // And the overwrite itself, through the handle the picker returned.
+  const pickedWrite = await evaluate(sess, `(function () {
+    var sr = document.getElementById('ryker-root').shadowRoot;
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    Ryker.exportDialog.save();
+    var button = Array.prototype.filter.call(sr.querySelectorAll('.modal button'), function (b) {
+      return /^Overwrite /.test((b.textContent || '').trim());
+    })[0];
+    if (!button) return { error: 'no Overwrite button for the picked document' };
+    var label = (button.textContent || '').trim();
+    button.click();
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+        resolve({ label: label });
+      }, 120);
+    });
+  })()`);
+
+  if (pickedWrite.error) {
+    bad('Save Document writes through the handle the picker returned', pickedWrite.error);
+  } else {
+    const state = await evaluate(sess, `({
+      writes: (window.__rykerPickedWrites || []).length,
+      first: (window.__rykerPickedWrites || [])[0] || '',
+      asks: window.__rykerPermissionAsks || 0
+    })`);
+    const wrote = pickedWrite.label === 'Overwrite picked.md' && state.writes === 1 &&
+      /^#\s*Picked/.test(state.first);
+    assert(wrote, 'Save Document writes through the handle the picker returned',
+      wrote ? null : JSON.stringify({ label: pickedWrite.label, state: state }));
+
+    // The grant the open deliberately skipped is taken here, on the confirm.
+    assert(state.asks === 1,
+      'the write permission the open skipped is requested by the overwrite confirmation',
+      String(state.asks));
+  }
+
+  // THE ONE THAT WOULD HAVE DESTROYED SOMEBODY'S REPORT. An HTML document is
+  // rendered from safeDocument(), the SANITISED parse: no style, no script, no
+  // link, no inline style attribute. exportHtml.clean() serialises that, which
+  // is right for a new file beside the original and catastrophic written over
+  // it. One typo fix would have returned an authored report with its stylesheet
+  // gone and no copy kept. Ryker has a byte-faithful writer for Markdown only,
+  // so Save Document exists for Markdown only. If an HTML source map ever lands
+  // this check is the one to revisit, deliberately.
+  await navigate(sess, WORKSPACE_FIXTURE);
+  await waitInPage(sess, `!!window.RykerWorkspace`, 10000, 'Ryker workspace to reset');
+  const htmlPick = await evaluate(sess, `(function () {
+    var handle = {
+      kind: 'file', name: 'report.html',
+      getFile: function () {
+        return Promise.resolve(new File(
+          ['<!doctype html><html><head><style>body{color:red}</style></head>' +
+           '<body><h1>Report</h1><p>Body.</p></body></html>'],
+          'report.html', { type: 'text/html' }));
+      },
+      queryPermission: function () { return Promise.resolve('granted'); },
+      requestPermission: function () { return Promise.resolve('granted'); },
+      createWritable: function () {
+        window.__rykerHtmlWrite = true;
+        return Promise.resolve({
+          write: function () { return Promise.resolve(); },
+          close: function () { return Promise.resolve(); },
+          abort: function () { return Promise.resolve(); }
+        });
+      }
+    };
+    window.__rykerHtmlWrite = false;
+    window.showOpenFilePicker = function () { return Promise.resolve([handle]); };
+    document.getElementById('workspace-choose').click();
+    return new Promise(function (resolve) {
+      var tries = 0;
+      (function wait() {
+        tries += 1;
+        if (!document.body.classList.contains('workspace-loaded') && tries < 100) {
+          setTimeout(wait, 50); return;
+        }
+        var sr = document.getElementById('ryker-root');
+        var labels = [];
+        if (sr) {
+          var more = sr.shadowRoot.querySelector('[aria-haspopup="menu"]');
+          if (more) {
+            more.click();
+            labels = Array.prototype.map.call(
+              sr.shadowRoot.querySelectorAll('[role="menuitem"]'),
+              function (b) { return (b.textContent || '').trim(); });
+          }
+        }
+        resolve({
+          loaded: document.body.classList.contains('workspace-loaded'),
+          canSave: !!(window.Ryker && Ryker.exportDialog && Ryker.exportDialog.canSave()),
+          available: !!(window.Ryker && Ryker.saveTarget && Ryker.saveTarget.available()),
+          labels: labels, wrote: window.__rykerHtmlWrite
+        });
+      })();
+    });
+  })()`);
+
+  assert(htmlPick.loaded && !htmlPick.canSave && !htmlPick.available,
+    'an HTML document registers no save target, because Ryker cannot write HTML back losslessly',
+    JSON.stringify({ loaded: htmlPick.loaded, canSave: htmlPick.canSave,
+      available: htmlPick.available }));
+
+  const offersSave = htmlPick.labels.some((l) => /^save document$/i.test(l));
+  const offersSaveAs = htmlPick.labels.some((l) => /^save document as/i.test(l));
+  assert(!offersSave && offersSaveAs,
+    'an HTML document offers Save Document As but never Save Document',
+    JSON.stringify(htmlPick.labels));
+
+  // And if save() is reached another way, it must refuse rather than write.
+  const htmlRefusal = await evaluate(sess, `(function () {
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    Ryker.exportDialog.save();
+    var sr = document.getElementById('ryker-root').shadowRoot;
+    var modal = sr.querySelector('.modal');
+    var text = modal ? (modal.textContent || '').trim() : '';
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    return { text: text, wrote: window.__rykerHtmlWrite };
+  })()`);
+  const refusedCleanly = /nothing to overwrite/i.test(htmlRefusal.text) && !htmlRefusal.wrote;
+  assert(refusedCleanly,
+    'calling save on an HTML document refuses instead of writing the sanitised render',
+    refusedCleanly ? null : JSON.stringify(htmlRefusal));
+
+  // A dismissed permission dialog leaves the grant in 'prompt'. Reading that as
+  // a refusal would retire the target over a stray Escape, and the only way
+  // back would be reopening the file.
+  const dismissed = await evaluate(sess, `(function () {
+    var wrote = 0;
+    Ryker.saveTarget.set({
+      name: 'notes.md',
+      ensureWritable: function () { return Promise.resolve('prompt'); },
+      write: function () { wrote += 1; return Promise.resolve(); }
+    });
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    Ryker.exportDialog.save();
+    var sr = document.getElementById('ryker-root').shadowRoot;
+    var button = Array.prototype.filter.call(sr.querySelectorAll('.modal button'), function (b) {
+      return /^Overwrite /.test((b.textContent || '').trim());
+    })[0];
+    if (!button) return { error: 'no Overwrite button on the dismissal run' };
+    button.click();
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        var modal = sr.querySelector('.modal');
+        var said = modal ? (modal.textContent || '') : '';
+        var stillOffered = Ryker.exportDialog.canSave();
+        Ryker.saveTarget.clear();
+        while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+        resolve({ wrote: wrote, said: said, stillOffered: stillOffered });
+      }, 60);
+    });
+  })()`);
+
+  if (dismissed.error) {
+    bad('a dismissed permission prompt keeps Save Document available for another try',
+      dismissed.error);
+  } else {
+    const kept = dismissed.wrote === 0 && dismissed.stillOffered === true &&
+      /again/i.test(dismissed.said) && /unchanged/i.test(dismissed.said);
+    assert(kept, 'a dismissed permission prompt keeps Save Document available for another try',
+      kept ? null : JSON.stringify(dismissed));
+  }
 
   console.log('\nextension/workspace.js (Markdown out, not HTML)');
 
@@ -3636,6 +4108,166 @@ async function runWorkspace(sess) {
     'the export dialog over a Markdown file offers Markdown and never calls the file a report',
     JSON.stringify(mdDialog));
 
+  // THE SENTENCE THAT SHIPPED FOR FOUR DAYS. "Markdown writes your edits back
+  // into the file you opened" named a destination it never wrote to: every
+  // button in that dialog ended at a blob download. The suite could not catch
+  // it because nothing here asserted where an export GOES, only what it
+  // CONTAINS, so a promise to overwrite a file sat next to a download through a
+  // green run. These checks are that missing half.
+  assert(!/writes your edits back into the file you opened/i.test(mdDialog.text),
+    'Save Document As no longer claims to write back into the opened file',
+    JSON.stringify(mdDialog.text));
+
+  assert(/downloads a new/i.test(mdDialog.text) && /left where it is|Use <?b?>?Save Document/i
+      .test(mdDialog.text.replace(/\s+/g, ' ')),
+    'Save Document As says it downloads a new file and leaves the original alone',
+    JSON.stringify(mdDialog.text));
+
+  // Where the bytes actually land. exportHtml.download is the only sink for
+  // every "As" branch, so stubbing it is how the destination becomes testable.
+  const sink = await evaluate(sess, `(function () {
+    var calls = [];
+    var real = Ryker.exportHtml.download;
+    Ryker.exportHtml.download = function (text, filename, mime) {
+      calls.push({ filename: filename, mime: mime || '', bytes: String(text).length });
+    };
+    try {
+      while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+      Ryker.exportDialog.saveAs();
+      var modal = document.getElementById('ryker-root').shadowRoot.querySelector('.modal');
+      var md = Array.prototype.filter.call(modal.querySelectorAll('button'), function (b) {
+        return (b.textContent || '').trim() === 'Markdown';
+      })[0];
+      if (!md) return { error: 'no Markdown button in Save Document As' };
+      md.click();
+    } finally {
+      Ryker.exportHtml.download = real;
+      while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    }
+    return { calls: calls };
+  })()`);
+
+  if (sink.error) {
+    bad('Save Document As downloads a new file rather than writing the opened one', sink.error);
+  } else {
+    const one = sink.calls.length === 1 && sink.calls[0];
+    const right = one && one.filename === 'notes.md' && /markdown/.test(one.mime) && one.bytes > 0;
+    assert(right, 'Save Document As downloads a new file rather than writing the opened one',
+      right ? null : JSON.stringify(sink.calls));
+  }
+
+  // SAVE DOCUMENT. The overwrite path, driven through a fake target so the test
+  // needs no picker, no handle and no real file. What matters is that the
+  // confirmation names the file and says the word, that confirming writes
+  // through the target and NOT through the download sink, and that the
+  // permission grant is asked for on the confirming click rather than at open.
+  const overwrite = await evaluate(sess, `(function () {
+    var wrote = null, asked = 0, downloads = 0;
+    var realDownload = Ryker.exportHtml.download;
+    Ryker.exportHtml.download = function () { downloads += 1; };
+    Ryker.saveTarget.set({
+      name: 'notes.md',
+      ensureWritable: function () { asked += 1; return Promise.resolve(true); },
+      write: function (text) { wrote = String(text); return Promise.resolve(); }
+    });
+    var offered = Ryker.exportDialog.canSave();
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    Ryker.exportDialog.save();
+    var modal = document.getElementById('ryker-root').shadowRoot.querySelector('.modal');
+    var text = (modal.textContent || '').trim();
+    var askedBeforeClick = asked;
+    var button = Array.prototype.filter.call(modal.querySelectorAll('button'), function (b) {
+      return /^Overwrite /.test((b.textContent || '').trim());
+    })[0];
+    if (!button) {
+      Ryker.exportHtml.download = realDownload;
+      return { error: 'no Overwrite button: ' + text };
+    }
+    var danger = /danger/.test(button.className);
+    button.click();
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        Ryker.exportHtml.download = realDownload;
+        Ryker.saveTarget.clear();
+        while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+        resolve({
+          offered: offered, text: text, danger: danger, downloads: downloads,
+          askedBeforeClick: askedBeforeClick, asked: asked,
+          wroteLength: wrote === null ? -1 : wrote.length,
+          startsLikeSource: wrote === null ? false : /^#/.test(wrote.trim())
+        });
+      }, 60);
+    });
+  })()`);
+
+  if (overwrite.error) {
+    bad('Save Document overwrites the opened file through the registered target', overwrite.error);
+  } else {
+    assert(overwrite.offered === true,
+      'a registered save target makes Save Document available',
+      String(overwrite.offered));
+
+    const warns = /overwrites/i.test(overwrite.text) && /notes\.md/.test(overwrite.text) &&
+      /disk/i.test(overwrite.text);
+    assert(warns, 'the Save Document confirmation names the file and says it overwrites it',
+      warns ? null : JSON.stringify(overwrite.text));
+
+    assert(overwrite.danger,
+      'the overwrite button is styled as destructive rather than as a plain primary',
+      String(overwrite.danger));
+
+    // The owner chose that opening a file costs no permission prompt, so the
+    // grant must be requested by the confirming click and never before it.
+    assert(overwrite.askedBeforeClick === 0 && overwrite.asked === 1,
+      'write permission is requested on the confirming click, not when the dialog opens',
+      `asked before click ${overwrite.askedBeforeClick}, asked total ${overwrite.asked}`);
+
+    const wroteThrough = overwrite.wroteLength > 0 && overwrite.downloads === 0 &&
+      overwrite.startsLikeSource;
+    assert(wroteThrough,
+      'Save Document overwrites the opened file through the registered target',
+      wroteThrough ? null : JSON.stringify(overwrite));
+  }
+
+  // The refusal path. A denied grant must leave the file alone AND stop
+  // advertising a Save Document that cannot work, because the menu is rebuilt
+  // per open and would otherwise keep offering it forever.
+  const refused = await evaluate(sess, `(function () {
+    var wrote = 0;
+    Ryker.saveTarget.set({
+      name: 'notes.md',
+      ensureWritable: function () { return Promise.resolve(false); },
+      write: function () { wrote += 1; return Promise.resolve(); }
+    });
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    Ryker.exportDialog.save();
+    var sr = document.getElementById('ryker-root').shadowRoot;
+    var button = Array.prototype.filter.call(sr.querySelectorAll('.modal button'), function (b) {
+      return /^Overwrite /.test((b.textContent || '').trim());
+    })[0];
+    if (!button) return { error: 'no Overwrite button on the refusal run' };
+    button.click();
+    return new Promise(function (resolve) {
+      setTimeout(function () {
+        var open = sr.querySelector('.modal');
+        var said = open ? (open.textContent || '') : '';
+        var stillOffered = Ryker.exportDialog.canSave();
+        Ryker.saveTarget.clear();
+        while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+        resolve({ wrote: wrote, said: said, stillOffered: stillOffered });
+      }, 60);
+    });
+  })()`);
+
+  if (refused.error) {
+    bad('a refused write permission leaves the file unchanged and retires the target', refused.error);
+  } else {
+    const clean = refused.wrote === 0 && /unchanged/i.test(refused.said) &&
+      refused.stillOffered === false;
+    assert(clean, 'a refused write permission leaves the file unchanged and retires the target',
+      clean ? null : JSON.stringify(refused));
+  }
+
   // Deleting and moving, which is where the first version of this exporter lost
   // people's work. It copied the gap between two blocks straight out of the
   // source so blank lines survive, and never asked whether another block's text
@@ -3654,6 +4286,189 @@ async function runWorkspace(sess) {
       ${JSON.stringify(source)}).then(function () { return true; })`);
   }
   const occurrences = (text, needle) => text.split(needle).length - 1;
+
+  // LINE ENDINGS. The Markdown path's whole claim is that untouched lines come
+  // back exactly as written, and Save Document now writes over the authored
+  // file. A CRLF document rewritten as LF changes every line in the diff while
+  // reporting one edit, which is the same defect as the old copy: technically
+  // "the edits" and not what the sentence promises. The parser normalises to LF
+  // on the way in, so the ending has to be recorded at open and restored here.
+  const crlfSource = '# Title\r\n\r\nA paragraph that nobody touches.\r\n\r\nAnother one.\r\n';
+  await openMarkdown(crlfSource);
+  const crlf = await evaluate(sess, `(function () {
+    var out = Ryker.exportMarkdown.build();
+    return {
+      identical: out === ${JSON.stringify(crlfSource)},
+      crlfCount: out.split('\\r\\n').length - 1,
+      loneLf: /[^\\r]\\n/.test(out),
+      out: out
+    };
+  })()`);
+  assert(crlf.identical && crlf.crlfCount === 5 && !crlf.loneLf,
+    'a CRLF Markdown file comes back with CRLF endings, not silently reformatted to LF',
+    crlf.identical ? null : JSON.stringify(crlf));
+
+  // The mirror case: an LF file with no trailing newline must not gain one.
+  const noTrailing = '# Title\n\nOne paragraph, no newline at the end.';
+  await openMarkdown(noTrailing);
+  const bare = await evaluate(sess, `(function () {
+    var out = Ryker.exportMarkdown.build();
+    return { identical: out === ${JSON.stringify(noTrailing)}, out: out };
+  })()`);
+  assert(bare.identical,
+    'a Markdown file with no final newline does not gain one on the way out',
+    bare.identical ? null : JSON.stringify(bare));
+
+  // NESTED LISTS. Supported since 2026-08-20. Before that the workspace refused
+  // any Markdown containing one, which ruled out most real documents, a
+  // CLAUDE.md among them. A list is ONE block however deep it goes, so the
+  // round trip carries the whole risk: an untouched list has to come back byte
+  // for byte, indents and bullet characters and tabs included, and an edited
+  // one has to be rewritten with its nesting intact.
+  const NESTED = [
+    '# Nested',
+    '',
+    '* parent',
+    '    * child with **weight**',
+    '        1. deep one',
+    '        2. deep two',
+    '\t* tabbed sibling of child',
+    '* sibling',
+    '',
+    'Tail paragraph.',
+    ''
+  ].join('\n');
+
+  await openMarkdown(NESTED);
+  const nestedIntact = await evaluate(sess, `(function () {
+    var doc = document.getElementById('workspace-document');
+    var list = doc.querySelector('ul');
+    var out = Ryker.exportMarkdown.build();
+    return {
+      identical: out === ${JSON.stringify(NESTED)},
+      out: out,
+      depth: !!list.querySelector('li > ul > li > ol > li'),
+      topItems: list.children.length,
+      tabbed: !!Array.prototype.filter.call(list.querySelectorAll('li > ul > li'),
+        function (li) { return /tabbed sibling/.test(li.textContent); }).length
+    };
+  })()`);
+
+  assert(nestedIntact.depth && nestedIntact.topItems === 2 && nestedIntact.tabbed,
+    'a tab-indented item lands at the same depth a four-space one would',
+    JSON.stringify({ depth: nestedIntact.depth, topItems: nestedIntact.topItems,
+      tabbed: nestedIntact.tabbed }));
+
+  assert(nestedIntact.identical,
+    'an untouched nested list comes back byte for byte, keeping its own bullets and indents',
+    nestedIntact.identical ? null : JSON.stringify(nestedIntact.out));
+
+  // Editing one item rewrites the whole list, because the list is the block.
+  // That is the existing bargain for `*` versus `-`, and the nesting has to
+  // survive it: the indent is the only thing saying which item owns which.
+  await openMarkdown(NESTED);
+  const nestedEdited = await evaluate(sess, `(function () {
+    var doc = document.getElementById('workspace-document');
+    var deep = doc.querySelector('li > ul > li > ol > li');
+    deep.textContent = 'deep one, edited';
+    var out = Ryker.exportMarkdown.build();
+    // Re-parse what we just wrote. A writer that emits an indent its own parser
+    // will not read back as a child is the failure this guards.
+    var probe = document.createElement('div');
+    probe.innerHTML = RykerWorkspace.markdown(out);
+    var list = probe.querySelector('ul');
+    return {
+      out: out,
+      reparsedDeep: list.querySelector('li > ul > li > ol > li')
+        ? list.querySelector('li > ul > li > ol > li').textContent : '(lost)',
+      reparsedTop: list.children.length
+    };
+  })()`);
+
+  assert(nestedEdited.out.indexOf('\n  - child with **weight**\n') !== -1 &&
+    nestedEdited.out.indexOf('\n    1. deep one, edited\n') !== -1 &&
+    nestedEdited.out.indexOf('\n    2. deep two\n') !== -1 &&
+    nestedEdited.out.indexOf('\n  - tabbed sibling of child\n') !== -1 &&
+    nestedEdited.out.indexOf('\n- sibling') !== -1,
+  'an edited nested list is rewritten with every level still indented under its parent',
+  JSON.stringify(nestedEdited.out));
+
+  assert(nestedEdited.reparsedDeep === 'deep one, edited' && nestedEdited.reparsedTop === 2,
+    'what the writer emits, the parser reads back at the same depth',
+    JSON.stringify(nestedEdited));
+
+  assert(occurrences(nestedEdited.out, '# Nested') === 1 &&
+    occurrences(nestedEdited.out, 'Tail paragraph.') === 1,
+  'rewriting a nested list leaves the blocks around it alone',
+  JSON.stringify(nestedEdited.out));
+
+  // The <p> wrapper is Ryker's device, and an instruction that leaks it is
+  // WRONG rather than merely clumsy. "Replace the contents of a paragraph /
+  // Position: the 1st paragraph in the document" pointed at the tail paragraph,
+  // which is a real and different block, so an agent following the prompt would
+  // have edited the wrong one. Both the noun and the ordinal come from the
+  // element the reader sees, which is the list item.
+  await openMarkdown(NESTED);
+  const parentWord = await evaluate(sess, `(function () {
+    var doc = document.getElementById('workspace-document');
+    var parent = doc.querySelector('li > p');
+    parent.textContent = 'parent, edited';
+    Ryker.instructions.record();
+    return { prompt: Ryker.instructions.build() };
+  })()`);
+
+  // ADJACENT BLOCKS. Found by round-tripping a real CLAUDE.md rather than a
+  // fixture, and it predates the nested-list work: a heading with a fenced
+  // block pushed straight up against it came back with a blank line inserted
+  // between them. build() could not tell "the author wrote no separator" from
+  // "the separator was lost to a delete or a move", and defaulted to inventing
+  // one. Under Save Document that is a line nobody touched, rewritten.
+  const ADJACENT = [
+    '# Title',
+    '## Running it',
+    '```bash',
+    'npm start',
+    '```',
+    '- item',
+    '- another',
+    '> quoted',
+    '',
+    'A paragraph after a real blank line.',
+    ''
+  ].join('\n');
+
+  await openMarkdown(ADJACENT);
+  const adjacent = await evaluate(sess, `(function () {
+    var out = Ryker.exportMarkdown.build();
+    return { identical: out === ${JSON.stringify(ADJACENT)}, out: out };
+  })()`);
+  assert(adjacent.identical,
+    'blocks the author wrote with no blank line between them do not gain one',
+    adjacent.identical ? null : JSON.stringify(adjacent.out));
+
+  // The other half of the same decision has to keep working: where the gap
+  // really is gone, one blank line is still the honest answer.
+  await openMarkdown(ADJACENT);
+  const adjacentDelete = await evaluate(sess, `(function () {
+    var doc = document.getElementById('workspace-document');
+    var target = Array.prototype.filter.call(doc.children, function (el) {
+      return el.tagName === 'PRE';
+    })[0];
+    Ryker.multi.removeNodes([target]);
+    return Ryker.exportMarkdown.build();
+  })()`);
+  assert(adjacentDelete.indexOf('npm start') === -1 &&
+    adjacentDelete.indexOf('## Running it') !== -1 &&
+    adjacentDelete.indexOf('- item') !== -1 &&
+    !/\n\n\n/.test(adjacentDelete),
+  'deleting a block wedged between two others leaves them separated, not stacked',
+  JSON.stringify(adjacentDelete));
+
+  assert(/Replace the contents of a list item/.test(parentWord.prompt) &&
+    /Position: the 1st list item in the document/.test(parentWord.prompt) &&
+    !/paragraph in the document/.test(parentWord.prompt),
+  'editing a nested list item is described and located as a list item, never as a paragraph',
+  JSON.stringify(parentWord.prompt.slice(parentWord.prompt.indexOf('## 1.'), -1)));
 
   // Deliberately three top-level blocks with a section heading between them, so
   // a delete and a move both have to cross a gap that carries real text.
