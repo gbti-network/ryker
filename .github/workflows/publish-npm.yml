@@ -28,13 +28,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'dry-run (build, test and pack, publish nothing) or publish (irreversible)'
+        description: 'dry-run (build, test and pack, publish nothing), publish (irreversible), or retag-next (point the next tag at this version)'
         type: choice
         # The safe action has to be the lazy action, same rule as
         # publish-extension.yml. An npm version can never be reused, so a
         # default of `publish` would make a stray click permanent.
         default: dry-run
-        options: [dry-run, publish]
+        options: [dry-run, publish, retag-next]
 
 permissions:
   # The whole credential. Without id-token: write there is no OIDC identity for
@@ -99,6 +99,7 @@ jobs:
       # here says so plainly, instead of spending a full test run to arrive at
       # a 403 that reads like an auth failure.
       - name: Refuse a version the registry already has
+        if: inputs.mode != 'retag-next'
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
@@ -122,7 +123,23 @@ jobs:
         if: inputs.mode == 'publish'
         run: npm publish
 
+      # Whether npm's OIDC exchange covers anything other than `npm publish` is
+      # not documented anywhere I can find, and the trusted publisher grants
+      # `npm publish` only. So this is a probe, not a promise: if the exchange
+      # is publish-scoped, as seems likely, this fails and the tag has to be
+      # moved with a granular token that has bypass-2fa enabled. Failing here
+      # costs one run and answers the question for good.
+      - name: Point the next tag at this version
+        if: inputs.mode == 'retag-next'
+        run: |
+          NAME=$(node -p "require('./package.json').name")
+          VERSION=$(node -p "require('./package.json').version")
+          echo "Pointing next at $NAME@$VERSION."
+          npm dist-tag add "$NAME@$VERSION" next
+          npm dist-tag ls "$NAME"
+
       - name: Say what happened
+        if: inputs.mode != 'retag-next'
         run: |
           if [ "${{ inputs.mode }}" = "publish" ]; then
             echo "Published. Move the next tag if this is the newest release:"
