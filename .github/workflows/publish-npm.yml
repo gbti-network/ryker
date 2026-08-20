@@ -17,6 +17,13 @@ name: Publish the package to npm
 # version is immutable, so a wrong publish is corrected only by publishing
 # another version. Hence no tag trigger. Publishing is a decision.
 #
+# SCOPE, established by experiment on 2026-08-20 and not by documentation: the
+# OIDC exchange happens INSIDE `npm publish` and nowhere else. A `npm dist-tag`
+# step in this same job, with the same permissions, fails `E401 Unable to
+# authenticate`, because it sees only setup-node's empty NODE_AUTH_TOKEN
+# placeholder. Trusted publishing cannot move a dist-tag. That needs a granular
+# token with bypass-2fa enabled, used once and then revoked.
+#
 # SETUP, once, on npmjs.com. Package @gbti/ryker -> Settings -> Trusted
 # Publisher -> GitHub Actions:
 #   Organization or user   gbti-network
@@ -28,13 +35,18 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: 'dry-run (build, test and pack, publish nothing), publish (irreversible), or retag-next (point the next tag at this version)'
+        description: 'dry-run (build, test and pack, publish nothing) or publish (irreversible)'
         type: choice
         # The safe action has to be the lazy action, same rule as
         # publish-extension.yml. An npm version can never be reused, so a
         # default of `publish` would make a stray click permanent.
         default: dry-run
-        options: [dry-run, publish, retag-next]
+        options: [dry-run, publish]
+      tag:
+        description: 'distribution tag: latest for a stable release, next for a release candidate'
+        type: choice
+        default: latest
+        options: [latest, next]
 
 permissions:
   # The whole credential. Without id-token: write there is no OIDC identity for
@@ -99,7 +111,6 @@ jobs:
       # here says so plainly, instead of spending a full test run to arrive at
       # a 403 that reads like an auth failure.
       - name: Refuse a version the registry already has
-        if: inputs.mode != 'retag-next'
         run: |
           NAME=$(node -p "require('./package.json').name")
           VERSION=$(node -p "require('./package.json').version")
@@ -115,35 +126,28 @@ jobs:
       # the package release gate, so both modes below are gated on all of it.
       - name: Pack without publishing
         if: inputs.mode == 'dry-run'
-        run: npm publish --dry-run
+        run: npm publish --dry-run --tag "${{ inputs.tag }}"
 
       # No token and no NODE_AUTH_TOKEN on purpose. Provenance is attached
       # automatically when a trusted publisher is what authorised the publish.
+      #
+      # --tag is how a release candidate reaches `next`, which release-ops asks
+      # for and which nothing else here can do: `npm dist-tag` is not covered by
+      # the trusted publisher, so publishing IS the only tag-setting operation
+      # available without a stored credential. Publishing an RC as `next` also
+      # drags a stale `next` forward as a side effect.
       - name: Publish
         if: inputs.mode == 'publish'
-        run: npm publish
+        run: npm publish --tag "${{ inputs.tag }}"
 
-      # Whether npm's OIDC exchange covers anything other than `npm publish` is
-      # not documented anywhere I can find, and the trusted publisher grants
-      # `npm publish` only. So this is a probe, not a promise: if the exchange
-      # is publish-scoped, as seems likely, this fails and the tag has to be
-      # moved with a granular token that has bypass-2fa enabled. Failing here
-      # costs one run and answers the question for good.
-      - name: Point the next tag at this version
-        if: inputs.mode == 'retag-next'
-        run: |
-          NAME=$(node -p "require('./package.json').name")
-          VERSION=$(node -p "require('./package.json').version")
-          echo "Pointing next at $NAME@$VERSION."
-          npm dist-tag add "$NAME@$VERSION" next
-          npm dist-tag ls "$NAME"
+      - name: Show where the tags point now
+        if: inputs.mode == 'publish'
+        run: npm dist-tag ls "$(node -p "require('./package.json').name")"
 
       - name: Say what happened
-        if: inputs.mode != 'retag-next'
         run: |
           if [ "${{ inputs.mode }}" = "publish" ]; then
-            echo "Published. Move the next tag if this is the newest release:"
-            echo "  npm dist-tag add $(node -p "require('./package.json').name")@$(node -p "require('./package.json').version") next"
+            echo "Published to the ${{ inputs.tag }} tag."
           else
             echo "Dry run only. Nothing was published."
           fi
