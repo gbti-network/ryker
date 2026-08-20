@@ -9,7 +9,12 @@
 Ryker.blocks = (function () {
   'use strict';
 
-  var SELECTOR = 'h1, p, li, td, th, h2, h3, h4, h5, figcaption, caption, blockquote p, dd, dt';
+  // h6 was missing here while outline.js:24 has always listed h1 through h6, so
+  // the rail offered a sixth-level heading and clicking it did nothing, with no
+  // reason given. Harmless in the authored reports, which stop at h3; a
+  // Markdown document generates its own h6 from `######`, which is valid syntax
+  // the parser accepts, so the gap became reachable. Added 2026-08-19.
+  var SELECTOR = 'h1, p, li, td, th, h2, h3, h4, h5, h6, figcaption, caption, blockquote p, dd, dt';
   var ATOMIC_SELECTOR = 'svg';
   var PICK_SELECTOR = SELECTOR + ', ' + ATOMIC_SELECTOR;
 

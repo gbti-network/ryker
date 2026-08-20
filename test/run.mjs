@@ -807,7 +807,21 @@ async function runEditorHardening(sess, file) {
     await new Promise(function (resolve) { requestAnimationFrame(resolve); });
     var original = Ryker.blocks.snapshot;
     var snapshots = 0;
-    Ryker.blocks.snapshot = function () { snapshots += 1; return original(); };
+    var strays = 0;
+    // Count only the snapshots the toolbar sync path takes, which is what this
+    // check is about. storage/recover.js arms a 180ms draft checkpoint on every
+    // edit and that checkpoint snapshots too, correctly and for its own
+    // reasons. The window below is two animation frames, and on a loaded CI
+    // runner two frames can outlast 180ms, so the checkpoint lands inside it
+    // and the count reads 2. That failed once in CI as
+    // {"immediate":0,"afterPaint":2} with the coalescing itself intact, which
+    // is why immediate was still 0. Filtering by caller keeps the assertion
+    // exact instead of loosening it to "one or two".
+    Ryker.blocks.snapshot = function () {
+      if ((new Error().stack || '').indexOf('checkpoint') === -1) snapshots += 1;
+      else strays += 1;
+      return original();
+    };
     for (var i = 0; i < 3; i++) {
       target.appendChild(document.createTextNode(String(i)));
       target.dispatchEvent(new Event('input', { bubbles: true }));
@@ -816,12 +830,26 @@ async function runEditorHardening(sess, file) {
     await new Promise(function (resolve) {
       requestAnimationFrame(function () { requestAnimationFrame(resolve); });
     });
+    var counted = snapshots;
+    // Positive control for the filter above. Drive a checkpoint deliberately
+    // and confirm it is attributed to the checkpoint rather than to the sync
+    // path. Without this the filter fails silently the day that function is
+    // renamed: every snapshot would be counted again and the flake would come
+    // back looking like a fresh regression.
+    await Ryker.recover.checkpoint();
     Ryker.blocks.snapshot = original;
-    return { immediate: immediate, afterPaint: snapshots };
+    return {
+      immediate: immediate, afterPaint: counted,
+      controlCounted: snapshots - counted, controlStrays: strays
+    };
   })()`);
 
   assert(batched.immediate === 0 && batched.afterPaint === 1,
     'multiple typing events share one expensive document snapshot per animation frame',
+    JSON.stringify(batched));
+
+  assert(batched.controlCounted === 0 && batched.controlStrays > 0,
+    'the draft checkpoint is attributed to itself, so the batching count stays exact',
     JSON.stringify(batched));
 
   const readFailure = await evaluate(sess, `(async function () {
@@ -3500,6 +3528,113 @@ async function runWorkspace(sess) {
     workspaceExport.scripts === 0 && workspaceExport.editable === 0,
   'workspace clean export contains only the uploaded document and never labels inert HTML as attached Ryker',
   JSON.stringify(workspaceExport));
+
+  console.log('\nextension/workspace.js (Markdown out, not HTML)');
+
+  // Deliberately written in the forms Ryker's serialiser does NOT prefer:
+  // `_emphasis_` over `*`, `+` bullets over `-`, a double blank line, and a
+  // right-aligned table column. If any of these come back changed, the export
+  // is regenerating text nobody edited, which is the failure sow-006 Phase 4
+  // exists to prevent.
+  const MD_SOURCE = [
+    '# Notes',
+    '',
+    'A paragraph with _emphasis_ and `code`.',
+    '',
+    '',
+    '+ first',
+    '+ second',
+    '',
+    '## Table',
+    '',
+    '| Name | Value |',
+    '| --- | ---: |',
+    '| a | 1 |',
+    '',
+    '> quoted line',
+    ''
+  ].join('\n');
+
+  await navigate(sess, WORKSPACE_FIXTURE);
+  await waitInPage(sess, `!!window.RykerWorkspace`, 10000,
+    'Ryker workspace to reset before the Markdown round-trip checks');
+
+  const roundTrip = await evaluate(sess, `RykerWorkspace.openText('notes.md',
+    ${JSON.stringify(MD_SOURCE)}).then(function () {
+      var doc = document.getElementById('workspace-document');
+      return {
+        exported: Ryker.exportMarkdown.build(),
+        available: Ryker.exportMarkdown.available(),
+        isMarkdown: Ryker.config.isMarkdown(),
+        baseName: Ryker.exportHtml.baseName(),
+        paragraphSrc: doc.querySelector('p').getAttribute('data-ryker-md-src'),
+        itemSrc: doc.querySelector('li').getAttribute('data-ryker-md-src'),
+        cellSrc: doc.querySelector('td').getAttribute('data-ryker-md-src'),
+        headingRange: doc.querySelector('h1').getAttribute('data-ryker-md-from') + '-' +
+          doc.querySelector('h1').getAttribute('data-ryker-md-to'),
+        tableRange: doc.querySelector('table').getAttribute('data-ryker-md-from') + '-' +
+          doc.querySelector('table').getAttribute('data-ryker-md-to'),
+        mapInCleanExport: /data-ryker-md-/.test(Ryker.exportHtml.clean())
+      };
+    })`);
+
+  assert(roundTrip.available && roundTrip.isMarkdown && roundTrip.exported === MD_SOURCE,
+    'exporting an unedited Markdown file returns the original bytes, not a regenerated document',
+    JSON.stringify({ available: roundTrip.available, exported: roundTrip.exported }));
+
+  assert(roundTrip.paragraphSrc === 'A paragraph with _emphasis_ and `code`.' &&
+    roundTrip.itemSrc === 'first' && roundTrip.cellSrc === 'a',
+    'every editable block carries the Markdown it was authored as, not the HTML it became',
+    JSON.stringify(roundTrip));
+
+  assert(roundTrip.headingRange === '0-0' && roundTrip.tableRange === '10-12',
+    'top-level blocks carry the source line range they were parsed from',
+    JSON.stringify(roundTrip));
+
+  assert(!roundTrip.mapInCleanExport && roundTrip.baseName === 'notes',
+    'the source map never reaches an exported file, and a .md name does not export as notes.md.html',
+    JSON.stringify(roundTrip));
+
+  const edited = await evaluate(sess, `(function () {
+    var doc = document.getElementById('workspace-document');
+    var target = doc.querySelector('p');
+    target.textContent = 'Replaced entirely.';
+    target.dispatchEvent(new Event('input', { bubbles: true }));
+    var out = Ryker.exportMarkdown.build();
+    var before = ${JSON.stringify(MD_SOURCE)}.split('\\n');
+    var after = out.split('\\n');
+    var differing = [];
+    for (var i = 0; i < Math.max(before.length, after.length); i++) {
+      if (before[i] !== after[i]) differing.push(i);
+    }
+    return { out: out, differing: differing, line: after[2] };
+  })()`);
+
+  assert(edited.differing.length === 1 && edited.differing[0] === 2 &&
+    edited.line === 'Replaced entirely.',
+    'editing one Markdown paragraph rewrites that block alone and leaves every other byte intact',
+    JSON.stringify(edited));
+
+  const mdDialog = await evaluate(sess, `(function () {
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    Ryker.exportDialog.open();
+    var modal = document.getElementById('ryker-root').shadowRoot.querySelector('.modal');
+    var out = {
+      word: Ryker.exportDialog.documentWord(),
+      labels: Array.prototype.map.call(modal.querySelectorAll('button'), function (b) {
+        return (b.textContent || '').trim();
+      }).filter(Boolean),
+      text: (modal.textContent || '').trim()
+    };
+    while (Ryker.dialog && Ryker.dialog.isOpen()) Ryker.dialog.closeTop();
+    return out;
+  })()`);
+
+  assert(mdDialog.word === 'Markdown' &&
+    mdDialog.labels.indexOf('Markdown') !== -1 && mdDialog.labels.indexOf('HTML') !== -1 &&
+    !/report/i.test(mdDialog.text) && !/Clean HTML is/.test(mdDialog.text),
+    'the export dialog over a Markdown file offers Markdown and never calls the file a report',
+    JSON.stringify(mdDialog));
 
   const firstWorkspaceId = markdown.id;
   const reloaded = sess.once('Page.loadEventFired');

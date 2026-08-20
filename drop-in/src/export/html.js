@@ -42,7 +42,7 @@ Ryker.exportHtml = (function () {
   // A clone of the live document with everything Ryker added taken back out.
   // Ryker's chrome lives in one element and its edits live in the report's own
   // markup, so removing the element and the attributes is the whole job.
-  function snapshot(keepRyker) {
+  function prepared(keepRyker) {
     var doc = sourceDocumentClone();
 
     // Both of these are rebuilt at boot, so neither is kept in either export.
@@ -124,7 +124,35 @@ Ryker.exportHtml = (function () {
       });
     }
 
-    return '<!DOCTYPE html>\n' + doc.outerHTML;
+    return doc;
+  }
+
+  // The Markdown source map the workspace stamps on a document it rendered from
+  // Markdown. It exists so an export can put back the authored bytes and so an
+  // instruction can quote text the reader can actually find. It is Ryker's own
+  // bookkeeping and belongs in no file that leaves here.
+  //
+  // Stripped on the way OUT rather than inside prepared(), because
+  // exportMarkdown walks the same cleaned document and the map is the whole
+  // reason it can. Removing it earlier would leave that caller with nothing to
+  // read and no error to explain why.
+  function stripMarkdownMap(doc) {
+    Array.prototype.forEach.call(
+      doc.querySelectorAll('[data-ryker-md-src], [data-ryker-md-from]'), function (n) {
+        n.removeAttribute('data-ryker-md-src');
+        n.removeAttribute('data-ryker-md-from');
+        n.removeAttribute('data-ryker-md-to');
+      });
+    return doc;
+  }
+
+  // The cleaned document as a node, for callers that need to walk it rather
+  // than ship it. exportMarkdown builds from this so it sees exactly what a
+  // clean HTML export would, minus the map, which it still needs.
+  function snapshotDoc(keepRyker) { return prepared(keepRyker); }
+
+  function snapshot(keepRyker) {
+    return '<!DOCTYPE html>\n' + stripMarkdownMap(prepared(keepRyker)).outerHTML;
   }
 
   function clean() { return snapshot(false); }
@@ -157,9 +185,12 @@ Ryker.exportHtml = (function () {
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
   }
 
+  // Every extension Ryker will open, not just the HTML ones. Stripping only
+  // /\.html?$/ left `notes.md` whole, so the workspace offered `notes.md.html`
+  // as the filename for its own export.
   function baseName() {
     var p = Ryker.config.load().RYKER_DOCUMENT_PATH || 'report.html';
-    return p.replace(/\.html?$/i, '');
+    return p.replace(/\.(html?|md|markdown)$/i, '');
   }
 
   function manifest(files) {
@@ -178,7 +209,7 @@ Ryker.exportHtml = (function () {
 
   return {
     clean: clean, withRyker: withRyker, scanned: scanned,
-    canAttach: canAttach,
+    canAttach: canAttach, snapshotDoc: snapshotDoc,
     download: download, baseName: baseName,
     manifest: manifest
   };

@@ -70,27 +70,57 @@
     return left ? 'left' : '';
   }
 
-  function markdown(text) {
+  // Every block records the line range it was built from, so an export can put
+  // back the original bytes for anything nobody touched. Without the range a
+  // Markdown export has to regenerate the whole file from the DOM, which
+  // reformats every untouched line and makes each save an unreviewable diff.
+  // sow-006 Phase 4 settled this: rewrite ranges, do not serialise documents.
+  //
+  // Ranges are line indexes into the normalised text, inclusive at both ends,
+  // and every source line belongs to at most one block. The gaps between
+  // blocks are blank lines and the fence markers, which are reproduced from the
+  // source rather than invented, so a round trip with no edits is byte-exact.
+  function markdownBlocks(text) {
     var lines = String(text).replace(/\r\n?/g, '\n').split('\n');
     var out = [], paragraph = [], list = null, quote = [], code = [], fenced = false;
     var table = null, skip = 0;
+    var pFrom = -1, pTo = -1, qFrom = -1, qTo = -1, cFrom = -1;
+
+    function push(html, from, to) { out.push({ html: html, from: from, to: to }); }
+
+    // The authored Markdown for one editable block, carried on the element it
+    // became. An instruction's FROM has to be findable in the file the reader
+    // actually holds, and after inlineMarkdown() a block that was written
+    // `*rate*` reads `<em>rate</em>`, which appears nowhere in that file. The
+    // parser is the only place that still has both, so it stamps the source
+    // here rather than leaving instructions.js to reconstruct it.
+    //
+    // Stamped per EDITABLE block, not per top-level block, because blocks.js
+    // counts every li, th and td as its own: one list is one range and several
+    // blocks. exportHtml.snapshot() strips these, so they reach no file.
+    function srcAttr(value) {
+      return ' data-ryker-md-src="' + escapeHtml(value) + '"';
+    }
 
     function flushParagraph() {
       if (!paragraph.length) return;
-      out.push('<p>' + inlineMarkdown(paragraph.join(' ')) + '</p>');
-      paragraph = [];
+      var text = paragraph.join(' ');
+      push('<p' + srcAttr(text) + '>' + inlineMarkdown(text) + '</p>', pFrom, pTo);
+      paragraph = []; pFrom = -1; pTo = -1;
     }
     function flushList() {
       if (!list) return;
-      out.push('<' + list.tag + '>' + list.items.map(function (item) {
-        return '<li>' + inlineMarkdown(item) + '</li>';
-      }).join('') + '</' + list.tag + '>');
+      push('<' + list.tag + '>' + list.items.map(function (item) {
+        return '<li' + srcAttr(item) + '>' + inlineMarkdown(item) + '</li>';
+      }).join('') + '</' + list.tag + '>', list.from, list.to);
       list = null;
     }
     function flushQuote() {
       if (!quote.length) return;
-      out.push('<blockquote><p>' + inlineMarkdown(quote.join(' ')) + '</p></blockquote>');
-      quote = [];
+      var text = quote.join(' ');
+      push('<blockquote><p' + srcAttr(text) + '>' + inlineMarkdown(text) + '</p></blockquote>',
+        qFrom, qTo);
+      quote = []; qFrom = -1; qTo = -1;
     }
     // The header row fixes the column count. A short row is padded with empty
     // cells rather than left ragged, which is what GFM renders and what Ryker
@@ -99,8 +129,8 @@
       if (!table) return;
       var cell = function (tag, value, i) {
         var align = table.align[i];
-        return '<' + tag + (align ? ' style="text-align:' + align + '"' : '') + '>' +
-          inlineMarkdown(value || '') + '</' + tag + '>';
+        return '<' + tag + (align ? ' style="text-align:' + align + '"' : '') +
+          srcAttr(value || '') + '>' + inlineMarkdown(value || '') + '</' + tag + '>';
       };
       var html = '<table><thead><tr>' + table.head.map(function (value, i) {
         return cell('th', value, i);
@@ -112,7 +142,7 @@
           return '<tr>' + cells + '</tr>';
         }).join('') + '</tbody>';
       }
-      out.push(html + '</table>');
+      push(html + '</table>', table.from, table.to);
       table = null;
     }
 
@@ -120,25 +150,34 @@
       if (skip) { skip -= 1; return; }
       if (/^\s*```/.test(line)) {
         flushParagraph(); flushList(); flushQuote(); flushTable();
-        if (fenced) { out.push('<pre><code>' + escapeHtml(code.join('\n')) + '</code></pre>'); code = []; }
+        if (fenced) {
+          push('<pre><code>' + escapeHtml(code.join('\n')) + '</code></pre>', cFrom, index);
+          code = []; cFrom = -1;
+        } else { cFrom = index; }
         fenced = !fenced;
         return;
       }
       if (fenced) { code.push(line); return; }
       if (table) {
-        if (line.trim() && /\|/.test(line)) { table.rows.push(splitRow(line)); return; }
+        if (line.trim() && /\|/.test(line)) {
+          table.rows.push(splitRow(line)); table.to = index; return;
+        }
         flushTable();
       }
       if (/\|/.test(line) && line.trim() && isTableRule(lines[index + 1] || '')) {
         flushParagraph(); flushList(); flushQuote();
-        table = { head: splitRow(line), align: splitRow(lines[index + 1]).map(alignOf), rows: [] };
+        // from is the header row and to is the alignment rule, which `skip`
+        // consumes next. Body rows push `to` forward as they arrive.
+        table = { head: splitRow(line), align: splitRow(lines[index + 1]).map(alignOf), rows: [],
+          from: index, to: index + 1 };
         skip = 1;
         return;
       }
       var heading = line.match(/^\s*(#{1,6})\s+(.+?)\s*#*\s*$/);
       if (heading) {
         flushParagraph(); flushList(); flushQuote();
-        out.push('<h' + heading[1].length + '>' + inlineMarkdown(heading[2]) + '</h' + heading[1].length + '>');
+        push('<h' + heading[1].length + srcAttr(heading[2]) + '>' + inlineMarkdown(heading[2]) +
+          '</h' + heading[1].length + '>', index, index);
         return;
       }
       var item = line.match(/^\s*[-*+]\s+(.+)$/);
@@ -147,20 +186,35 @@
         flushParagraph(); flushQuote();
         var tag = numbered ? 'ol' : 'ul';
         if (list && list.tag !== tag) flushList();
-        if (!list) list = { tag: tag, items: [] };
+        if (!list) list = { tag: tag, items: [], from: index, to: index };
         list.items.push((numbered || item)[1]);
+        list.to = index;
         return;
       }
       var quoted = line.match(/^\s*>\s?(.*)$/);
       if (quoted) {
-        flushParagraph(); flushList(); quote.push(quoted[1]); return;
+        flushParagraph(); flushList();
+        if (!quote.length) qFrom = index;
+        qTo = index;
+        quote.push(quoted[1]);
+        return;
       }
       if (!line.trim()) { flushParagraph(); flushList(); flushQuote(); return; }
-      flushList(); flushQuote(); paragraph.push(line.trim());
+      flushList(); flushQuote();
+      if (!paragraph.length) pFrom = index;
+      pTo = index;
+      paragraph.push(line.trim());
     });
-    if (fenced) out.push('<pre><code>' + escapeHtml(code.join('\n')) + '</code></pre>');
+    // An unclosed fence runs to the end of the file, so its range does too.
+    if (fenced) {
+      push('<pre><code>' + escapeHtml(code.join('\n')) + '</code></pre>', cFrom, lines.length - 1);
+    }
     flushParagraph(); flushList(); flushQuote(); flushTable();
-    return out.join('\n');
+    return out;
+  }
+
+  function markdown(text) {
+    return markdownBlocks(text).map(function (block) { return block.html; }).join('\n');
   }
 
   function markdownLimitation(text) {
@@ -297,7 +351,10 @@
         ', which Ryker cannot preserve yet. Convert it to HTML before editing.');
     }
     var parsed = isMarkdown ? null : safeDocument(text);
-    var html = isMarkdown ? markdown(text) : parsed.body.innerHTML;
+    var blocks = isMarkdown ? markdownBlocks(text) : null;
+    var html = isMarkdown
+      ? blocks.map(function (block) { return block.html; }).join('\n')
+      : parsed.body.innerHTML;
     var template = document.createElement('template');
     template.innerHTML = html;
     var displayable = (template.content.textContent || '').trim() ||
@@ -306,8 +363,29 @@
     return {
       html: html,
       markdown: isMarkdown,
-      shell: parsed ? parsed.documentElement.cloneNode(true) : null
+      shell: parsed ? parsed.documentElement.cloneNode(true) : null,
+      // The authored text, kept so an export can hand back the bytes nobody
+      // edited. This used to be dropped here and the only other copy, the
+      // sessionStorage reload handoff, is deleted the moment it is read, so
+      // after boot the Markdown a user opened existed nowhere in the page.
+      source: isMarkdown ? String(text).replace(/\r\n?/g, '\n') : null,
+      ranges: blocks
+        ? blocks.map(function (block) { return { from: block.from, to: block.to }; })
+        : null
     };
+  }
+
+  // Ranges go onto the elements rather than into an array held alongside them,
+  // because the outline rail moves and deletes blocks and an index stops
+  // meaning anything the moment it does. Done before boot.start(), so Ryker
+  // sees a document that already carries its own provenance.
+  function adoptMarkdown(source, ranges) {
+    var children = main.children;
+    for (var i = 0; i < ranges.length && i < children.length; i++) {
+      children[i].setAttribute('data-ryker-md-from', String(ranges[i].from));
+      children[i].setAttribute('data-ryker-md-to', String(ranges[i].to));
+    }
+    if (window.Ryker && Ryker.exportMarkdown) Ryker.exportMarkdown.adopt(source);
   }
 
   function reloadWith(name, text) {
@@ -341,6 +419,7 @@
     return hash(text).then(function (fingerprint) {
       if (generation !== openGeneration) return superseded(name);
       main.innerHTML = output.html;
+      if (output.markdown) adoptMarkdown(output.source, output.ranges);
       sourceShell = output.shell;
       main.hidden = false;
       open.hidden = true;
@@ -397,6 +476,7 @@
   window.RykerWorkspace = {
     openText: openText,
     markdown: markdown,
+    markdownBlocks: markdownBlocks,
     safeHtml: safeHtml,
     sourceShell: sourceShellClone
   };

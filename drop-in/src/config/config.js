@@ -111,5 +111,20 @@ Ryker.config = (function () {
       .replace(/^-+|-+$/g, '').slice(0, 80) || 'untitled';
   }
 
-  return { load: load, slug: slug };
+  // The one place that decides what kind of document this is. Every surface
+  // that has to speak differently about Markdown reads this: the toolbar label,
+  // the export dialog, the exporter and the instruction writer.
+  //
+  // It is one accessor rather than a regex at each of those four sites because
+  // four copies of the same test is exactly how the four bugs sow-009 was
+  // written for happened. The extension does not pass a format explicitly; the
+  // filename is already authoritative, it is what the workspace accepted the
+  // file under, and it is what `allowed` in workspace.js matched to let it in.
+  function format() {
+    return /\.(md|markdown)$/i.test(load().RYKER_DOCUMENT_PATH || '') ? 'markdown' : 'html';
+  }
+
+  function isMarkdown() { return format() === 'markdown'; }
+
+  return { load: load, slug: slug, format: format, isMarkdown: isMarkdown };
 })();

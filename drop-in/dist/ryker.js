@@ -4,12 +4,13 @@
  *
  * Generated bundle. Do not edit. Sources, in load order:
  *   utils/dom.js  (51 lines)
- *   config/config.js  (116 lines)
+ *   config/config.js  (131 lines)
  *   security/scan.js  (86 lines)
  *   editor/sanitize.js  (218 lines)
- *   editor/blocks.js  (547 lines)
+ *   editor/blocks.js  (552 lines)
  *   export/zip.js  (193 lines)
- *   export/html.js  (186 lines)
+ *   export/html.js  (217 lines)
+ *   export/markdown.js  (185 lines)
  *   export/packager.js  (277 lines)
  *   ui/theme.js  (61 lines)
  *   ui/styles.js  (405 lines)
@@ -18,6 +19,7 @@
  *   ui/tooltip.js  (82 lines)
  *   ui/dialog.js  (138 lines)
  *   ui/menu.js  (104 lines)
+ *   export/dialog.js  (99 lines)
  *   editor/editable.js  (591 lines)
  *   editor/history.js  (248 lines)
  *   editor/formatbar.js  (252 lines)
@@ -37,7 +39,7 @@
  *   instructions/browser.js  (296 lines)
  *   ui/pane.js  (292 lines)
  *   storage/recover.js  (335 lines)
- *   bootstrap/boot.js  (575 lines)
+ *   bootstrap/boot.js  (528 lines)
  *
  * Classic script by design: module scripts do not load from file:// URLs,
  * and a report handed over as a ZIP is opened from disk.
@@ -215,7 +217,22 @@
         .replace(/^-+|-+$/g, '').slice(0, 80) || 'untitled';
     }
 
-    return { load: load, slug: slug };
+    // The one place that decides what kind of document this is. Every surface
+    // that has to speak differently about Markdown reads this: the toolbar label,
+    // the export dialog, the exporter and the instruction writer.
+    //
+    // It is one accessor rather than a regex at each of those four sites because
+    // four copies of the same test is exactly how the four bugs sow-009 was
+    // written for happened. The extension does not pass a format explicitly; the
+    // filename is already authoritative, it is what the workspace accepted the
+    // file under, and it is what `allowed` in workspace.js matched to let it in.
+    function format() {
+      return /\.(md|markdown)$/i.test(load().RYKER_DOCUMENT_PATH || '') ? 'markdown' : 'html';
+    }
+
+    function isMarkdown() { return format() === 'markdown'; }
+
+    return { load: load, slug: slug, format: format, isMarkdown: isMarkdown };
   })();
 
 
@@ -539,7 +556,12 @@
   Ryker.blocks = (function () {
     'use strict';
 
-    var SELECTOR = 'h1, p, li, td, th, h2, h3, h4, h5, figcaption, caption, blockquote p, dd, dt';
+    // h6 was missing here while outline.js:24 has always listed h1 through h6, so
+    // the rail offered a sixth-level heading and clicking it did nothing, with no
+    // reason given. Harmless in the authored reports, which stop at h3; a
+    // Markdown document generates its own h6 from `######`, which is valid syntax
+    // the parser accepts, so the gap became reachable. Added 2026-08-19.
+    var SELECTOR = 'h1, p, li, td, th, h2, h3, h4, h5, h6, figcaption, caption, blockquote p, dd, dt';
     var ATOMIC_SELECTOR = 'svg';
     var PICK_SELECTOR = SELECTOR + ', ' + ATOMIC_SELECTOR;
 
@@ -1316,7 +1338,7 @@
     // A clone of the live document with everything Ryker added taken back out.
     // Ryker's chrome lives in one element and its edits live in the report's own
     // markup, so removing the element and the attributes is the whole job.
-    function snapshot(keepRyker) {
+    function prepared(keepRyker) {
       var doc = sourceDocumentClone();
 
       // Both of these are rebuilt at boot, so neither is kept in either export.
@@ -1398,7 +1420,35 @@
         });
       }
 
-      return '<!DOCTYPE html>\n' + doc.outerHTML;
+      return doc;
+    }
+
+    // The Markdown source map the workspace stamps on a document it rendered from
+    // Markdown. It exists so an export can put back the authored bytes and so an
+    // instruction can quote text the reader can actually find. It is Ryker's own
+    // bookkeeping and belongs in no file that leaves here.
+    //
+    // Stripped on the way OUT rather than inside prepared(), because
+    // exportMarkdown walks the same cleaned document and the map is the whole
+    // reason it can. Removing it earlier would leave that caller with nothing to
+    // read and no error to explain why.
+    function stripMarkdownMap(doc) {
+      Array.prototype.forEach.call(
+        doc.querySelectorAll('[data-ryker-md-src], [data-ryker-md-from]'), function (n) {
+          n.removeAttribute('data-ryker-md-src');
+          n.removeAttribute('data-ryker-md-from');
+          n.removeAttribute('data-ryker-md-to');
+        });
+      return doc;
+    }
+
+    // The cleaned document as a node, for callers that need to walk it rather
+    // than ship it. exportMarkdown builds from this so it sees exactly what a
+    // clean HTML export would, minus the map, which it still needs.
+    function snapshotDoc(keepRyker) { return prepared(keepRyker); }
+
+    function snapshot(keepRyker) {
+      return '<!DOCTYPE html>\n' + stripMarkdownMap(prepared(keepRyker)).outerHTML;
     }
 
     function clean() { return snapshot(false); }
@@ -1431,9 +1481,12 @@
       setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
     }
 
+    // Every extension Ryker will open, not just the HTML ones. Stripping only
+    // /\.html?$/ left `notes.md` whole, so the workspace offered `notes.md.html`
+    // as the filename for its own export.
     function baseName() {
       var p = Ryker.config.load().RYKER_DOCUMENT_PATH || 'report.html';
-      return p.replace(/\.html?$/i, '');
+      return p.replace(/\.(html?|md|markdown)$/i, '');
     }
 
     function manifest(files) {
@@ -1452,9 +1505,196 @@
 
     return {
       clean: clean, withRyker: withRyker, scanned: scanned,
-      canAttach: canAttach,
+      canAttach: canAttach, snapshotDoc: snapshotDoc,
       download: download, baseName: baseName,
       manifest: manifest
+    };
+  })();
+
+
+  /* ---- export/markdown.js ---------------------------------------- */
+  // Giving a Markdown file back as Markdown.
+  //
+  // The naive version regenerates the whole file from the DOM, and it is wrong in
+  // a way that only shows up in review: a document written with `_emphasis_` and
+  // `+ bullets` comes back as `*emphasis*` and `- bullets` on every save, so a
+  // one word edit arrives as a diff touching every line. sow-006 Phase 4 settled
+  // the alternative and this is it. Each block carries the line range it was
+  // parsed from, an untouched block is copied out of the original text byte for
+  // byte, and only a block that actually changed is written from the DOM.
+  //
+  // So the serialiser below is deliberately small. It never runs on content
+  // nobody edited, which is why it is allowed to have opinions about `*` over `_`
+  // without those opinions reaching a file.
+  Ryker.exportMarkdown = (function () {
+    'use strict';
+
+    var source = null;
+
+    // The workspace hands over the normalised source once, at open, before boot.
+    // Nothing else may set it: a second document arrives through a reload, which
+    // is the same lifecycle rule openTextAt() already enforces for identity.
+    function adopt(text) {
+      source = typeof text === 'string' ? text : null;
+    }
+
+    function available() {
+      return source !== null && Ryker.config.isMarkdown();
+    }
+
+    function inlineOf(node) {
+      var out = '';
+      Array.prototype.forEach.call(node.childNodes, function (n) {
+        if (n.nodeType === 3) { out += n.nodeValue; return; }
+        if (n.nodeType !== 1) return;
+        var tag = n.tagName;
+        if (tag === 'CODE') { out += '`' + n.textContent + '`'; return; }
+        if (tag === 'BR') { out += '  \n'; return; }
+        var inner = inlineOf(n);
+        if (tag === 'STRONG' || tag === 'B') out += '**' + inner + '**';
+        else if (tag === 'EM' || tag === 'I') out += '*' + inner + '*';
+        else if (tag === 'A') out += '[' + inner + '](' + (n.getAttribute('href') || '') + ')';
+        // Anything the parser cannot produce is unwrapped rather than dropped.
+        // Losing the words would be a silent deletion; losing the tag is visible
+        // and recoverable by whoever reads the diff.
+        else out += inner;
+      });
+      return out;
+    }
+
+    function cellsOf(tr) {
+      return Array.prototype.map.call(tr.children, function (cell) {
+        return inlineOf(cell).replace(/\|/g, '\\|').trim();
+      });
+    }
+
+    function tableOf(el) {
+      var out = [];
+      var head = el.querySelector('thead tr');
+      if (head) {
+        out.push('| ' + cellsOf(head).join(' | ') + ' |');
+        out.push('| ' + Array.prototype.map.call(head.children, function (cell) {
+          var found = (cell.getAttribute('style') || '').match(/text-align:\s*(left|right|center)/);
+          var align = found ? found[1] : '';
+          if (align === 'center') return ':---:';
+          if (align === 'right') return '---:';
+          if (align === 'left') return ':---';
+          return '---';
+        }).join(' | ') + ' |');
+      }
+      Array.prototype.forEach.call(el.querySelectorAll('tbody tr'), function (tr) {
+        out.push('| ' + cellsOf(tr).join(' | ') + ' |');
+      });
+      return out.join('\n');
+    }
+
+    function blockOf(el) {
+      var tag = el.tagName;
+      if (/^H[1-6]$/.test(tag)) {
+        return new Array(Number(tag.charAt(1)) + 1).join('#') + ' ' + inlineOf(el);
+      }
+      if (tag === 'UL' || tag === 'OL') {
+        var n = 0;
+        return Array.prototype.map.call(el.children, function (li) {
+          n += 1;
+          // Never a literal `-` or `*` decision that could reach an untouched
+          // line: the parser keeps only the item text, so the document's own
+          // bullet convention is not recoverable here. It survives because
+          // unchanged lists are copied rather than rewritten.
+          return (tag === 'OL' ? n + '. ' : '- ') + inlineOf(li);
+        }).join('\n');
+      }
+      if (tag === 'BLOCKQUOTE') {
+        return inlineOf(el).split('\n').map(function (line) { return '> ' + line; }).join('\n');
+      }
+      if (tag === 'PRE') return '```\n' + el.textContent.replace(/\n+$/, '') + '\n```';
+      if (tag === 'HR') return '---';
+      if (tag === 'TABLE') return tableOf(el);
+      return inlineOf(el);
+    }
+
+    // The parser is its own oracle. Re-render the block's original source lines
+    // and compare against what is on screen now: equal means nobody touched it,
+    // so its bytes are copied out untouched.
+    //
+    // This is why there is no `_` versus `*` problem. A guess based on
+    // round-tripping the serialiser would call `_rate_` changed, because the
+    // serialiser emits `*rate*`, and would then rewrite a line nobody edited.
+    function intact(el, lines, from, to) {
+      if (!window.RykerWorkspace || typeof window.RykerWorkspace.markdown !== 'function') return false;
+      var original;
+      try { original = window.RykerWorkspace.markdown(lines.slice(from, to + 1).join('\n')); }
+      catch (error) { return false; }
+      var probe = document.createElement('div');
+      probe.innerHTML = original;
+      return normalised(probe.firstElementChild) === normalised(el);
+    }
+
+    function normalised(el) {
+      if (!el) return null;
+      var copy = el.cloneNode(true);
+      var all = [copy].concat(Array.prototype.slice.call(copy.querySelectorAll('*')));
+      all.forEach(function (n) {
+        n.removeAttribute('data-ryker-md-src');
+        n.removeAttribute('data-ryker-md-from');
+        n.removeAttribute('data-ryker-md-to');
+        n.removeAttribute('data-ryker-id');
+      });
+      return copy.outerHTML;
+    }
+
+    // Gaps between blocks are blank lines the parser never owned, so they are
+    // reproduced from the source rather than invented. Two blocks still adjacent
+    // in the source keep whatever separated them, including a run of blank lines
+    // somebody put there on purpose. Blocks that moved lose that and fall back to
+    // one blank line, which is the honest answer: the source no longer says what
+    // belongs between them.
+    function build() {
+      if (!available()) {
+        throw new Error('This document was not opened from Markdown, so there is no Markdown to write back.');
+      }
+      var doc = Ryker.exportHtml.snapshotDoc(false);
+      var body = doc.body || doc.querySelector('body');
+      var lines = source.split('\n');
+      var out = [];
+      var cursor = 0;
+      var first = true;
+
+      Array.prototype.forEach.call(body.children, function (el) {
+        var fromAttr = el.getAttribute('data-ryker-md-from');
+        var toAttr = el.getAttribute('data-ryker-md-to');
+        var from = fromAttr === null ? -1 : Number(fromAttr);
+        var to = toAttr === null ? -1 : Number(toAttr);
+        var known = from >= 0 && to >= from && to < lines.length;
+
+        // A gap of zero lines is not an empty line, it is nothing at all. Pushing
+        // '' for it puts a separator in front of the first block and shifts the
+        // whole file down by one.
+        if (known && from > cursor) {
+          out.push(lines.slice(cursor, from).join('\n'));
+        } else if (!first && !(known && from >= cursor)) {
+          out.push('');
+        }
+        first = false;
+
+        if (known && intact(el, lines, from, to)) {
+          out.push(lines.slice(from, to + 1).join('\n'));
+        } else {
+          out.push(blockOf(el));
+        }
+        if (known && to + 1 > cursor) cursor = to + 1;
+      });
+
+      // Whatever followed the last block in the original: a trailing blank line,
+      // a comment, the newline at end of file.
+      if (cursor < lines.length) out.push(lines.slice(cursor).join('\n'));
+      var text = out.filter(function (part) { return part !== null; }).join('\n');
+      return text.replace(/\n*$/, '\n');
+    }
+
+    return {
+      adopt: adopt, available: available, build: build,
+      blockOf: blockOf, inlineOf: inlineOf
     };
   })();
 
@@ -2848,6 +3088,107 @@
     function at(x, y, items) { return show({ x: x, y: y }, items); }
 
     return { at: at, attach: attach, close: close, isOpen: isOpen };
+  })();
+
+
+  /* ---- export/dialog.js ------------------------------------------ */
+  // The export dialog, for both of the shapes a document can leave in.
+  //
+  // This lived inside bootstrap/boot.js until 2026-08-19, when adding the
+  // Markdown branch pushed that file past its 600 line cap. The cap is doing its
+  // job here: the dialog is about what a file becomes on the way out, which is
+  // this folder's subject and was never boot's.
+  Ryker.exportDialog = (function () {
+    'use strict';
+
+    // Spec section 21, restored 2026-08-16.
+    //
+    // exportHtml.clean() and withRyker() survived the decommission intact and the
+    // test suite proves clean() round-trips a document character for character,
+    // but the menu that reached them lived in ui/toolbar.js and was deleted with
+    // the full build. So a required capability was fully implemented, fully
+    // tested, documented in README and named in AGENT.md as the way to verify an
+    // install, and reachable by nobody. sow-006 retired comments, revisions and
+    // GitHub; it never retired export.
+    //
+    // Lifted from the deleted toolbar.js with the Journal button dropped, since
+    // exportHtml.journalJson() went with the revision journal.
+    // What to call the open document in the interface. A file Ryker rendered from
+    // Markdown is not a report and is not HTML, and calling it either is how the
+    // export dialog came to explain a .md file in terms of tags it does not have.
+    function documentWord() {
+      return Ryker.config.isMarkdown() ? 'Markdown' : 'report';
+    }
+
+    function open() {
+      var base = Ryker.exportHtml.baseName();
+      var attach = !Ryker.exportHtml.canAttach || Ryker.exportHtml.canAttach();
+      var asMarkdown = Ryker.config.isMarkdown() &&
+        Ryker.exportMarkdown && Ryker.exportMarkdown.available();
+      var body;
+      if (asMarkdown) {
+        body = '<p><b>Markdown</b> writes your edits back into the file you opened. Every line you ' +
+          'did not touch is returned exactly as you wrote it, so the change is reviewable.</p>' +
+          '<p><b>HTML</b> is the rendered document instead, for sending to someone who should read ' +
+          'it rather than edit it.</p>';
+      } else {
+        body = '<p><b>Clean HTML</b> is the ' + documentWord() + ' on its own, with Ryker taken ' +
+          'out. This is what you send to someone who should read it rather than edit it.</p>';
+        if (attach) {
+          body += '<p><b>With Ryker</b> keeps the editor attached, so whoever opens it can carry on ' +
+            'editing and leave with their own instruction set.</p>';
+        } else {
+          body += '<p>This extension workspace exports the document on its own. Install the Ryker ' +
+            'drop-in in the source file when you need a portable editable copy.</p>';
+        }
+      }
+      var buttons = [{ label: 'Cancel' }];
+      if (attach) {
+        buttons.push({
+          label: 'With Ryker',
+          action: function () {
+            var o = Ryker.exportHtml.scanned('ryker');
+            if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
+            Ryker.exportHtml.download(o.html, base + '-ryker.html');
+          }
+        });
+      }
+      if (asMarkdown) {
+        buttons.push({
+          label: 'HTML',
+          action: function () {
+            var o = Ryker.exportHtml.scanned('clean');
+            if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
+            Ryker.exportHtml.download(o.html, base + '.html');
+          }
+        });
+        buttons.push({
+          label: 'Markdown', primary: true,
+          action: function () {
+            var text = Ryker.exportMarkdown.build();
+            var hits = Ryker.scan.text(text, 'Markdown');
+            if (hits.length) { Ryker.dialog.leak(hits); return; }
+            Ryker.exportHtml.download(text, base + '.md', 'text/markdown;charset=utf-8');
+          }
+        });
+      }
+      if (!asMarkdown) {
+        buttons.push({
+          label: 'Clean HTML', primary: true,
+          action: function () {
+            var o = Ryker.exportHtml.scanned('clean');
+            if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
+            Ryker.exportHtml.download(o.html, base + '.html');
+          }
+        });
+      }
+      Ryker.dialog.open({
+        title: 'Export',
+        body: body,
+        buttons: buttons
+      });
+    }
+    return { open: open, documentWord: documentWord };
   })();
 
 
@@ -9649,7 +9990,10 @@
     // current without attaching another click listener each time state changes.
     function buildMenu() {
       return [
-        { label: 'Export report...', icon: 'download', run: exportMenu },
+        // "report" is inherited from the two authored reports Ryker was built
+        // against, and it was still the label over a file called notes.md.
+        { label: 'Export ' + Ryker.exportDialog.documentWord() + '...', icon: 'download',
+          run: function () { Ryker.exportDialog.open(); } },
         { label: 'Package report', icon: 'package', run: function () { Ryker.packager.open(); } },
         { label: 'Download instructions', icon: 'download', run: function () { Ryker.pane.download(); } },
         { label: 'Copy instructions', icon: 'copy', run: function () { Ryker.pane.copy(); } },
@@ -9693,56 +10037,6 @@
       }
       if (Ryker.pane) Ryker.pane.flash('Save comments ' + (on ? 'enabled.' : 'disabled.'));
       return saveNotesPreference;
-    }
-
-    // Spec section 21, restored 2026-08-16.
-    //
-    // exportHtml.clean() and withRyker() survived the decommission intact and the
-    // test suite proves clean() round-trips a document character for character,
-    // but the menu that reached them lived in ui/toolbar.js and was deleted with
-    // the full build. So a required capability was fully implemented, fully
-    // tested, documented in README and named in AGENT.md as the way to verify an
-    // install, and reachable by nobody. sow-006 retired comments, revisions and
-    // GitHub; it never retired export.
-    //
-    // Lifted from the deleted toolbar.js with the Journal button dropped, since
-    // exportHtml.journalJson() went with the revision journal.
-    function exportMenu() {
-      var base = Ryker.exportHtml.baseName();
-      var attach = !Ryker.exportHtml.canAttach || Ryker.exportHtml.canAttach();
-      var body = '<p><b>Clean HTML</b> is the report on its own, with Ryker taken out. This is what ' +
-        'you send to someone who should read it rather than edit it.</p>';
-      if (attach) {
-        body += '<p><b>With Ryker</b> keeps the editor attached, so whoever opens it can carry on ' +
-          'editing and leave with their own instruction set.</p>';
-      } else {
-        body += '<p>This extension workspace can export clean HTML only. Install the Ryker drop-in ' +
-          'in the source file when you need a portable editable copy.</p>';
-      }
-      var buttons = [{ label: 'Cancel' }];
-      if (attach) {
-        buttons.push({
-          label: 'With Ryker',
-          action: function () {
-            var o = Ryker.exportHtml.scanned('ryker');
-            if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
-            Ryker.exportHtml.download(o.html, base + '-ryker.html');
-          }
-        });
-      }
-      buttons.push({
-        label: 'Clean HTML', primary: true,
-        action: function () {
-          var o = Ryker.exportHtml.scanned('clean');
-          if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
-          Ryker.exportHtml.download(o.html, base + '.html');
-        }
-      });
-      Ryker.dialog.open({
-        title: 'Export',
-        body: body,
-        buttons: buttons
-      });
     }
 
     function startLogging() {

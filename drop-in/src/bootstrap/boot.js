@@ -111,7 +111,10 @@ Ryker.boot = (function () {
   // current without attaching another click listener each time state changes.
   function buildMenu() {
     return [
-      { label: 'Export report...', icon: 'download', run: exportMenu },
+      // "report" is inherited from the two authored reports Ryker was built
+      // against, and it was still the label over a file called notes.md.
+      { label: 'Export ' + Ryker.exportDialog.documentWord() + '...', icon: 'download',
+        run: function () { Ryker.exportDialog.open(); } },
       { label: 'Package report', icon: 'package', run: function () { Ryker.packager.open(); } },
       { label: 'Download instructions', icon: 'download', run: function () { Ryker.pane.download(); } },
       { label: 'Copy instructions', icon: 'copy', run: function () { Ryker.pane.copy(); } },
@@ -155,56 +158,6 @@ Ryker.boot = (function () {
     }
     if (Ryker.pane) Ryker.pane.flash('Save comments ' + (on ? 'enabled.' : 'disabled.'));
     return saveNotesPreference;
-  }
-
-  // Spec section 21, restored 2026-08-16.
-  //
-  // exportHtml.clean() and withRyker() survived the decommission intact and the
-  // test suite proves clean() round-trips a document character for character,
-  // but the menu that reached them lived in ui/toolbar.js and was deleted with
-  // the full build. So a required capability was fully implemented, fully
-  // tested, documented in README and named in AGENT.md as the way to verify an
-  // install, and reachable by nobody. sow-006 retired comments, revisions and
-  // GitHub; it never retired export.
-  //
-  // Lifted from the deleted toolbar.js with the Journal button dropped, since
-  // exportHtml.journalJson() went with the revision journal.
-  function exportMenu() {
-    var base = Ryker.exportHtml.baseName();
-    var attach = !Ryker.exportHtml.canAttach || Ryker.exportHtml.canAttach();
-    var body = '<p><b>Clean HTML</b> is the report on its own, with Ryker taken out. This is what ' +
-      'you send to someone who should read it rather than edit it.</p>';
-    if (attach) {
-      body += '<p><b>With Ryker</b> keeps the editor attached, so whoever opens it can carry on ' +
-        'editing and leave with their own instruction set.</p>';
-    } else {
-      body += '<p>This extension workspace can export clean HTML only. Install the Ryker drop-in ' +
-        'in the source file when you need a portable editable copy.</p>';
-    }
-    var buttons = [{ label: 'Cancel' }];
-    if (attach) {
-      buttons.push({
-        label: 'With Ryker',
-        action: function () {
-          var o = Ryker.exportHtml.scanned('ryker');
-          if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
-          Ryker.exportHtml.download(o.html, base + '-ryker.html');
-        }
-      });
-    }
-    buttons.push({
-      label: 'Clean HTML', primary: true,
-      action: function () {
-        var o = Ryker.exportHtml.scanned('clean');
-        if (o.hits.length) { Ryker.dialog.leak(o.hits); return; }
-        Ryker.exportHtml.download(o.html, base + '.html');
-      }
-    });
-    Ryker.dialog.open({
-      title: 'Export',
-      body: body,
-      buttons: buttons
-    });
   }
 
   function startLogging() {
