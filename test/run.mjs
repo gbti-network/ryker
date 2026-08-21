@@ -808,18 +808,31 @@ async function runEditorHardening(sess, file) {
     var original = Ryker.blocks.snapshot;
     var snapshots = 0;
     var strays = 0;
-    // Count only the snapshots the toolbar sync path takes, which is what this
-    // check is about. storage/recover.js arms a 180ms draft checkpoint on every
-    // edit and that checkpoint snapshots too, correctly and for its own
-    // reasons. The window below is two animation frames, and on a loaded CI
-    // runner two frames can outlast 180ms, so the checkpoint lands inside it
-    // and the count reads 2. That failed once in CI as
-    // {"immediate":0,"afterPaint":2} with the coalescing itself intact, which
-    // is why immediate was still 0. Filtering by caller keeps the assertion
-    // exact instead of loosening it to "one or two".
+    var elsewhere = 0;
+
+    // Three callers reach snapshot() and only one of them is under test here,
+    // so each is attributed by its own stack rather than counted by when it
+    // happened. Timing cannot separate them: everything below runs inside a
+    // two-frame window, and on a loaded CI runner the other two land in that
+    // window whenever they please.
+    //
+    //   sync < scheduleSync   the immediate branch, first dirty transition
+    //   sync < run            the queued branch, one per animation frame
+    //   checkpoint            storage/recover.js, armed 180ms after any edit
+    //   sync < anonymous      start()'s OWN sync, inside logger.resume().then()
+    //
+    // That last one is the failure this comment exists for. Waiting for
+    // #ryker-root proves the toolbar was built, NOT that boot has finished:
+    // resume() resolves whenever IndexedDB gets round to it. It failed in CI on
+    // 5259a8f as {"immediate":0,"afterPaint":2,"controlStrays":2}, and the
+    // second frame came from bootstrap/boot.js rather than from the coalescing
+    // being measured. Two quiet frames were tried first and are NOT enough: a
+    // sync three frames out walks straight through that gate.
     Ryker.blocks.snapshot = function () {
-      if ((new Error().stack || '').indexOf('checkpoint') === -1) snapshots += 1;
-      else strays += 1;
+      var stack = new Error().stack || '';
+      if (stack.indexOf('checkpoint') !== -1) strays += 1;
+      else if (/\\bat (scheduleSync|run)\\b/.test(stack)) snapshots += 1;
+      else elsewhere += 1;
       return original();
     };
     for (var i = 0; i < 3; i++) {
@@ -831,16 +844,22 @@ async function runEditorHardening(sess, file) {
       requestAnimationFrame(function () { requestAnimationFrame(resolve); });
     });
     var counted = snapshots;
-    // Positive control for the filter above. Drive a checkpoint deliberately
-    // and confirm it is attributed to the checkpoint rather than to the sync
-    // path. Without this the filter fails silently the day that function is
-    // renamed: every snapshot would be counted again and the flake would come
-    // back looking like a fresh regression.
+    var boot = elsewhere;
+
+    // Positive controls for both filters. Without them a rename makes the
+    // filter match nothing, every snapshot lands in one bucket, and the flake
+    // returns wearing the face of a fresh regression. Drive a checkpoint, then
+    // a bare snapshot with no scheduler frame above it, and confirm each is
+    // attributed away from the count under test.
     await Ryker.recover.checkpoint();
+    await new Promise(function (resolve) {
+      requestAnimationFrame(function () { Ryker.blocks.snapshot(); resolve(); });
+    });
     Ryker.blocks.snapshot = original;
     return {
-      immediate: immediate, afterPaint: counted,
-      controlCounted: snapshots - counted, controlStrays: strays
+      immediate: immediate, afterPaint: counted, boot: boot,
+      controlCounted: snapshots - counted, controlStrays: strays,
+      controlElsewhere: elsewhere - boot
     };
   })()`);
 
@@ -850,6 +869,10 @@ async function runEditorHardening(sess, file) {
 
   assert(batched.controlCounted === 0 && batched.controlStrays > 0,
     'the draft checkpoint is attributed to itself, so the batching count stays exact',
+    JSON.stringify(batched));
+
+  assert(batched.controlElsewhere === 1,
+    'a snapshot with no scheduler above it is attributed to boot, not to typing',
     JSON.stringify(batched));
 
   const readFailure = await evaluate(sess, `(async function () {
