@@ -46,6 +46,7 @@ const MODULES = [
   'ui/tooltip.js',
   'ui/dialog.js',
   'ui/menu.js',
+  'ui/about.js',
   'export/dialog.js',
   'editor/editable.js',
   'editor/history.js',

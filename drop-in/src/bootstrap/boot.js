@@ -141,7 +141,12 @@ Ryker.boot = (function () {
         icon: 'note', run: function () { setSaveNotesEnabled(!saveNotesEnabled()); } },
       null,
       { label: 'Clear document', icon: 'trash', danger: true,
-        run: function () { Ryker.pane.confirmClear(); } }
+        run: function () { Ryker.pane.confirmClear(); } },
+      null,
+      // Below the destructive entry on purpose. About is conventionally last,
+      // and a mis-click at the very bottom of the menu should open a dialog
+      // rather than empty the document.
+      { label: 'About Ryker', icon: 'note', run: function () { Ryker.about.open(); } }
     ]);
   }
 

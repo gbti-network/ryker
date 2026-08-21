@@ -389,6 +389,22 @@ Ryker.styles = (function () {
     '.filerow .sz{margin-left:auto;color:var(--rk-muted);font-size:11px;flex:none}',
     '.filerow .nm{overflow-wrap:anywhere}',
 
+    // A label/value table, as a definition list rather than a <table>: these are
+    // pairs and not a grid of data, and a dl says so to a screen reader. The
+    // label column is sized to its longest label so every value starts on the
+    // same edge, which is the whole point of reading it as a table.
+    '.kv{display:grid;grid-template-columns:minmax(0,142px) minmax(0,1fr);',
+    '  margin:0;border:1px solid var(--rk-line);border-radius:var(--rk-r-md);overflow:hidden}',
+    '.kv dt{padding:8px 11px;font-size:10.5px;font-weight:600;color:var(--rk-muted);',
+    '  text-transform:uppercase;letter-spacing:.06em;background:var(--rk-bg2);',
+    '  border-bottom:1px solid var(--rk-line)}',
+    '.kv dd{margin:0;padding:8px 11px;font-size:12px;line-height:1.5;color:var(--rk-fg2);',
+    '  border-bottom:1px solid var(--rk-line);overflow-wrap:anywhere}',
+    '.kv dt:last-of-type,.kv dd:last-of-type{border-bottom:none}',
+    // The one row that asks for something rather than stating a fact.
+    '.kv dt.cta,.kv dd.cta{background:var(--rk-accent-soft)}',
+    '.kv dt.cta{color:var(--rk-accent)}',
+
     '.muted{color:var(--rk-muted)}',
     '.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}',
 

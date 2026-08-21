@@ -1633,6 +1633,140 @@ async function runPackager(sess, file) {
     }
   }
 
+  // ABOUT. Last entry, below the destructive one, so a mis-click at the bottom
+  // of the menu opens a dialog rather than emptying somebody's document.
+  const about = await evaluate(sess, `(function () {
+    var sr = document.getElementById('ryker-root').shadowRoot;
+    var list = sr.querySelector('.menu');
+    if (!list) return { error: 'the More menu is not open' };
+    var rows = Array.prototype.slice.call(list.children);
+    var labels = rows.map(function (n) {
+      return /menu-sep/.test(n.className) ? '(divider)' : (n.textContent || '').trim();
+    });
+    return {
+      last: labels[labels.length - 1],
+      beforeLast: labels[labels.length - 2],
+      clearAt: labels.indexOf('Clear document'),
+      aboutAt: labels.indexOf('About Ryker')
+    };
+  })()`);
+
+  assert(about.last === 'About Ryker' && about.beforeLast === '(divider)' &&
+    about.aboutAt > about.clearAt && about.clearAt !== -1,
+  'About Ryker is the last menu entry, separated by a rule and below Clear document',
+  JSON.stringify(about));
+
+  const aboutDialog = await evaluate(sess, `(function () {
+    var sr = document.getElementById('ryker-root').shadowRoot;
+    Array.prototype.forEach.call(sr.querySelectorAll('[role="menuitem"]'), function (b) {
+      if ((b.textContent || '').trim() === 'About Ryker') b.click();
+    });
+    // The topmost dialog, not the first in the document. A restore prompt can
+    // already be sitting open on this fixture, and picking querySelector's
+    // first match reads that one instead and passes on somebody else's markup.
+    var all = sr.querySelectorAll('.backdrop[role="dialog"]');
+    var dialog = all[all.length - 1];
+    if (!dialog) return { error: 'About opened no dialog' };
+    var body = dialog.querySelector('.body');
+    var links = Array.prototype.map.call(body.querySelectorAll('a'), function (a) {
+      return { href: a.getAttribute('href'), target: a.getAttribute('target'),
+        rel: a.getAttribute('rel'), text: (a.textContent || '').trim() };
+    });
+    var list = body.querySelector('dl.kv');
+    var rows = [];
+    if (list) {
+      Array.prototype.forEach.call(list.querySelectorAll('dt'), function (dt) {
+        var dd = dt.nextElementSibling;
+        rows.push({ label: (dt.textContent || '').replace(/\\s+/g, ' ').trim(),
+          value: ((dd && dd.textContent) || '').replace(/\\s+/g, ' ').trim(),
+          cta: /cta/.test(dt.className) && !!dd && /cta/.test(dd.className),
+          paired: !!dd && dd.tagName === 'DD' });
+      });
+    }
+    var ctaLabel = body.querySelector('dl.kv dt.cta');
+    var out = {
+      title: (dialog.querySelector('header h2').textContent || '').trim(),
+      text: (body.textContent || '').replace(/\\s+/g, ' ').trim(),
+      // A Range gives one rect per rendered line. The element itself is a block
+      // box and would report a single rect however many lines it wraps to.
+      ctaRaw: ctaLabel ? ctaLabel.textContent : '',
+      ctaLines: (function () {
+        if (!ctaLabel) return 0;
+        var r = document.createRange();
+        r.selectNodeContents(ctaLabel);
+        return r.getClientRects().length;
+      })(),
+      paragraphs: body.querySelectorAll('p').length,
+      rows: rows,
+      links: links,
+      version: window.Ryker.VERSION,
+      surface: window.Ryker.SURFACE
+    };
+    var close = dialog.querySelector('.foot button.rk');
+    out.stack = all.length;
+    if (close) close.click();
+    return out;
+  })()`);
+
+  if (aboutDialog.error) {
+    bad('About Ryker opens a dialog', aboutDialog.error);
+  } else {
+    const labels = aboutDialog.rows.map((r) => r.label);
+    const valueOf = (label) => (aboutDialog.rows.find((r) => r.label === label) || {}).value;
+
+    assert(aboutDialog.title === 'About Ryker' &&
+      valueOf('Version') === aboutDialog.version + ' (drop-in build)',
+    'the About dialog names the version and which surface this build is',
+    JSON.stringify({ title: aboutDialog.title, version: aboutDialog.version,
+      row: valueOf('Version') }));
+
+    // A label/value table, and every label actually paired with a value. A dl
+    // whose dt has no dd renders as a heading with nothing under it, which
+    // looks like a row that failed to load.
+    assert(aboutDialog.rows.length >= 6 && aboutDialog.rows.every((r) => r.paired && r.value) &&
+      labels.includes('Maintainer') && labels.includes('License') &&
+      labels.includes('Source') && labels.includes('Privacy'),
+    'About reads as a table of labels and values, none of them empty',
+    JSON.stringify(aboutDialog.rows.map((r) => r.label + ': ' + r.value.slice(0, 28))));
+
+    // The description paragraph was removed on purpose. Somebody opens About to
+    // look one fact up, and prose above the table makes them read for it.
+    assert(aboutDialog.paragraphs === 0 &&
+      aboutDialog.text.indexOf('Inline editing for HTML and Markdown') === -1,
+    'About carries no prose paragraph above the table',
+    JSON.stringify({ paragraphs: aboutDialog.paragraphs }));
+
+    const hrefs = aboutDialog.links.map((l) => l.href);
+    const cta = aboutDialog.rows.filter((r) => r.cta);
+    assert(cta.length === 1 && /^Contributions & Gratuity$/.test(cta[0].label) &&
+      cta[0].value === 'Join our professional network to support Ryker and other ' +
+        'projects developed and maintained by GBTI Network.' &&
+      labels[labels.length - 1] === cta[0].label,
+    'the one ask is a Contributions & Gratuity row, and it is the last row',
+    JSON.stringify(cta));
+
+    assert(hrefs.includes('https://gbti.network/membership/') &&
+      hrefs.filter((h) => /gbti\.network\/(membership|articles|blog)/.test(h)).length === 1,
+    'the ask carries one link, to the network being joined',
+    JSON.stringify(hrefs));
+
+    // Whether the label wraps is the difference between a readable table and
+    // one row's label pushing every value into a column too narrow to read.
+    assert(aboutDialog.ctaLines === 2 && /&\u00a0Gratuity/.test(aboutDialog.ctaRaw),
+      'the label breaks before the ampersand, not after it',
+      JSON.stringify({ lines: aboutDialog.ctaLines, raw: aboutDialog.ctaRaw }));
+
+
+    // target=_blank without noopener hands the opened page a live window.opener
+    // back into the document being edited, which on the drop-in surface is
+    // somebody's own report.
+    const unsafe = aboutDialog.links.filter((l) =>
+      l.target !== '_blank' || !/noopener/.test(l.rel || '') || !/noreferrer/.test(l.rel || ''));
+    assert(unsafe.length === 0 && aboutDialog.links.length >= 5,
+      'every About link opens in a new tab with noopener and noreferrer',
+      JSON.stringify({ count: aboutDialog.links.length, unsafe: unsafe }));
+  }
+
   await navigate(sess, FIXTURE);
   await evaluate(sess, `(function () {
     localStorage.clear();
@@ -3834,6 +3968,39 @@ async function runWorkspace(sess) {
       both ? null : JSON.stringify(workspaceMenu.labels));
     const clean = !/menu-sep/.test(workspaceMenu.first);
     assert(clean, 'adding Save Document does not open the menu on a divider', workspaceMenu.first);
+  }
+
+  // About on the other surface. build() branches on Ryker.SURFACE, and the
+  // branch is the point: "Save Document is missing" is expected on the drop-in
+  // and a defect in the extension, so a bug report has to say which build it is.
+  const aboutHere = await evaluate(sess, `(function () {
+    var sr = document.getElementById('ryker-root').shadowRoot;
+    var items = Array.prototype.filter.call(sr.querySelectorAll('[role="menuitem"]'), function (b) {
+      return (b.textContent || '').trim() === 'About Ryker';
+    });
+    if (!items.length) return { error: 'no About Ryker in the workspace menu' };
+    items[0].click();
+    var all = sr.querySelectorAll('.backdrop[role="dialog"]');
+    var dialog = all[all.length - 1];
+    if (!dialog) return { error: 'About opened no dialog in the workspace' };
+    var out = {
+      title: (dialog.querySelector('header h2').textContent || '').trim(),
+      version_row: ((dialog.querySelector('dl.kv dd') || {}).textContent || '').trim(),
+      surface: window.Ryker.SURFACE,
+      version: window.Ryker.VERSION
+    };
+    var close = dialog.querySelector('.foot button.rk');
+    if (close) close.click();
+    return out;
+  })()`);
+
+  if (aboutHere.error) {
+    bad('the workspace About dialog names the extension build', aboutHere.error);
+  } else {
+    assert(aboutHere.title === 'About Ryker' && aboutHere.surface === 'extension' &&
+      aboutHere.version_row === aboutHere.version + ' (extension build)',
+    'the workspace About dialog names the extension build, not the drop-in one',
+    JSON.stringify({ surface: aboutHere.surface, row: aboutHere.version_row }));
   }
 
   // And the overwrite itself, through the handle the picker returned.

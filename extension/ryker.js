@@ -14,12 +14,13 @@
  *   export/target.js  (66 lines)
  *   export/packager.js  (277 lines)
  *   ui/theme.js  (61 lines)
- *   ui/styles.js  (405 lines)
+ *   ui/styles.js  (421 lines)
  *   ui/shell.js  (241 lines)
  *   ui/icons.js  (68 lines)
  *   ui/tooltip.js  (82 lines)
  *   ui/dialog.js  (138 lines)
  *   ui/menu.js  (104 lines)
+ *   ui/about.js  (77 lines)
  *   export/dialog.js  (213 lines)
  *   editor/editable.js  (596 lines)
  *   editor/history.js  (248 lines)
@@ -41,7 +42,7 @@
  *   instructions/browser.js  (296 lines)
  *   ui/pane.js  (292 lines)
  *   storage/recover.js  (335 lines)
- *   bootstrap/boot.js  (541 lines)
+ *   bootstrap/boot.js  (546 lines)
  *
  * Classic script by design: module scripts do not load from file:// URLs,
  * and a report handed over as a ZIP is opened from disk.
@@ -2659,6 +2660,22 @@
       '.filerow .sz{margin-left:auto;color:var(--rk-muted);font-size:11px;flex:none}',
       '.filerow .nm{overflow-wrap:anywhere}',
 
+      // A label/value table, as a definition list rather than a <table>: these are
+      // pairs and not a grid of data, and a dl says so to a screen reader. The
+      // label column is sized to its longest label so every value starts on the
+      // same edge, which is the whole point of reading it as a table.
+      '.kv{display:grid;grid-template-columns:minmax(0,142px) minmax(0,1fr);',
+      '  margin:0;border:1px solid var(--rk-line);border-radius:var(--rk-r-md);overflow:hidden}',
+      '.kv dt{padding:8px 11px;font-size:10.5px;font-weight:600;color:var(--rk-muted);',
+      '  text-transform:uppercase;letter-spacing:.06em;background:var(--rk-bg2);',
+      '  border-bottom:1px solid var(--rk-line)}',
+      '.kv dd{margin:0;padding:8px 11px;font-size:12px;line-height:1.5;color:var(--rk-fg2);',
+      '  border-bottom:1px solid var(--rk-line);overflow-wrap:anywhere}',
+      '.kv dt:last-of-type,.kv dd:last-of-type{border-bottom:none}',
+      // The one row that asks for something rather than stating a fact.
+      '.kv dt.cta,.kv dd.cta{background:var(--rk-accent-soft)}',
+      '.kv dt.cta{color:var(--rk-accent)}',
+
       '.muted{color:var(--rk-muted)}',
       '.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}',
 
@@ -3314,6 +3331,85 @@
     function at(x, y, items) { return show({ x: x, y: y }, items); }
 
     return { at: at, attach: attach, close: close, isOpen: isOpen };
+  })();
+
+
+  /* ---- ui/about.js ----------------------------------------------- */
+  // About Ryker: what this build is, who maintains it, and the one thing we ask.
+  //
+  // LAST in the menu, after the divider that follows Clear document. An About
+  // entry is conventionally last, and putting it below the one destructive action
+  // means a mis-click at the very bottom of the menu opens a dialog rather than
+  // emptying somebody's document.
+  //
+  // Its own module rather than another block in boot.js, which is at 540 of its
+  // 600 line cap and is about starting Ryker rather than describing it. That cap
+  // already forced the export dialog out once.
+  Ryker.about = (function () {
+    'use strict';
+
+    // Named rather than inlined, so a link that moves is changed in one place.
+    var LINKS = {
+      home: 'https://gbti.network',
+      membership: 'https://gbti.network/membership/',
+      source: 'https://github.com/gbti-network/ryker',
+      issues: 'https://github.com/gbti-network/ryker/issues',
+      license: 'https://github.com/gbti-network/ryker/blob/main/LICENSE',
+      privacy: 'https://github.com/gbti-network/ryker/blob/main/privacy.md'
+    };
+
+    // rel is not decoration. target=_blank without noopener hands the opened page
+    // a live window.opener back into the document being edited, and on the drop-in
+    // surface that document is somebody's report on their own disk.
+    function link(href, text) {
+      return '<a href="' + href + '" target="_blank" rel="noopener noreferrer">' +
+        text + '</a>';
+    }
+
+    /** Which build this is, in the form a bug report needs. The surface matters
+     *  more than it looks: the same version behaves differently as an extension
+     *  and as a drop-in, and "Save Document is missing" is expected on one and a
+     *  defect on the other. */
+    function build() {
+      var version = String(Ryker.VERSION || 'unversioned');
+      var surface = Ryker.SURFACE === 'extension' ? 'extension' : 'drop-in';
+      return Ryker.dom.escapeHtml(version + ' (' + surface + ' build)');
+    }
+
+    function row(label, value, cls) {
+      var c = cls ? ' class="' + cls + '"' : '';
+      return '<dt' + c + '>' + label + '</dt><dd' + c + '>' + value + '</dd>';
+    }
+
+    function open() {
+      Ryker.dialog.open({
+        title: 'About Ryker',
+        // A label/value table rather than prose. Somebody opens About to look one
+        // fact up, usually the version, and a paragraph makes them read for it.
+        body: '<dl class="kv">' +
+          row('Version', build()) +
+          row('Maintainer', link(LINKS.home, 'GBTI Network')) +
+          // The link and nothing else. Summarising a licence in a table cell
+          // invites somebody to rely on the summary, and the terms that actually
+          // bind them are the ones in the file.
+          row('License', link(LINKS.license, 'Source-available')) +
+          row('Source', link(LINKS.source, 'github.com/gbti-network/ryker')) +
+          row('Report a bug', link(LINKS.issues, 'Open an issue')) +
+          row('Privacy', link(LINKS.privacy, 'Nothing is tracked')) +
+          // The ask, and the only one. Last row on purpose: a tool that promises
+          // no telemetry and then leads with a pitch has spent the promise.
+          // The only break point is before the ampersand, so the label reads
+          // "Contributions" then "& Gratuity" rather than stranding the & at the
+          // end of the first line.
+          row('Contributions &amp;\u00a0Gratuity',
+            'Join ' + link(LINKS.membership, 'our professional network') +
+            ' to support Ryker and other projects developed and maintained by ' +
+            'GBTI Network.', 'cta') +
+          '</dl>'
+      });
+    }
+
+    return { open: open, LINKS: LINKS, build: build };
   })();
 
 
@@ -10734,7 +10830,12 @@
           icon: 'note', run: function () { setSaveNotesEnabled(!saveNotesEnabled()); } },
         null,
         { label: 'Clear document', icon: 'trash', danger: true,
-          run: function () { Ryker.pane.confirmClear(); } }
+          run: function () { Ryker.pane.confirmClear(); } },
+        null,
+        // Below the destructive entry on purpose. About is conventionally last,
+        // and a mis-click at the very bottom of the menu should open a dialog
+        // rather than empty the document.
+        { label: 'About Ryker', icon: 'note', run: function () { Ryker.about.open(); } }
       ]);
     }
 
